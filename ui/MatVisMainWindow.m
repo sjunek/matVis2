@@ -1,96 +1,41 @@
 function mw = MatVisMainWindow(model)
-%MatVisMainWindow  Main control panel uifigure for matVis 2.0.
-%
-%   mw = MatVisMainWindow(model)
-%
-%   Creates the main uifigure that wires all matVis components together.
-%
-%   Returns struct mw with fields:
-%     mw.fig            - uifigure (main control panel)
-%     mw.rangeSliders   - 1xN cell array of RangeSlider structs
-%     mw.dimSelector    - MatVisDimSelector struct
-%     mw.contrastWin    - MatVisContrastWin struct
-%     mw.imageWin       - MatVisImageWin struct
-%     mw.zoomWin        - MatVisZoomWin struct
-%     mw.plotWin        - MatVisPlotWin struct
-%     mw.btnToggleImage - uibutton for show/hide ImageWin
-%     mw.btnToggleZoom  - uibutton for show/hide ZoomWin
-%     mw.btnTogglePlot  - uibutton for show/hide PlotWin
-%     mw.Render         - function handle: mw.Render() triggers full re-render
+% MatVisMainWindow  Main control panel uifigure for matVis 2.0.
 
-%   Add component directories to path so all helper constructors are found.
 thisDir = fileparts(mfilename('fullpath'));
 rootDir = fileparts(thisDir);
 addpath(fullfile(rootDir, 'core'));
 addpath(fullfile(rootDir, 'ui'));
 addpath(fullfile(rootDir, 'io'));
 
-%% Validate input
 if nargin < 1 || isempty(model)
-    error('MatVisMainWindow:invalidInput', ...
-          'A MatVisModel instance must be provided.');
+    error('MatVisMainWindow:invalidInput', 'A MatVisModel instance must be provided.');
 end
 
 nDims = numel(model.Size);
 
-%% Create main uifigure
-fig = uifigure('Name', 'matVis 2.0', ...
-               'Resize', 'on', ...
-               'Visible', 'off');
+%% Figure
+fig = uifigure('Name', 'matVis 2.0', 'Resize', 'on', 'Visible', 'off');
 
-% Fixed width, height scales with number of dimensions:
-%   Each RangeSlider row: 50 px
-%   DimSelector panel:    60 px
-%   ContrastWin panel:   160 px
-%   Bottom toggle row:    50 px
-%   Padding/gap:          10 px per section boundary
-rowHeightSlider    = 50;
-rowHeightDimSel    = 60;
-rowHeightContrast  = 160;
-rowHeightBottom    = 50;
-nGaps              = 4;
-gapHeight          = 10;
-
-figWidth  = 340;
-figHeight = nDims * rowHeightSlider ...
-          + rowHeightDimSel ...
-          + rowHeightContrast ...
-          + rowHeightBottom ...
-          + nGaps * gapHeight;
-
+rowH_slider   = 50;
+rowH_dimSel   = 60;
+rowH_contrast = 160;
+rowH_bottom   = 40;
+figWidth      = 360;
+figHeight     = nDims * rowH_slider + rowH_dimSel + rowH_contrast + rowH_bottom + 50;
 fig.Position(3:4) = [figWidth, figHeight];
 
-%% Build outer grid layout (rows top to bottom)
-%  Rows:
-%   1..nDims  : RangeSlider rows
-%   nDims+1   : DimSelector
-%   nDims+2   : ContrastWin
-%   nDims+3   : toggle buttons
-
 nRows = nDims + 3;
-rowHeights = [repmat({rowHeightSlider}, 1, nDims), ...
-              {rowHeightDimSel}, ...
-              {rowHeightContrast}, ...
-              {rowHeightBottom}];
-
-grid = uigridlayout(fig, [nRows, 1]);
-grid.RowHeight   = rowHeights;
+grid  = uigridlayout(fig, [nRows, 1]);
+grid.RowHeight   = [repmat({rowH_slider}, 1, nDims), ...
+                    {rowH_dimSel}, {rowH_contrast}, {rowH_bottom}];
 grid.ColumnWidth = {'1x'};
-grid.Padding     = [8, 8, 8, 8];
-grid.RowSpacing  = gapHeight;
+grid.Padding     = [6 6 6 6];
+grid.RowSpacing  = 6;
 
-%% Create display windows (standalone figures)
-imageWin = MatVisImageWin(model);
-zoomWin  = MatVisZoomWin(model);
-plotWin  = MatVisPlotWin(model);
-
-%% Create render function handle (forward declaration, defined below)
-% Use a container so the nested function can be referenced before
-% rangeSliders and contrastWin are constructed.
-renderFcn = @() doRender();
-
-%% Create RangeSliders (one per dimension)
+%% RangeSliders — created before display windows so onZoomFromMouse can use them
 rangeSliders = cell(1, nDims);
+playTimers   = cell(1, nDims);
+
 for d = 1:nDims
     nSteps   = model.Size(d);
     dimLabel = getDimLabel(model, d);
@@ -104,56 +49,55 @@ for d = 1:nDims
     rs.ZoomMin  = model.ZoomRange(d, 1);
     rs.ZoomMax  = model.ZoomRange(d, 2);
 
-    % Capture d in closures via a helper to avoid loop-variable aliasing
-    % Anonymous functions capture d by value at each iteration (MATLAB semantics).
+    % Anonymous functions capture d by value at each iteration (MATLAB closure semantics).
     addlistener(rs, 'ValueChanged', @(src, ~) onSliderPos(d, src.Value));
     addlistener(rs, 'ZoomChanged',  @(src, ~) onSliderZoom(d, src.ZoomMin, src.ZoomMax));
+    addlistener(rs, 'PlotToggled',  @(src, ~) onPlotToggled(d, src.ShowPlot));
+    addlistener(rs, 'PlayToggled',  @(src, ~) onPlayToggled(d, src.IsPlaying));
 
     rangeSliders{d} = rs;
 end
 
-%% Create DimSelector
+%% Display windows
+imageWin = MatVisImageWin(model, @onZoomFromMouse);
+zoomWin  = MatVisZoomWin(model,  @onZoomFromMouse);
+plotWin  = MatVisPlotWin(model);
+
+renderFcn = @() doRender();
+
+%% DimSelector
 dimSelPanel = uipanel(grid, 'BorderType', 'none', 'BackgroundColor', fig.Color);
 dimSelPanel.Layout.Row    = nDims + 1;
 dimSelPanel.Layout.Column = 1;
-dimSelector = MatVisDimSelector(dimSelPanel, model, renderFcn);
+dimSelector = MatVisDimSelector(dimSelPanel, model, renderFcn); %#ok<NASGU>
 
-%% Create ContrastWin panel
+%% ContrastWin
 contrastPanel = uipanel(grid, 'BorderType', 'line', 'Title', 'Contrast');
 contrastPanel.Layout.Row    = nDims + 2;
 contrastPanel.Layout.Column = 1;
 contrastWin = MatVisContrastWin(contrastPanel, model, renderFcn);
 
-%% Bottom row: window visibility toggle buttons
+%% Bottom toggle buttons
 bottomGrid = uigridlayout(grid, [1, 3]);
 bottomGrid.Layout.Row    = nDims + 3;
 bottomGrid.Layout.Column = 1;
 bottomGrid.ColumnWidth   = {'1x', '1x', '1x'};
 bottomGrid.RowHeight     = {'1x'};
-bottomGrid.Padding       = [0, 0, 0, 0];
+bottomGrid.Padding       = [0 0 0 0];
 
-btnToggleImage = uibutton(bottomGrid, 'state', ...
-    'Text',    'Image', ...
-    'Value',   true, ...
+btnToggleImage = uibutton(bottomGrid, 'state', 'Text', 'Image', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) toggleWindow(imageWin, src.Value));
-btnToggleImage.Layout.Row    = 1;
 btnToggleImage.Layout.Column = 1;
 
-btnToggleZoom = uibutton(bottomGrid, 'state', ...
-    'Text',    'Zoom', ...
-    'Value',   true, ...
+btnToggleZoom = uibutton(bottomGrid, 'state', 'Text', 'Zoom', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) toggleWindow(zoomWin, src.Value));
-btnToggleZoom.Layout.Row    = 1;
 btnToggleZoom.Layout.Column = 2;
 
-btnTogglePlot = uibutton(bottomGrid, 'state', ...
-    'Text',    'Plot', ...
-    'Value',   true, ...
+btnTogglePlot = uibutton(bottomGrid, 'state', 'Text', 'Plot', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) toggleWindow(plotWin, src.Value));
-btnTogglePlot.Layout.Row    = 1;
 btnTogglePlot.Layout.Column = 3;
 
-%% Assemble output struct
+%% Output struct
 mw.fig            = fig;
 mw.rangeSliders   = rangeSliders;
 mw.dimSelector    = dimSelector;
@@ -166,101 +110,92 @@ mw.btnToggleZoom  = btnToggleZoom;
 mw.btnTogglePlot  = btnTogglePlot;
 mw.Render         = renderFcn;
 
-%% Initial render and show
 fig.Visible = 'on';
 doRender();
 
 %% -------------------------------------------------------------------------
-%  Nested helper: full render pipeline
-%  -------------------------------------------------------------------------
     function doRender()
-        % Render full (un-cropped) slice for ImageWin
-        slice2D_full = MatVisRender.renderSlice(model);
+        % Full (un-cropped) slice → ImageWin with zoom-rect overlay
+        slice2D_full = MatVisRender.renderFullSlice(model);
+        gammaFull    = MatVisRender.applyGamma(slice2D_full, model.Gamma);
+        rgbFull      = MatVisRender.applyColormap(gammaFull, model.ColormapIdx);
 
-        % Render zoom-cropped slice for ZoomWin
-        slice2D_zoom = MatVisRender.renderSlice(model);  %#ok<NASGU>
-        % NOTE: The distinction between full and cropped is handled inside
-        % MatVisRender.renderSlice based on model.ZoomRange.  Here we pass
-        % the same model; the two windows receive different images because
-        % Update() implementations crop internally or because renderSlice
-        % accepts an optional flag.  Per the spec, ZoomWin receives the
-        % cropped version, so we obtain it by applying the zoom range.
-        slice2D_zoom = cropToZoom(slice2D_full, model);
+        xr       = model.ZoomRange(model.XDim, :);
+        yr       = model.ZoomRange(model.YDim, :);
+        zoomRect = [xr(1), yr(1), diff(xr), diff(yr)];
+        imageWin.Update(rgbFull, zoomRect);
 
-        % Apply gamma and colormap to full slice
-        gammaSliceFull = MatVisRender.applyGamma(slice2D_full, model.Gamma);
-        rgbImgFull     = MatVisRender.applyColormap(gammaSliceFull, model.ColormapIdx);
+        % Cropped (zoom-range) slice → ZoomWin
+        slice2D_zoom = MatVisRender.renderSlice(model);
+        gammaZoom    = MatVisRender.applyGamma(slice2D_zoom, model.Gamma);
+        rgbZoom      = MatVisRender.applyColormap(gammaZoom, model.ColormapIdx);
+        zoomWin.Update(rgbZoom);
 
-        % Apply gamma and colormap to zoom slice
-        gammaSliceZoom = MatVisRender.applyGamma(slice2D_zoom, model.Gamma);
-        rgbImgZoom     = MatVisRender.applyColormap(gammaSliceZoom, model.ColormapIdx);
-
-        % Compute zoom rect in pixel coordinates of the full image
-        xRange  = model.ZoomRange(model.XDim, :);
-        yRange  = model.ZoomRange(model.YDim, :);
-        zoomRect = [xRange(1), yRange(1), diff(xRange), diff(yRange)];
-
-        % Update display windows
-        imageWin.Update(rgbImgFull, zoomRect);
-        zoomWin.Update(rgbImgZoom);
-
-        % Compute 1D profiles for active plot dimensions
-        nPlotDims = numel(model.PlotDims);
-        profiles  = cell(1, nPlotDims);
-        for idx = 1:nPlotDims
-            if model.PlotDims(idx)
-                profiles{idx} = MatVisRender.renderProfile(model, idx);
+        % 1-D profiles for checked dimensions
+        profiles = cell(1, nDims);
+        for ii = 1:nDims
+            if model.PlotDims(ii)
+                profiles{ii} = MatVisRender.renderProfile(model, ii);
             end
         end
         plotWin.Update(profiles);
 
-        % Update contrast histogram with the full slice
+        % Contrast histogram uses full slice (un-cropped, un-gamma'd)
         contrastWin.Update(slice2D_full);
     end
 
-%% -------------------------------------------------------------------------
-%  Nested helper: crop 2D slice to zoom range
-%  -------------------------------------------------------------------------
-    function sliceCropped = cropToZoom(sliceFull, mdl)
-        % sliceFull is H x W (rows = YDim, cols = XDim).
-        % ZoomRange is nDims x 2 matrix with [lo, hi] indices.
-        xr = mdl.ZoomRange(mdl.XDim, :);
-        yr = mdl.ZoomRange(mdl.YDim, :);
-
-        [H, W] = size(sliceFull);
-
-        % Clamp to valid pixel indices (ZoomRange is 1-based)
-        c1 = max(1, round(xr(1)));
-        c2 = min(W, round(xr(2)));
-        r1 = max(1, round(yr(1)));
-        r2 = min(H, round(yr(2)));
-
-        if c1 <= c2 && r1 <= r2
-            sliceCropped = sliceFull(r1:r2, c1:c2);
-        else
-            sliceCropped = sliceFull;
-        end
-    end
-
-%% -------------------------------------------------------------------------
-%  Nested helper: slider position callback
-%  -------------------------------------------------------------------------
     function onSliderPos(dimIdx, val)
-        model.CurrPos(dimIdx) = val;
+        model.CurrPos(dimIdx) = round(val);
         doRender();
     end
 
-%% -------------------------------------------------------------------------
-%  Nested helper: slider zoom callback
-%  -------------------------------------------------------------------------
     function onSliderZoom(dimIdx, lo, hi)
         model.ZoomRange(dimIdx, :) = [lo, hi];
         doRender();
     end
 
-%% -------------------------------------------------------------------------
-%  Nested helper: toggle window visibility
-%  -------------------------------------------------------------------------
+    function onPlotToggled(dimIdx, show)
+        model.PlotDims(dimIdx) = show;
+        doRender();
+    end
+
+    function onPlayToggled(dimIdx, isPlaying)
+        if isPlaying
+            t = timer('Period', 0.06, 'ExecutionMode', 'fixedRate', ...
+                      'TimerFcn', @(~,~) stepPlay(dimIdx));
+            playTimers{dimIdx} = t;
+            start(t);
+        else
+            t = playTimers{dimIdx};
+            if ~isempty(t) && isvalid(t)
+                stop(t);
+                delete(t);
+            end
+            playTimers{dimIdx} = [];
+        end
+    end
+
+    function stepPlay(dimIdx)
+        lo  = model.ZoomRange(dimIdx, 1);
+        hi  = model.ZoomRange(dimIdx, 2);
+        cur = model.CurrPos(dimIdx);
+        nxt = cur + 1;
+        if nxt > hi, nxt = lo; end
+        model.CurrPos(dimIdx)         = nxt;
+        rangeSliders{dimIdx}.Value    = nxt;
+        doRender();
+    end
+
+    function onZoomFromMouse(xDim, xRange, yDim, yRange)
+        model.ZoomRange(xDim, :)      = xRange;
+        model.ZoomRange(yDim, :)      = yRange;
+        rangeSliders{xDim}.ZoomMin    = xRange(1);
+        rangeSliders{xDim}.ZoomMax    = xRange(2);
+        rangeSliders{yDim}.ZoomMin    = yRange(1);
+        rangeSliders{yDim}.ZoomMax    = yRange(2);
+        doRender();
+    end
+
     function toggleWindow(win, isVisible)
         if isVisible
             win.fig.Visible = 'on';
@@ -271,9 +206,6 @@ doRender();
 
 end % MatVisMainWindow
 
-%% =========================================================================
-%  Local utilities
-%  =========================================================================
 function label = getDimLabel(model, dimIdx)
     if ~isempty(model.DimNames) && numel(model.DimNames) >= dimIdx
         label = model.DimNames{dimIdx};
@@ -281,4 +213,3 @@ function label = getDimLabel(model, dimIdx)
         label = sprintf('Dim%d', dimIdx);
     end
 end
-

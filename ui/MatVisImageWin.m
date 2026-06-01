@@ -1,60 +1,30 @@
-function iw = MatVisImageWin(model)
-%MatVisImageWin  Standalone figure showing full 2-D slice + zoom indicator.
+function iw = MatVisImageWin(model, zoomFromMouseFcn)
+% MatVisImageWin  Full-image display window with zoom-indicator overlay.
 %
-%   iw = MatVisImageWin(model)
+%   iw = MatVisImageWin(model, zoomFromMouseFcn)
 %
-%   Creates a uifigure that displays the full 2-D image slice and overlays a
-%   red rectangle marking the current zoom-crop region.
-%
-%   Input
-%   -----
-%   model : object with at least the following readable properties
-%       model.Size      – dimension sizes (1 x nDims numeric)
-%       model.XDim      – index of the horizontal dimension
-%       model.YDim      – index of the vertical   dimension
-%       model.ZoomRange – nDims x 2 matrix of [lo hi] per dimension
-%
-%   Output
-%   ------
-%   iw.fig        – uifigure handle
-%   iw.ax         – uiaxes handle (fills the figure)
-%   iw.imgHandle  – image graphics object
-%   iw.rectHandle – rectangle graphics object showing the zoom region
-%   iw.Update     – function handle:  iw.Update(rgbImg, zoomRect)
+%   model            - MatVisModel handle (XDim, YDim, ZoomRange, Size)
+%   zoomFromMouseFcn - function handle @(xDim,xRange,yDim,yRange) called
+%                      after user drag-selects a new zoom region.
+%                      Pass [] to disable drag-to-zoom.
 %
 %   iw.Update(rgbImg, zoomRect)
-%       rgbImg   – H x W x 3 uint8 RGB image (colormap + gamma already applied)
-%       zoomRect – [xMin yMin width height] in pixel coordinates of full image
+%       rgbImg   : H×W×3 uint8 full-slice image
+%       zoomRect : [xMin yMin width height] in data-pixel coords
 
-%% ---- Input validation -------------------------------------------------------
-narginchk(1, 1);
+if nargin < 2, zoomFromMouseFcn = []; end
 
-%% ---- Build figure and axes --------------------------------------------------
-fig = uifigure('Name',        'Image Window', ...
-               'NumberTitle', 'off', ...
-               'MenuBar',     'none');
+fig = uifigure('Name', 'Image Window', 'NumberTitle', 'off', 'MenuBar', 'none');
 
-ax = uiaxes(fig, ...
-            'Units',    'normalized', ...
-            'Position', [0 0 1 1]);
-
-% Suppress the default interactive toolbar added by uiaxes.
+ax = uiaxes(fig, 'Units', 'normalized', 'Position', [0 0 1 1]);
 disableDefaultInteractivity(ax);
 ax.Toolbar.Visible = 'off';
-
-% Keep pixel aspect ratio correct and fill available space.
 axis(ax, 'image');
-ax.XTick = [];
-ax.YTick = [];
+ax.XTick = []; ax.YTick = [];
 
-%% ---- Initialise image and rectangle handles ---------------------------------
-% Draw a placeholder 1x1 transparent image so imgHandle is always a valid
-% graphics object before the first Update call.
 imgHandle = image(ax, zeros(1, 1, 3, 'uint8'));
 
-% Derive initial rectangle position from the model's zoom range.
 [initPos, initVis] = zoomRectFromModel(model);
-
 rectHandle = rectangle(ax, ...
     'Position',  initPos, ...
     'EdgeColor', 'r', ...
@@ -62,73 +32,96 @@ rectHandle = rectangle(ax, ...
     'FaceColor', 'none', ...
     'Visible',   initVis);
 
-%% ---- Assemble output struct -------------------------------------------------
+% Yellow dashed selection rectangle drawn during mouse drag
+selRect = rectangle(ax, ...
+    'Position',  [1 1 1 1], ...
+    'EdgeColor', [1 1 0], ...
+    'LineStyle', '--', ...
+    'LineWidth',  1.2, ...
+    'FaceColor', 'none', ...
+    'Visible',   'off');
+
+dragStart = [];
+
+if ~isempty(zoomFromMouseFcn)
+    ax.ButtonDownFcn          = @onMouseDown;
+    fig.WindowButtonMotionFcn = @onMouseMove;
+    fig.WindowButtonUpFcn     = @onMouseUp;
+end
+
 iw.fig        = fig;
 iw.ax         = ax;
 iw.imgHandle  = imgHandle;
 iw.rectHandle = rectHandle;
-iw.Update     = @(rgbImg, zoomRect) updateDisplay(ax, imgHandle, rectHandle, rgbImg, zoomRect);
+iw.Update     = @(rgbImg, zoomRect) updateDisplay(rgbImg, zoomRect);
+
+% -------------------------------------------------------------------------
+    function updateDisplay(rgbImg, zoomRect)
+        if ~isvalid(fig), return; end
+        set(imgHandle, 'CData', rgbImg);
+        [H, W, ~] = size(rgbImg);
+        ax.XLim = [0.5, W + 0.5];
+        ax.YLim = [0.5, H + 0.5];
+        if numel(zoomRect) == 4 && zoomRect(3) > 0 && zoomRect(4) > 0
+            set(rectHandle, 'Position', zoomRect, 'Visible', 'on');
+        else
+            set(rectHandle, 'Visible', 'off');
+        end
+    end
+
+    function onMouseDown(~, ~)
+        pt = ax.CurrentPoint;
+        x  = pt(1,1);  y = pt(1,2);
+        xl = ax.XLim;  yl = ax.YLim;
+        if x >= xl(1) && x <= xl(2) && y >= yl(1) && y <= yl(2)
+            dragStart = [x, y];
+            selRect.Position = [x, y, 0.01, 0.01];
+            selRect.Visible  = 'on';
+        end
+    end
+
+    function onMouseMove(~, ~)
+        if isempty(dragStart), return; end
+        pt = ax.CurrentPoint;
+        x2 = max(ax.XLim(1), min(ax.XLim(2), pt(1,1)));
+        y2 = max(ax.YLim(1), min(ax.YLim(2), pt(1,2)));
+        x1 = dragStart(1);  y1 = dragStart(2);
+        selRect.Position = [min(x1,x2), min(y1,y2), ...
+                            max(abs(x2-x1), 0.01), max(abs(y2-y1), 0.01)];
+    end
+
+    function onMouseUp(~, ~)
+        if isempty(dragStart), return; end
+        pt = ax.CurrentPoint;
+        x2 = pt(1,1);  y2 = pt(1,2);
+        x1 = dragStart(1);  y1 = dragStart(2);
+        dragStart       = [];
+        selRect.Visible = 'off';
+
+        xd   = model.XDim;  yd = model.YDim;
+        xMin = max(1, round(min(x1, x2)));
+        xMax = min(model.Size(xd), round(max(x1, x2)));
+        yMin = max(1, round(min(y1, y2)));
+        yMax = min(model.Size(yd), round(max(y1, y2)));
+
+        if xMax > xMin && yMax > yMin
+            zoomFromMouseFcn(xd, [xMin, xMax], yd, [yMin, yMax]);
+        end
+    end
 
 end % MatVisImageWin
 
-%% ---- Module-private helpers -------------------------------------------------
-
-function updateDisplay(ax, imgHandle, rectHandle, rgbImg, zoomRect)
-%updateDisplay  Refresh image data and the zoom-indicator rectangle.
-%
-%   ax         – uiaxes on which the image lives
-%   imgHandle  – image graphics handle
-%   rectHandle – rectangle graphics handle
-%   rgbImg     – H x W x 3 uint8
-%   zoomRect   – [xMin yMin width height]
-
-% Update image content.
-set(imgHandle, 'CData', rgbImg);
-
-% Fit axes limits to the new image dimensions.
-[H, W, ~] = size(rgbImg);
-ax.XLim = [0.5, W + 0.5];
-ax.YLim = [0.5, H + 0.5];
-
-% Update zoom rectangle.
-if numel(zoomRect) == 4 && zoomRect(3) > 0 && zoomRect(4) > 0
-    set(rectHandle, ...
-        'Position', zoomRect, ...
-        'Visible',  'on');
-else
-    set(rectHandle, 'Visible', 'off');
-end
-end
-
-
 function [pos, vis] = zoomRectFromModel(model)
-%zoomRectFromModel  Derive initial rectangle position from model.ZoomRange.
-%
-%   Returns pos = [xMin yMin width height] and vis = 'on'|'off'.
-%   Falls back to a unit square with visibility 'off' on any error.
-
-try
-    xDim = model.XDim;
-    yDim = model.YDim;
-    zr   = model.ZoomRange;   % nDims x 2
-
-    xMin = zr(xDim, 1);
-    xMax = zr(xDim, 2);
-    yMin = zr(yDim, 1);
-    yMax = zr(yDim, 2);
-
-    w = xMax - xMin;
-    h = yMax - yMin;
-
-    if w > 0 && h > 0
-        pos = [xMin, yMin, w, h];
-        vis = 'on';
-    else
-        pos = [1, 1, 1, 1];
-        vis = 'off';
+    try
+        xr = model.ZoomRange(model.XDim, :);
+        yr = model.ZoomRange(model.YDim, :);
+        w  = diff(xr);  h = diff(yr);
+        if w > 0 && h > 0
+            pos = [xr(1), yr(1), w, h];  vis = 'on';
+        else
+            pos = [1, 1, 1, 1];  vis = 'off';
+        end
+    catch
+        pos = [1, 1, 1, 1];  vis = 'off';
     end
-catch
-    pos = [1, 1, 1, 1];
-    vis = 'off';
-end
 end

@@ -31,7 +31,8 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         ZoomMax  (1,1) double  = 2
         Limits   (1,2) double  = [1 2]
         DimLabel (1,:) char    = ''
-        ShowPlot (1,1) logical = false
+        ShowPlot  (1,1) logical = false
+        IsPlaying (1,1) logical = false
     end
 
     events (HasCallbackProperty, NotifyAccess = protected)
@@ -225,7 +226,8 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             notify(obj, 'ValueChanged');
         end
 
-        function onPlayToggled_(obj, ~, ~)
+        function onPlayToggled_(obj, src, ~)
+            obj.IsPlaying = src.Value;
             notify(obj, 'PlayToggled');
         end
 
