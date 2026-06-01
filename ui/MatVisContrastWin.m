@@ -41,10 +41,10 @@ rowGamma.RowSpacing   = 0;
 
 uilabel(rowGamma, 'Text', 'Gamma');
 
-cw.sliderGamma = uislider(rowGamma, ...
-    'Limits', [0.1 5.0], ...
-    'Value', model.Gamma, ...
-    'ValueChangedFcn', @onGammaSliderChanged);
+cw.sliderGamma = uislider(rowGamma);
+cw.sliderGamma.Limits = [0.1 5.0];
+cw.sliderGamma.Value  = model.Gamma;
+cw.sliderGamma.ValueChangedFcn = @onGammaSliderChanged;
 
 cw.editGamma = uieditfield(rowGamma, 'numeric', ...
     'Limits', [0.1 5.0], ...
@@ -62,10 +62,10 @@ rowCMin.RowSpacing   = 0;
 
 uilabel(rowCMin, 'Text', 'C Min');
 
-cw.sliderCMin = uislider(rowCMin, ...
-    'Limits', [dataMin dataMax], ...
-    'Value', model.ContrastMin, ...
-    'ValueChangedFcn', @onCMinSliderChanged);
+cw.sliderCMin = uislider(rowCMin);
+cw.sliderCMin.Limits = [dataMin dataMax];
+cw.sliderCMin.Value  = max(dataMin, min(dataMax, model.ContrastMin));
+cw.sliderCMin.ValueChangedFcn = @onCMinSliderChanged;
 
 cw.editCMin = uieditfield(rowCMin, 'numeric', ...
     'Value', model.ContrastMin, ...
@@ -80,10 +80,10 @@ rowCMax.RowSpacing   = 0;
 
 uilabel(rowCMax, 'Text', 'C Max');
 
-cw.sliderCMax = uislider(rowCMax, ...
-    'Limits', [dataMin dataMax], ...
-    'Value', model.ContrastMax, ...
-    'ValueChangedFcn', @onCMaxSliderChanged);
+cw.sliderCMax = uislider(rowCMax);
+cw.sliderCMax.Limits = [dataMin dataMax];
+cw.sliderCMax.Value  = max(dataMin, min(dataMax, model.ContrastMax));
+cw.sliderCMax.ValueChangedFcn = @onCMaxSliderChanged;
 
 cw.editCMax = uieditfield(rowCMax, 'numeric', ...
     'Value', model.ContrastMax, ...
@@ -122,7 +122,7 @@ cw.Update = @updatePanel;
     function onCMinSliderChanged(~, evt)
         v = evt.Value;
         if v >= cw.sliderCMax.Value
-            v = cw.sliderCMax.Value - eps(cw.sliderCMax.Value);
+            v = cw.sliderCMax.Value - diff(cw.sliderCMax.Limits) * 1e-6;
             cw.sliderCMin.Value = v;
         end
         model.ContrastMin  = v;
@@ -133,7 +133,7 @@ cw.Update = @updatePanel;
     function onCMinEditChanged(~, evt)
         v = evt.Value;
         if v >= model.ContrastMax
-            v = model.ContrastMax - eps(model.ContrastMax);
+            v = model.ContrastMax - diff(cw.sliderCMax.Limits) * 1e-6;
             cw.editCMin.Value = v;
         end
         model.ContrastMin   = v;
@@ -144,7 +144,7 @@ cw.Update = @updatePanel;
     function onCMaxSliderChanged(~, evt)
         v = evt.Value;
         if v <= cw.sliderCMin.Value
-            v = cw.sliderCMin.Value + eps(cw.sliderCMin.Value);
+            v = cw.sliderCMin.Value + diff(cw.sliderCMin.Limits) * 1e-6;
             cw.sliderCMax.Value = v;
         end
         model.ContrastMax  = v;
@@ -155,7 +155,7 @@ cw.Update = @updatePanel;
     function onCMaxEditChanged(~, evt)
         v = evt.Value;
         if v <= model.ContrastMin
-            v = model.ContrastMin + eps(model.ContrastMin);
+            v = model.ContrastMin + diff(cw.sliderCMin.Limits) * 1e-6;
             cw.editCMax.Value = v;
         end
         model.ContrastMax   = v;

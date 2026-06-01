@@ -95,18 +95,21 @@ for d = 1:nDims
     nSteps   = model.Size(d);
     dimLabel = getDimLabel(model, d);
 
-    % Callbacks that update model then trigger render
-    onPosCb  = @(val) onSliderPos(d, val);
-    onZoomCb = @(lo, hi) onSliderZoom(d, lo, hi);
+    rs = RangeSlider(grid);
+    rs.Layout.Row    = d;
+    rs.Layout.Column = 1;
+    rs.Limits   = [1, nSteps];
+    rs.DimLabel = dimLabel;
+    rs.Value    = model.CurrPos(d);
+    rs.ZoomMin  = model.ZoomRange(d, 1);
+    rs.ZoomMax  = model.ZoomRange(d, 2);
 
-    sliderPanel = uipanel(grid, ...
-                          'BorderType', 'none', ...
-                          'BackgroundColor', fig.Color);
-    sliderPanel.Layout.Row    = d;
-    sliderPanel.Layout.Column = 1;
+    % Capture d in closures via a helper to avoid loop-variable aliasing
+    % Anonymous functions capture d by value at each iteration (MATLAB semantics).
+    addlistener(rs, 'ValueChanged', @(src, ~) onSliderPos(d, src.Value));
+    addlistener(rs, 'ZoomChanged',  @(src, ~) onSliderZoom(d, src.ZoomMin, src.ZoomMax));
 
-    rangeSliders{d} = RangeSlider(sliderPanel, d, nSteps, dimLabel, ...
-                                  onPosCb, onZoomCb);
+    rangeSliders{d} = rs;
 end
 
 %% Create DimSelector
@@ -269,7 +272,7 @@ doRender();
 end % MatVisMainWindow
 
 %% =========================================================================
-%  Local utility: build dimension label string
+%  Local utilities
 %  =========================================================================
 function label = getDimLabel(model, dimIdx)
     if ~isempty(model.DimNames) && numel(model.DimNames) >= dimIdx
@@ -278,3 +281,4 @@ function label = getDimLabel(model, dimIdx)
         label = sprintf('Dim%d', dimIdx);
     end
 end
+
