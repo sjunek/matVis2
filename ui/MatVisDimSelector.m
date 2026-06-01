@@ -20,8 +20,8 @@ function ds = MatVisDimSelector(parent, model, renderFcn)
 %   Output struct ds
 %     ds.dropX    - uidropdown selecting the X dimension
 %     ds.dropY    - uidropdown selecting the Y dimension
-%     ds.btnFlipX - uitogglebutton for flipping the X direction
-%     ds.btnFlipY - uitogglebutton for flipping the Y direction
+%     ds.btnFlipX - uibutton for flipping the X direction
+%     ds.btnFlipY - uibutton for flipping the Y direction
 %     ds.Update   - function handle: ds.Update() refreshes dropdowns from model
 
 % --- Validate inputs -------------------------------------------------------
@@ -45,7 +45,7 @@ dropX.Layout.Row    = 1;
 dropX.Layout.Column = 2;
 dropX.Tooltip       = 'Select dimension for X axis of displayed image';
 
-btnFlipX = uitogglebutton(grid, 'Text', char(8596), ...
+btnFlipX = uibutton(grid, 'state', 'Text', char(8596), ...
     'Tooltip', 'Flip X direction');
 btnFlipX.Layout.Row    = 1;
 btnFlipX.Layout.Column = 3;
@@ -60,7 +60,7 @@ dropY.Layout.Row    = 2;
 dropY.Layout.Column = 2;
 dropY.Tooltip       = 'Select dimension for Y axis of displayed image';
 
-btnFlipY = uitogglebutton(grid, 'Text', char(8597), ...
+btnFlipY = uibutton(grid, 'state', 'Text', char(8597), ...
     'Tooltip', 'Flip Y direction');
 btnFlipY.Layout.Row    = 2;
 btnFlipY.Layout.Column = 3;
