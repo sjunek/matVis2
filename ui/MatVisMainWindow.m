@@ -81,7 +81,7 @@ contrastWin = MatVisContrastWin(contrastPanel, model, renderFcn);
 bottomGrid = uigridlayout(grid, [1, 3]);
 bottomGrid.Layout.Row    = nDims + 3;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x'};
+bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x'};
 bottomGrid.RowHeight     = {'1x'};
 bottomGrid.Padding       = [0 0 0 0];
 
@@ -97,6 +97,11 @@ btnTogglePlot = uibutton(bottomGrid, 'state', 'Text', 'Plot', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) toggleWindow(plotWin, src.Value));
 btnTogglePlot.Layout.Column = 3;
 
+btnOverlay = uibutton(bottomGrid, 'state', 'Text', 'Overlay', 'Value', true, ...
+    'Tooltip', 'Show/hide crop rectangle and position lines', ...
+    'ValueChangedFcn', @(src, ~) setOverlay(src.Value));
+btnOverlay.Layout.Column = 4;
+
 %% Output struct
 mw.fig            = fig;
 mw.rangeSliders   = rangeSliders;
@@ -108,6 +113,7 @@ mw.plotWin        = plotWin;
 mw.btnToggleImage = btnToggleImage;
 mw.btnToggleZoom  = btnToggleZoom;
 mw.btnTogglePlot  = btnTogglePlot;
+mw.btnOverlay     = btnOverlay;
 mw.Render         = renderFcn;
 
 fig.Visible = 'on';
@@ -115,21 +121,26 @@ doRender();
 
 %% -------------------------------------------------------------------------
     function doRender()
-        % Full (un-cropped) slice → ImageWin with zoom-rect overlay
+        % Full (un-cropped) slice → ImageWin with zoom-rect + position overlay
         slice2D_full = MatVisRender.renderFullSlice(model);
         gammaFull    = MatVisRender.applyGamma(slice2D_full, model.Gamma);
         rgbFull      = MatVisRender.applyColormap(gammaFull, model.ColormapIdx);
 
-        xr       = model.ZoomRange(model.XDim, :);
-        yr       = model.ZoomRange(model.YDim, :);
+        xd = model.XDim;  yd = model.YDim;
+        xr = model.ZoomRange(xd, :);
+        yr = model.ZoomRange(yd, :);
         zoomRect = [xr(1), yr(1), diff(xr), diff(yr)];
-        imageWin.Update(rgbFull, zoomRect);
+        posX = model.CurrPos(xd);
+        posY = model.CurrPos(yd);
+        imageWin.Update(rgbFull, zoomRect, posX, posY);
 
-        % Cropped (zoom-range) slice → ZoomWin
+        % Cropped (zoom-range) slice → ZoomWin with position overlay
         slice2D_zoom = MatVisRender.renderSlice(model);
         gammaZoom    = MatVisRender.applyGamma(slice2D_zoom, model.Gamma);
         rgbZoom      = MatVisRender.applyColormap(gammaZoom, model.ColormapIdx);
-        zoomWin.Update(rgbZoom);
+        posXLocal = posX - xr(1) + 1;
+        posYLocal = posY - yr(1) + 1;
+        zoomWin.Update(rgbZoom, posXLocal, posYLocal);
 
         % 1-D profiles for checked dimensions
         profiles = cell(1, nDims);
@@ -194,6 +205,11 @@ doRender();
         rangeSliders{yDim}.ZoomMin    = yRange(1);
         rangeSliders{yDim}.ZoomMax    = yRange(2);
         doRender();
+    end
+
+    function setOverlay(tf)
+        imageWin.SetOverlayVisible(tf);
+        zoomWin.SetOverlayVisible(tf);
     end
 
     function toggleWindow(win, isVisible)

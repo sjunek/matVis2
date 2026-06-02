@@ -24,6 +24,8 @@ classdef MatVisModel < handle
 
     properties (SetAccess = private)
         Size            % 1xN double -- size of Data (read-only)
+        DataMin  double % min of Data(:) — fixed at load time, not contrast setting
+        DataMax  double % max of Data(:) — fixed at load time
     end
 
     % ------------------------------------------------------------------
@@ -84,10 +86,12 @@ classdef MatVisModel < handle
         function set.Data(obj, value)
             validateattributes(value, {'numeric'}, {'nonempty'}, ...
                 'MatVisModel.set.Data', 'Data');
-            obj.Data = value;
-            obj.Size = size(value);
-            obj.ContrastMin = double(min(value(:)));
-            obj.ContrastMax = double(max(value(:)));
+            obj.Data    = value;
+            obj.Size    = size(value);
+            obj.DataMin = double(min(value(:)));
+            obj.DataMax = double(max(value(:)));
+            obj.ContrastMin = obj.DataMin;
+            obj.ContrastMax = obj.DataMax;
         end
 
         function set.XDim(obj, value)
