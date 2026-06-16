@@ -3,16 +3,21 @@ function args = parseArgs(data, varargin)
 %
 %   args = parseArgs(data)
 %   args = parseArgs(data, Name, Value, ...)
+%   args = parseArgs({data1,data2,...}, Name, Value, ...)
 %
 %   Required
-%     data          numeric array, non-empty
+%     data          numeric array, non-empty;
+%                   OR cell array of numeric arrays with identical dimensions
 %
 %   Name-Value pairs
 %     dimNames      cell of strings, length == ndims(data)
 %     dimUnits      cell of strings, length == ndims(data)
 %     dimScale      cell of numeric vectors, length == ndims(data)
+%     datasetNames  cell of strings, length == number of datasets
 %     matNames      cell of strings
-%     alphaMap      numeric array same size as data, or []
+%     alphaMap      numeric array same size as data (applied to every
+%                   dataset), or cell array with one map per dataset;
+%                   normalized to a 1×K cell array (empty if unused)
 %     colorBarLabel string
 %     startPar      cell of property-value pairs, e.g. {'gamma',0.8,'cmap',5}
 %     debug         logical scalar
@@ -21,13 +26,16 @@ p = inputParser;
 p.FunctionName = 'parseArgs';
 p.CaseSensitive = false;
 
-p.addRequired('data', @(x) validateattributes(x, {'numeric'}, {'nonempty'}, 'parseArgs', 'data'));
+p.addRequired('data', @(x) (isnumeric(x) && ~isempty(x)) || ...
+    (iscell(x) && ~isempty(x) && all(cellfun(@isnumeric, x(:)))));
 
 p.addParameter('dimNames',      {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('dimUnits',      {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('dimScale',      {}, @(x) iscell(x) && all(cellfun(@isnumeric, x)));
+p.addParameter('datasetNames',  {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('matNames',      {}, @(x) iscellstr(x) || isstring(x));
-p.addParameter('alphaMap',      [], @(x) isnumeric(x));
+p.addParameter('alphaMap',      {}, @(x) isnumeric(x) || ...
+    (iscell(x) && all(cellfun(@isnumeric, x(:)))));
 p.addParameter('colorBarLabel', '', @(x) ischar(x) || isstring(x));
 p.addParameter('startPar',      {}, @(x) iscell(x) && mod(numel(x), 2) == 0);
 p.addParameter('debug',       false, @(x) islogical(x) && isscalar(x));
@@ -35,13 +43,64 @@ p.addParameter('debug',       false, @(x) islogical(x) && isscalar(x));
 p.parse(data, varargin{:});
 r = p.Results;
 
-n = ndims(r.data);
+% Normalize data to cell array
+if isnumeric(r.data)
+    r.data = {r.data};
+end
+
+% Validate all datasets have identical dimensions
+refSz = size(r.data{1});
+for k = 2:numel(r.data)
+    if ~isequal(size(r.data{k}), refSz)
+        error('parseArgs:dimMismatch', ...
+            'All datasets must have identical dimensions. Dataset %d has size [%s] but dataset 1 has size [%s].', ...
+            k, num2str(size(r.data{k})), num2str(refSz));
+    end
+end
+
+n = ndims(r.data{1});
+K = numel(r.data);
 
 r.dimNames = padCellStr(r.dimNames, n, @(i) sprintf('Dim%d', i));
 r.dimUnits = padCellStr(r.dimUnits, n, @(i) '');
-r.dimScale = padCellVec(r.dimScale, n, r.data);
+r.dimScale = padCellVec(r.dimScale, n, r.data{1});
+
+% Dataset names — pad/generate as needed
+if isstring(r.datasetNames)
+    r.datasetNames = cellstr(r.datasetNames);
+end
+r.datasetNames = padCellStr(r.datasetNames, K, @(i) sprintf('Dataset %d', i));
 
 r.startPar = cellPairsToStruct(r.startPar);
+
+% Normalize alphaMap to a 1×K cell (one map per dataset).  A single
+% numeric map is shared across all datasets.  On size mismatch the maps
+% are ignored with a warning, matching the original matVis behaviour.
+if isempty(r.alphaMap)
+    r.alphaMap = {};
+else
+    if isnumeric(r.alphaMap)
+        maps = repmat({r.alphaMap}, 1, K);
+    else
+        maps = r.alphaMap(:)';
+        if numel(maps) == 1
+            maps = repmat(maps, 1, K);
+        end
+    end
+    ok = numel(maps) == K;
+    for k = 1:numel(maps)
+        ok = ok && isequal(size(maps{k}), refSz);
+    end
+    if ok
+        r.alphaMap = maps;
+    else
+        warning('parseArgs:alphaMapMismatch', ...
+            ['''alphaMap'' must match the data size [%s] ' ...
+             '(one map, or one per dataset). ''alphaMap'' ignored.'], ...
+            num2str(refSz));
+        r.alphaMap = {};
+    end
+end
 
 args = r;
 end
@@ -64,8 +123,7 @@ end
 end
 
 function out = padCellVec(c, n, data)
-% Ensure c is a row cell of numeric vectors with exactly n entries,
-% defaulting to a linearly-spaced 1:size(data,dim) vector per dimension.
+% Ensure c is a row cell of numeric vectors with exactly n entries.
 sz = size(data);
 out = cell(1, n);
 for i = 1:n
