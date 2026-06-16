@@ -1,10 +1,11 @@
-function iw = MatVisImageWin(model, zoomFromMouseFcn)
+function iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn)
 % MatVisImageWin  Full-image display + zoom indicator + position cross-hair.
 %
-%   iw = MatVisImageWin(model, zoomFromMouseFcn)
+%   iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn)
 %
-%   model            - MatVisModel handle
-%   zoomFromMouseFcn - @(xDim,xRange,yDim,yRange)  pass [] to disable
+%   model               - MatVisModel handle
+%   zoomFromMouseFcn    - @(xDim,xRange,yDim,yRange)  pass [] to disable
+%   positionFromMouseFcn- @(xDim,xPos,yDim,yPos)      pass [] to disable
 %
 %   iw.Update(rgbImg, zoomRect, posX, posY)
 %       rgbImg   : H×W×3 uint8 full-slice image
@@ -13,10 +14,21 @@ function iw = MatVisImageWin(model, zoomFromMouseFcn)
 %       posY     : CurrPos along YDim  (horizontal line at this row)
 %
 %   iw.SetOverlayVisible(tf)  — show/hide crop rect + position lines
+%
+% Mouse interactions:
+%   Left-drag on image    : rubber-band zoom selection
+%   Left-drag on posLineV : move vertical position line (changes X position)
+%   Left-drag on posLineH : move horizontal position line (changes Y position)
+%   Left-drag on crossing : move both position lines (2-D position update)
+%   Left-drag on zoom rect: pan the zoom rectangle
+%   Middle-click          : jump both positions to clicked location
+%   Right-click           : reset zoom to full range
+%   Scroll wheel          : zoom in/out centred on cursor
 
-if nargin < 2, zoomFromMouseFcn = []; end
+if nargin < 2, zoomFromMouseFcn     = []; end
+if nargin < 3, positionFromMouseFcn = []; end
 
-fig = uifigure('Name', 'Image Window', 'NumberTitle', 'off', 'MenuBar', 'none');
+fig = uifigure('Name', ['Image: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', 'MenuBar', 'none', 'Visible', 'off');
 
 ax = uiaxes(fig, 'Units', 'normalized', 'Position', [0 0 1 1]);
 disableDefaultInteractivity(ax);
@@ -51,15 +63,35 @@ selRect = rectangle(ax, 'Position', [1 1 1 1], ...
 selRect.HitTest      = 'off';
 selRect.PickableParts = 'none';
 
-dragStart = [];
+% ROI overlay (outlines + name labels) and temp drawing shape
+roiLines    = gobjects(1, 0);
+roiTexts    = gobjects(1, 0);
+tempRoiLine = line(ax, NaN, NaN, 'Color', [1 1 0], 'LineWidth', 1.2, ...
+    'LineStyle', '--', 'Visible', 'off');
+tempRoiLine.HitTest = 'off';  tempRoiLine.PickableParts = 'none';
 
-% --- Mouse callbacks (figure-level for reliability in uifigure) ---
-if ~isempty(zoomFromMouseFcn)
-    fig.WindowButtonDownFcn   = @onMouseDown;
-    fig.WindowButtonMotionFcn = @onMouseMove;
-    fig.WindowButtonUpFcn     = @onMouseUp;
-    fig.WindowScrollWheelFcn  = @onScrollWheel;
-end
+% State variables
+dragStart    = [];   % [x y] in data coords where drag began
+dragMode     = [];   % [] = none; string = 'posV','posH','pos2D','zoom','sel'
+currPosX     = NaN;  % last known X position (data coord)
+currPosY     = NaN;  % last known Y position (data coord)
+currZoomRect = [];   % [x1 y1 w h] of visible zoom rect, [] when hidden
+rectShown    = strcmp(initVis, 'on');  % rectHandle visibility state
+lastHW       = [NaN, NaN];             % last image size (skip redundant limit writes)
+
+% ROI interaction state
+roiMode     = '';    % '', 'rect', 'ellipse', 'poly', 'drag'
+roiCb       = [];    % @(phase, pts) — 'shape': pts = 2×N corners (data px);
+                     % 'start'/'move'/'end': pts = [x y]; 'exit': pts = []
+roiDragP0   = [];    % [x y] where shape/transform drag began
+roiPolyPts  = [];    % 2×N accumulated polygon vertices
+roiPolyDraw = false; % true while freehand-accumulating points
+
+% --- Mouse callbacks ---
+fig.WindowButtonDownFcn   = @onMouseDown;
+fig.WindowButtonMotionFcn = @onMouseMove;
+fig.WindowButtonUpFcn     = @onMouseUp;
+fig.WindowScrollWheelFcn  = @onScrollWheel;
 
 % --- Public interface ---
 iw.fig               = fig;
@@ -68,27 +100,57 @@ iw.imgHandle         = imgHandle;
 iw.rectHandle        = rectHandle;
 iw.Update            = @updateDisplay;
 iw.SetOverlayVisible = @setOverlayVisible;
+iw.SetRoiMode        = @setRoiMode;
 
 % -------------------------------------------------------------------------
     function updateDisplay(rgbImg, zoomRect, posX, posY)
+        % Only the image CData changes every frame — limits, crosshair and
+        % zoom rect are written only when their values actually change.
         if ~isvalid(fig), return; end
         set(imgHandle, 'CData', rgbImg);
         [H, W, ~] = size(rgbImg);
-        ax.XLim = [0.5, W + 0.5];
-        ax.YLim = [0.5, H + 0.5];
+        szChanged = ~isequal(lastHW, [H, W]);
+        if szChanged
+            lastHW  = [H, W];
+            ax.XLim = [0.5, W + 0.5];
+            ax.YLim = [0.5, H + 0.5];
+        end
 
-        % Zoom rectangle
+        % Store current position for hit-test
+        posChanged = false;
+        if nargin >= 4
+            posChanged = ~isequal([currPosX, currPosY], [posX, posY]);
+            currPosX = posX;
+            currPosY = posY;
+        end
+
+        % Zoom rectangle — hide when fully zoomed out
         if numel(zoomRect) == 4 && zoomRect(3) > 0 && zoomRect(4) > 0
-            set(rectHandle, 'Position', zoomRect, 'Visible', 'on');
+            xd_ = model.XDim;  yd_ = model.YDim;
+            fullZoom = model.ZoomRange(xd_,1) <= 1 && ...
+                       model.ZoomRange(xd_,2) >= model.Size(xd_) && ...
+                       model.ZoomRange(yd_,1) <= 1 && ...
+                       model.ZoomRange(yd_,2) >= model.Size(yd_);
+            if fullZoom
+                if rectShown, set(rectHandle, 'Visible', 'off'); rectShown = false; end
+                currZoomRect = [];
+            elseif ~isequal(currZoomRect, zoomRect) || ~rectShown
+                set(rectHandle, 'Position', zoomRect, 'Visible', 'on');
+                rectShown    = true;
+                currZoomRect = zoomRect;
+            end
         else
-            set(rectHandle, 'Visible', 'off');
+            if rectShown, set(rectHandle, 'Visible', 'off'); rectShown = false; end
+            currZoomRect = [];
         end
 
         % Position cross-hair
-        if nargin >= 4
+        if nargin >= 4 && (posChanged || szChanged)
             set(posLineV, 'XData', [posX posX], 'YData', [0.5, H + 0.5]);
             set(posLineH, 'XData', [0.5, W + 0.5], 'YData', [posY posY]);
         end
+
+        syncRoiOverlay();
     end
 
     function setOverlayVisible(tf)
@@ -96,49 +158,425 @@ iw.SetOverlayVisible = @setOverlayVisible;
         set(rectHandle, 'Visible', vis);
         set(posLineV,   'Visible', vis);
         set(posLineH,   'Visible', vis);
+        rectShown = logical(tf);
     end
 
-    function onMouseDown(~, ~)
+    % ---- ROI overlay ------------------------------------------------------
+    function syncRoiOverlay()
+        visIdx = model.VisibleRoiIndices();
+        n      = numel(visIdx);
+
+        % Grow / shrink the handle pools
+        for k = numel(roiLines)+1 : n
+            roiLines(k) = line(ax, NaN, NaN, 'HitTest', 'off', 'PickableParts', 'none');
+            roiTexts(k) = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
+                'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
+        end
+        for k = n+1 : numel(roiLines)
+            if isgraphics(roiLines(k)), delete(roiLines(k)); end
+            if isgraphics(roiTexts(k)), delete(roiTexts(k)); end
+        end
+        roiLines = roiLines(1:n);
+        roiTexts = roiTexts(1:n);
+        if n == 0, return; end
+
+        sel    = model.RoiSelection;
+        selVis = visIdx(ismember(visIdx, sel));
+        cols   = MatVisRender.roiColors(max(numel(selVis), 1));
+        lw     = max(model.RoiLineWidth, 0.5);
+
+        for k = 1:n
+            idx = visIdx(k);
+            c   = model.RoiList(idx).corners;
+            selPos = find(selVis == idx, 1);
+            if ~isempty(selPos)
+                col = cols(selPos, :);  w = lw;        fw = 'bold';
+            else
+                col = [1 1 1];          w = max(lw/2, 0.5);  fw = 'normal';
+            end
+            set(roiLines(k), 'XData', c(1,:), 'YData', c(2,:), ...
+                'Color', col, 'LineWidth', w, 'LineStyle', model.RoiLineStyle, ...
+                'Visible', 'on');
+            set(roiTexts(k), 'Position', [max(c(1,:)) + 1, mean(c(2,:))], ...
+                'String', model.RoiList(idx).name, 'Color', col, ...
+                'FontWeight', fw, 'Visible', onOff_(model.RoiShowNames));
+        end
+    end
+
+    % ---- ROI interaction mode ----------------------------------------------
+    function setRoiMode(mode, cb)
+        roiMode     = mode;
+        if nargin >= 2, roiCb = cb; else, roiCb = []; end
+        roiDragP0   = [];
+        roiPolyPts  = [];
+        roiPolyDraw = false;
+        tempRoiLine.Visible = 'off';
+        if isempty(roiMode)
+            fig.Pointer = 'arrow';
+        else
+            fig.Pointer = 'crosshair';
+        end
+    end
+
+    function emitRoi(phase, pts)
+        if ~isempty(roiCb)
+            roiCb(phase, pts);
+        end
+    end
+
+    function updateTempRoi(pts)
+        if isempty(pts)
+            tempRoiLine.Visible = 'off';
+        else
+            set(tempRoiLine, 'XData', pts(1,:), 'YData', pts(2,:), 'Visible', 'on');
+        end
+    end
+
+    function pts = shapeCorners(mode, p0, p1)
+        % Build closed polygon corners for rect/ellipse between two points.
+        x1 = round(min(p0(1), p1(1))) - 0.5;  x2 = round(max(p0(1), p1(1))) + 0.5;
+        y1 = round(min(p0(2), p1(2))) - 0.5;  y2 = round(max(p0(2), p1(2))) + 0.5;
+        if strcmp(mode, 'rect')
+            pts = [x1 x1 x2 x2 x1; y1 y2 y2 y1 y1];
+        else
+            cx = (x1 + x2) / 2;  cy = (y1 + y2) / 2;
+            w  = x2 - x1;        h  = y2 - y1;
+            nP = max(24, ceil(w + h));
+            t  = linspace(0, 2*pi, nP);
+            pts = [cx + w/2 * sin(t); cy + h/2 * cos(t)];
+            pts(:, end) = pts(:, 1);
+        end
+    end
+
+    function handled = roiMouseDown(src, x, y)
+        handled = ~isempty(roiMode);
+        if ~handled, return; end
+
+        if strcmp(src.SelectionType, 'alt')
+            % Right-click: finish polygon, or exit the ROI mode
+            if strcmp(roiMode, 'poly') && size(roiPolyPts, 2) >= 3
+                finishPoly();
+            else
+                updateTempRoi([]);
+                roiPolyPts = [];
+                emitRoi('exit', []);
+            end
+            return;
+        end
+
+        if strcmp(src.SelectionType, 'open')
+            % Double-click: finish polygon
+            if strcmp(roiMode, 'poly') && size(roiPolyPts, 2) >= 3
+                finishPoly();
+            end
+            return;
+        end
+
+        if ~strcmp(src.SelectionType, 'normal'), return; end
+
+        switch roiMode
+            case {'rect', 'ellipse'}
+                roiDragP0 = [x, y];
+            case 'poly'
+                roiPolyPts(:, end+1) = [x; y];
+                roiPolyDraw = true;
+                updateTempRoi(roiPolyPts);
+            case 'drag'
+                roiDragP0 = [x, y];
+                emitRoi('start', [x, y]);
+        end
+    end
+
+    function handled = roiMouseMove(x, y)
+        handled = ~isempty(roiMode);
+        if ~handled, return; end
+        x = clamp_(x, ax.XLim(1), ax.XLim(2));
+        y = clamp_(y, ax.YLim(1), ax.YLim(2));
+
+        switch roiMode
+            case {'rect', 'ellipse'}
+                if ~isempty(roiDragP0)
+                    updateTempRoi(shapeCorners(roiMode, roiDragP0, [x, y]));
+                end
+            case 'poly'
+                if roiPolyDraw
+                    % Freehand: accumulate while the button is held
+                    if isempty(roiPolyPts) || ...
+                       hypot(x - roiPolyPts(1,end), y - roiPolyPts(2,end)) > 0.5
+                        roiPolyPts(:, end+1) = [x; y];
+                    end
+                    updateTempRoi(roiPolyPts);
+                elseif ~isempty(roiPolyPts)
+                    % Rubber-band from last vertex to cursor
+                    updateTempRoi([roiPolyPts, [x; y]]);
+                end
+            case 'drag'
+                if ~isempty(roiDragP0)
+                    emitRoi('move', [x, y]);
+                end
+        end
+    end
+
+    function handled = roiMouseUp()
+        handled = ~isempty(roiMode);
+        if ~handled, return; end
+        pt = ax.CurrentPoint;
+        x  = clamp_(pt(1,1), ax.XLim(1), ax.XLim(2));
+        y  = clamp_(pt(1,2), ax.YLim(1), ax.YLim(2));
+
+        switch roiMode
+            case {'rect', 'ellipse'}
+                if ~isempty(roiDragP0)
+                    pts = shapeCorners(roiMode, roiDragP0, [x, y]);
+                    roiDragP0 = [];
+                    updateTempRoi([]);
+                    emitRoi('shape', pts);
+                end
+            case 'poly'
+                roiPolyDraw = false;
+            case 'drag'
+                if ~isempty(roiDragP0)
+                    roiDragP0 = [];
+                    emitRoi('end', [x, y]);
+                end
+        end
+    end
+
+    function finishPoly()
+        pts = roiPolyPts;
+        roiPolyPts  = [];
+        roiPolyDraw = false;
+        updateTempRoi([]);
+        % Remove consecutive duplicates, close polygon
+        keep = [true, any(diff(pts, 1, 2) ~= 0, 1)];
+        pts  = pts(:, keep);
+        if size(pts, 2) >= 3
+            pts(:, end+1) = pts(:, 1);
+            emitRoi('shape', pts);
+        end
+    end
+
+    % Return pixel-space thresholds converted to data coords
+    function [xt, yt] = getThresh()
+        axPos = getpixelposition(ax);
+        xt = 6 * diff(ax.XLim) / max(axPos(3), 1);
+        yt = 6 * diff(ax.YLim) / max(axPos(4), 1);
+    end
+
+    % Hit-test: what is under the cursor?
+    % Returns 'posV','posH','pos2D','zoom','sel'
+    % Priority: pos2D > zoom-rect interior > posV/posH > sel
+    % (zoom rect takes priority over individual lines so dragging the rect
+    %  works even when position lines cross through it)
+    function mode = hitTest(x, y)
+        mode = 'sel';
+        [xt, yt] = getThresh();
+        nearV = ~isnan(currPosX) && abs(x - currPosX) <= xt;
+        nearH = ~isnan(currPosY) && abs(y - currPosY) <= yt;
+
+        if nearV && nearH
+            mode = 'pos2D';  % crossing point: highest priority
+            return;
+        end
+
+        if ~isempty(currZoomRect)
+            zr = currZoomRect;
+            if x >= zr(1) && x <= zr(1)+zr(3) && y >= zr(2) && y <= zr(2)+zr(4)
+                mode = 'zoom';  % inside zoom rect: second priority
+                return;
+            end
+        end
+
+        % Position lines outside the zoom rect
+        if nearV
+            mode = 'posV';
+        elseif nearH
+            mode = 'posH';
+        end
+    end
+
+    function updateCursor(mode)
+        switch mode
+            case 'posV',  fig.Pointer = 'left';   % E-W drag
+            case 'posH',  fig.Pointer = 'top';    % N-S drag
+            case 'pos2D', fig.Pointer = 'fleur';  % four-way
+            case 'zoom',  fig.Pointer = 'hand';
+            otherwise,    fig.Pointer = 'arrow';
+        end
+    end
+
+    function onMouseDown(src, ~)
         pt = ax.CurrentPoint;
         x  = pt(1,1);  y = pt(1,2);
         xl = ax.XLim;  yl = ax.YLim;
-        if x >= xl(1) && x <= xl(2) && y >= yl(1) && y <= yl(2)
-            dragStart        = [x, y];
+        if x < xl(1) || x > xl(2) || y < yl(1) || y > yl(2), return; end
+
+        % ROI mode takes over all mouse interaction
+        if roiMouseDown(src, x, y), return; end
+
+        % Middle click: jump to position and start dragging
+        if strcmp(src.SelectionType, 'extend')
+            if ~isempty(positionFromMouseFcn)
+                xd = model.XDim;  yd = model.YDim;
+                positionFromMouseFcn(xd, clamp_(round(x), 1, model.Size(xd)), ...
+                                     yd, clamp_(round(y), 1, model.Size(yd)));
+            end
+            dragMode  = 'pos2D';
+            dragStart = [x, y];
+            updateCursor('pos2D');
+            return;
+        end
+
+        % Right-click: reset zoom to full range
+        if strcmp(src.SelectionType, 'alt')
+            if ~isempty(zoomFromMouseFcn)
+                xd = model.XDim;  yd = model.YDim;
+                zoomFromMouseFcn(xd, [1, model.Size(xd)], yd, [1, model.Size(yd)]);
+            end
+            return;
+        end
+
+        % Left-click: determine drag mode from hit-test
+        mode     = hitTest(x, y);
+        dragMode  = mode;
+        dragStart = [x, y];
+
+        if strcmp(mode, 'sel')
             selRect.Position = [x, y, 0.01, 0.01];
             selRect.Visible  = 'on';
+        end
+        updateCursor(mode);
+    end
+
+    function [val, alphaVal] = getPixelVal(px, py)
+        xd = model.XDim;  yd = model.YDim;
+        px = clamp_(round(px), 1, model.Size(xd));
+        py = clamp_(round(py), 1, model.Size(yd));
+        idx      = num2cell(model.CurrPos);
+        idx{xd}  = px;
+        idx{yd}  = py;
+        val = model.Data(idx{:});
+        alphaVal = [];
+        if model.WithAlpha
+            alphaVal = model.AlphaMaps{model.ActiveDataset}(idx{:});
+        end
+    end
+
+    function updateTitle(px, py)
+        baseName = ['Image: ' model.DatasetNames{model.ActiveDataset}];
+        if nargin == 0
+            fig.Name = baseName;
+        else
+            [val, alphaVal] = getPixelVal(px, py);
+            if isempty(alphaVal)
+                fig.Name = sprintf('%s - Values: %g / Pixel position: (%d,%d)', ...
+                    baseName, val, round(px), round(py));
+            else
+                fig.Name = sprintf('%s - Value: %g, alphaValue: %g / Pixel position: (%d,%d)', ...
+                    baseName, val, alphaVal, round(px), round(py));
+            end
         end
     end
 
     function onMouseMove(~, ~)
-        if isempty(dragStart), return; end
         pt = ax.CurrentPoint;
-        x2 = clamp_(pt(1,1), ax.XLim(1), ax.XLim(2));
-        y2 = clamp_(pt(1,2), ax.YLim(1), ax.YLim(2));
-        x1 = dragStart(1);  y1 = dragStart(2);
-        selRect.Position = [min(x1,x2), min(y1,y2), ...
-                            max(abs(x2-x1), 0.01), max(abs(y2-y1), 0.01)];
-    end
+        x  = pt(1,1);  y = pt(1,2);
 
-    function onMouseUp(~, ~)
-        if isempty(dragStart), return; end
-        pt        = ax.CurrentPoint;
-        x2        = pt(1,1);  y2 = pt(1,2);
-        x1        = dragStart(1);  y1 = dragStart(2);
-        dragStart = [];
-        selRect.Visible = 'off';
+        if roiMouseMove(x, y), return; end
 
-        xd   = model.XDim;  yd = model.YDim;
-        xMin = max(1, round(min(x1,x2)));
-        xMax = min(model.Size(xd), round(max(x1,x2)));
-        yMin = max(1, round(min(y1,y2)));
-        yMax = min(model.Size(yd), round(max(y1,y2)));
-        if xMax > xMin && yMax > yMin
-            zoomFromMouseFcn(xd, [xMin, xMax], yd, [yMin, yMax]);
+        if isempty(dragMode)
+            % Hover only: update cursor based on what's under the mouse
+            xl = ax.XLim;  yl = ax.YLim;
+            if x >= xl(1) && x <= xl(2) && y >= yl(1) && y <= yl(2)
+                updateCursor(hitTest(x, y));
+                updateTitle(x, y);
+            else
+                fig.Pointer = 'arrow';
+                updateTitle();
+            end
+            return;
+        end
+
+        % Active drag
+        x2 = clamp_(x, ax.XLim(1), ax.XLim(2));
+        y2 = clamp_(y, ax.YLim(1), ax.YLim(2));
+        updateTitle(x2, y2);
+
+        switch dragMode
+            case 'posV'
+                if ~isempty(positionFromMouseFcn)
+                    xd = model.XDim;  yd = model.YDim;
+                    newX = clamp_(round(x2), 1, model.Size(xd));
+                    positionFromMouseFcn(xd, newX, yd, round(currPosY));
+                end
+
+            case 'posH'
+                if ~isempty(positionFromMouseFcn)
+                    xd = model.XDim;  yd = model.YDim;
+                    newY = clamp_(round(y2), 1, model.Size(yd));
+                    positionFromMouseFcn(xd, round(currPosX), yd, newY);
+                end
+
+            case 'pos2D'
+                if ~isempty(positionFromMouseFcn)
+                    xd = model.XDim;  yd = model.YDim;
+                    newX = clamp_(round(x2), 1, model.Size(xd));
+                    newY = clamp_(round(y2), 1, model.Size(yd));
+                    positionFromMouseFcn(xd, newX, yd, newY);
+                end
+
+            case 'zoom'
+                % Pan the zoom rectangle
+                if ~isempty(zoomFromMouseFcn)
+                    dx = x2 - dragStart(1);
+                    dy = y2 - dragStart(2);
+                    dragStart = [x2, y2];  % incremental
+                    xd = model.XDim;  yd = model.YDim;
+                    zr = model.ZoomRange(xd, :);
+                    yr = model.ZoomRange(yd, :);
+                    zw = diff(zr);  zh = diff(yr);
+                    xSz = model.Size(xd);  ySz = model.Size(yd);
+                    newX1 = round(clamp_(zr(1) + dx, 1, max(1, xSz - zw)));
+                    newY1 = round(clamp_(yr(1) + dy, 1, max(1, ySz - zh)));
+                    newX2 = min(xSz, newX1 + zw);
+                    newY2 = min(ySz, newY1 + zh);
+                    if newX2 > newX1 && newY2 > newY1
+                        zoomFromMouseFcn(xd, [newX1, newX2], yd, [newY1, newY2]);
+                    end
+                end
+
+            case 'sel'
+                x1 = dragStart(1);  y1 = dragStart(2);
+                selRect.Position = [min(x1,x2), min(y1,y2), ...
+                                    max(abs(x2-x1), 0.01), max(abs(y2-y1), 0.01)];
         end
     end
 
+    function onMouseUp(~, ~)
+        if roiMouseUp(), return; end
+        if isempty(dragMode), return; end
+
+        if strcmp(dragMode, 'sel') && ~isempty(zoomFromMouseFcn)
+            pt = ax.CurrentPoint;
+            x2 = pt(1,1);  y2 = pt(1,2);
+            x1 = dragStart(1);  y1 = dragStart(2);
+            selRect.Visible = 'off';
+            xd   = model.XDim;  yd = model.YDim;
+            xMin = max(1, round(min(x1,x2)));
+            xMax = min(model.Size(xd), round(max(x1,x2)));
+            yMin = max(1, round(min(y1,y2)));
+            yMax = min(model.Size(yd), round(max(y1,y2)));
+            if xMax > xMin && yMax > yMin
+                zoomFromMouseFcn(xd, [xMin, xMax], yd, [yMin, yMax]);
+            end
+        end
+
+        dragMode  = [];
+        dragStart = [];
+        fig.Pointer = 'arrow';
+    end
+
     function onScrollWheel(~, evt)
-        % Scroll up (negative count) = zoom in, scroll down = zoom out
         factor = 1.25 ^ evt.VerticalScrollCount;  % >1 = zoom out
         pt = ax.CurrentPoint;
         cx = clamp_(pt(1,1), ax.XLim(1), ax.XLim(2));
@@ -155,7 +593,7 @@ iw.SetOverlayVisible = @setOverlayVisible;
         xMax = min(model.Size(xd), round(cx + xHalf));
         yMin = max(1, round(cy - yHalf));
         yMax = min(model.Size(yd), round(cy + yHalf));
-        if xMax > xMin && yMax > yMin
+        if xMax > xMin && yMax > yMin && ~isempty(zoomFromMouseFcn)
             zoomFromMouseFcn(xd, [xMin, xMax], yd, [yMin, yMax]);
         end
     end
