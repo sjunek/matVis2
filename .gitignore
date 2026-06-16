@@ -1,0 +1,15 @@
+# --- Sample / test data (too large for GitHub; regenerate or fetch locally) ---
+*.tif
+*.tiff
+*.mat
+
+# --- MATLAB autosave / temp ---
+*.asv
+*.m~
+slprj/
+
+# --- Claude Code agent worktrees & local session state ---
+.claude/
+
+# --- ImageJ/Maven build artifacts ---
+imagej-plugin/target/
