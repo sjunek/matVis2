@@ -12,7 +12,7 @@ classdef parseArgsTest < matlab.unittest.TestCase
         function testBasicCall(tc)
             d = rand(4, 5, 3);
             args = parseArgs(d);
-            tc.verifyEqual(args.data, d);
+            tc.verifyEqual(args.data, {d});   % data is normalized to a 1×K cell
             tc.verifyEqual(args.dimNames, {'Dim1','Dim2','Dim3'});
             tc.verifyEqual(args.dimUnits, {'','',''});
             tc.verifyEqual(numel(args.dimScale), 3);
@@ -43,7 +43,7 @@ classdef parseArgsTest < matlab.unittest.TestCase
             tc.verifyEqual(args.dimScale{1}, 0:2);
             tc.verifyEqual(args.dimScale{2}, 0:3);
             tc.verifyEqual(args.matNames, {'myData'});
-            tc.verifyEqual(args.alphaMap, alpha);
+            tc.verifyEqual(args.alphaMap, {alpha});
             tc.verifyEqual(args.colorBarLabel, 'Intensity');
             tc.verifyEqual(args.startPar.gamma, 0.8);
             tc.verifyEqual(args.startPar.cmap, 5);
@@ -107,6 +107,36 @@ classdef parseArgsTest < matlab.unittest.TestCase
         function testDebugDefault(tc)
             args = parseArgs(ones(3));
             tc.verifyFalse(args.debug);
+        end
+
+        function testAlphaMapSharedAcrossDatasets(tc)
+            % A single numeric map is replicated for every dataset
+            d1 = rand(3, 4);  d2 = rand(3, 4);
+            alpha = rand(3, 4);
+            args = parseArgs({d1, d2}, 'alphaMap', alpha);
+            tc.verifyEqual(args.alphaMap, {alpha, alpha});
+        end
+
+        function testAlphaMapPerDataset(tc)
+            d1 = rand(3, 4);  d2 = rand(3, 4);
+            a1 = rand(3, 4);  a2 = rand(3, 4);
+            args = parseArgs({d1, d2}, 'alphaMap', {a1, a2});
+            tc.verifyEqual(args.alphaMap, {a1, a2});
+        end
+
+        function testAlphaMapSizeMismatchIgnored(tc)
+            d = rand(3, 4);
+            args = tc.verifyWarning(@() parseArgs(d, 'alphaMap', rand(2, 2)), ...
+                'parseArgs:alphaMapMismatch');
+            tc.verifyEmpty(args.alphaMap);
+        end
+
+        function testAlphaMapCountMismatchIgnored(tc)
+            d1 = rand(3, 4);  d2 = rand(3, 4);
+            args = tc.verifyWarning( ...
+                @() parseArgs({d1, d2}, 'alphaMap', {rand(3,4), rand(3,4), rand(3,4)}), ...
+                'parseArgs:alphaMapMismatch');
+            tc.verifyEmpty(args.alphaMap);
         end
 
     end
