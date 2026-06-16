@@ -1,8 +1,9 @@
 function test_playspeed()
 % Smoke test for playback framerate display + play-speed control.
-% Verifies the main window builds with the new play-speed row, that the
-% framerate readout appears in the title during playback, that positive
-% speeds skip frames, and that the title resets to the base name on stop.
+% Verifies the main window builds with the play-speed row, that the framerate
+% readout appears in the label next to the control during playback, that
+% speed > 1 skips frames, speed in (0,1) slows via pauses, and that the
+% framerate label clears on stop (window title always shows the dataset name).
 
 baseDir = fileparts(fileparts(mfilename('fullpath')));
 addpath(fullfile(baseDir, 'core'));
@@ -24,47 +25,57 @@ assert(contains(mw.fig.Name, 'SmokeSet'), ...
 baseTitle = mw.fig.Name;
 fprintf('Base title OK: "%s"\n', baseTitle);
 
-% Locate the play-speed edit field in the figure
+% Title always shows the dataset name (no framerate appended)
+assert(contains(baseTitle, 'matVis 2.0'), 'unexpected base title: "%s"', baseTitle);
+
+% Locate the play-speed edit field and the framerate label in the figure
 edt = findPlaySpeedField(mw.fig);
 assert(~isempty(edt), 'Play speed edit field not found in main window');
-fprintf('Play speed field found (value=%g)\n', edt.Value);
+lblFps = findall(mw.fig, 'Type', 'uilabel', 'Tag', 'matVisFrameRate');
+assert(~isempty(lblFps), 'framerate label not found in main window');
+lblFps = lblFps(1);
+assert(edt.Value == 1, 'default play speed should be 1 (native), got %g', edt.Value);
+fprintf('Play speed field (value=%g) and framerate label found\n', edt.Value);
 
-% --- 1) Positive speed: frame skipping, "Skip every X frame" in title ----
-edt.Value = 1;                       % -> advance every 2 frames
+% --- 1) Speed > 1: frame skipping, "skip every X frames" in the label ----
+edt.Value = 2;                       % -> advance every 2 frames
 rs3 = mw.rangeSliders{3};            % play along dim 3
 rs3.IsPlaying = true;
 rs3.SetPlayMode('full');             % sets PlayMode + fires PlayModeChanged
 
 drawnow; pause(0.8); drawnow;         % let the timer tick several times
-nameDuringSkip = mw.fig.Name;
-fprintf('Title during skip play: "%s"\n', nameDuringSkip);
-assert(contains(nameDuringSkip, 'fps:'), 'fps readout missing during playback');
-assert(contains(nameDuringSkip, 'Skip every 2 frame'), ...
-    'frame-skip indicator missing: "%s"', nameDuringSkip);
+fpsDuringSkip = lblFps.Text;
+fprintf('Framerate label during skip play: "%s"\n', fpsDuringSkip);
+assert(contains(fpsDuringSkip, 'fps'), 'fps readout missing during playback');
+assert(contains(fpsDuringSkip, 'skip every 2 frames'), ...
+    'frame-skip indicator missing: "%s"', fpsDuringSkip);
+% Title must NOT carry framerate info
+assert(strcmp(mw.fig.Name, baseTitle), ...
+    'title should not change during playback: "%s"', mw.fig.Name);
 
-% Stop and confirm title resets
+% Stop and confirm the label clears
 rs3.IsPlaying = false;
 rs3.SetPlayMode('none');
 drawnow; pause(0.2); drawnow;
-assert(strcmp(mw.fig.Name, baseTitle), ...
-    'title not reset after stop: "%s"', mw.fig.Name);
-fprintf('Title reset after stop OK\n');
+assert(isempty(char(lblFps.Text)), ...
+    'framerate label not cleared after stop: "%s"', lblFps.Text);
+fprintf('Framerate label cleared after stop OK\n');
 
-% --- 2) Negative speed: pause indicator in title ------------------------
-edt.Value = -5;                      % -> 0.25 s pause between frames
+% --- 2) Speed in (0,1): slowed playback, pause indicator in the label ----
+edt.Value = 0.5;                     % -> half native speed, pause introduced
 rs3.IsPlaying = true;
 rs3.SetPlayMode('full');
 drawnow; pause(1.2); drawnow;
-nameDuringPause = mw.fig.Name;
-fprintf('Title during paused play: "%s"\n', nameDuringPause);
-assert(contains(nameDuringPause, 'fps:'), 'fps readout missing (pause mode)');
-assert(contains(nameDuringPause, 'pause'), ...
-    'pause indicator missing: "%s"', nameDuringPause);
+fpsDuringSlow = lblFps.Text;
+fprintf('Framerate label during slowed play: "%s"\n', fpsDuringSlow);
+assert(contains(fpsDuringSlow, 'fps'), 'fps readout missing (slow mode)');
+assert(contains(fpsDuringSlow, 'pause'), ...
+    'pause indicator missing: "%s"', fpsDuringSlow);
 
 rs3.IsPlaying = false;
 rs3.SetPlayMode('none');
 drawnow; pause(0.2); drawnow;
-assert(strcmp(mw.fig.Name, baseTitle), 'title not reset after paused stop');
+assert(isempty(char(lblFps.Text)), 'framerate label not cleared after slow stop');
 
 fprintf('\nALL PLAYSPEED TESTS PASSED\n');
 end

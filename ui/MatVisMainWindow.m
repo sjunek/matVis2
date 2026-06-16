@@ -26,8 +26,8 @@ mvTiming_ = struct('labels', {{}}, 'times', []);
 mvT0_     = tic;
 
 %% Figure setup
-% Base window title — dataset name(s) shown here; framerate info is appended
-% behind it during playback (see updatePlayTitle).
+% Window title shows the dataset name(s). The live playback framerate is shown
+% in a label next to the play-speed control (see updateFrameRateDisplay).
 if isempty(model.DatasetNames)
     baseTitle = 'matVis 2.0';
 else
@@ -84,7 +84,7 @@ rangeSliders = cell(1, nDims);
 playTimers   = cell(1, nDims);
 playModes    = cell(1, nDims);
 isPlayingAny = false;        % true while any play timer runs (gates hist updates)
-% --- Playback speed / framerate state (see playSpeedParams, updatePlayTitle) ---
+% --- Playback speed / framerate state (see playSpeedParams, updateFrameRateDisplay) ---
 basePeriod  = 0.06;          % timer period at speed 0 (preserves prior default ~16 fps)
 playInc     = 1;             % frames advanced per tick (frame skipping when >1)
 playTimeBuf = nan(1, 10);    % circular buffer of tick timestamps for fps estimate
@@ -126,27 +126,35 @@ plotFixY      = false;
 plotFixYLimits = [0, 1];   % overwritten on first fix-Y activation
 
 % --- Play-speed control row (above the Y-scale / Export plot buttons) -------
-playSpeedRow = uigridlayout(posGrid, [1, 2]);
+%  Controls sit on the left; the live playback framerate is shown to their right.
+playSpeedRow = uigridlayout(posGrid, [1, 3]);
 playSpeedRow.Layout.Row    = nDims + 1;
 playSpeedRow.Layout.Column = 1;
-playSpeedRow.ColumnWidth   = {'1x', 70};
+playSpeedRow.ColumnWidth   = {75, 60, '1x'};
 playSpeedRow.RowHeight     = {'1x'};
 playSpeedRow.Padding       = [2 1 2 1];
-playSpeedRow.ColumnSpacing = 4;
+playSpeedRow.ColumnSpacing = 6;
 
 lblPlaySpeed = uilabel(playSpeedRow, 'Text', 'Play speed:', ...
-    'HorizontalAlignment', 'right', 'FontSize', 11);
+    'HorizontalAlignment', 'left', 'FontSize', 11);
 lblPlaySpeed.Layout.Column = 1;
 
-playSpeedTooltip = sprintf(['Speed of playback (current framerate is shown in the main window title).\n' ...
-    'Positive values: faster playback by skipping frames (advance every X frames).\n' ...
-    'Negative values: slower playback by introducing pauses.']);
+playSpeedTooltip = sprintf(['Speed of playback (live framerate shown to the right).\n' ...
+    '1 = native speed (no pause, no skipping).\n' ...
+    'Values > 1: faster playback by skipping frames (advance round(value) frames).\n' ...
+    'Values between 0 and 1: slower playback by introducing pauses.']);
 edtPlaySpeed = uieditfield(playSpeedRow, 'numeric', ...
-    'Value', 0, 'Limits', [-50, 50], 'RoundFractionalValues', true, ...
-    'ValueDisplayFormat', '%d', 'FontSize', 11, ...
+    'Value', 1, 'Limits', [0.1, 50], 'RoundFractionalValues', false, ...
+    'ValueDisplayFormat', '%g', 'FontSize', 11, ...
     'Tooltip', playSpeedTooltip, ...
     'ValueChangedFcn', @(~, ~) onPlaySpeedChanged());
 edtPlaySpeed.Layout.Column = 2;
+
+lblFrameRate = uilabel(playSpeedRow, 'Text', '', ...
+    'HorizontalAlignment', 'left', 'FontSize', 11, ...
+    'Tag', 'matVisFrameRate', ...
+    'Tooltip', 'Measured playback framerate');
+lblFrameRate.Layout.Column = 3;
 
 plotBtnRow = uigridlayout(posGrid, [1, 5]);
 plotBtnRow.Layout.Row    = nDims + 2;
@@ -1522,27 +1530,27 @@ fprintf('\n');
             isPlayingAny = any(cellfun(@(tt) ~isempty(tt) && isvalid(tt), playTimers));
             % Histogram/contrast fields were skipped during playback — refresh once
             if ~isPlayingAny
-                fig.Name = baseTitle;   % drop the framerate readout from the title
+                lblFrameRate.Text = '';   % clear the framerate readout
                 doRender();
             end
         end
     end
 
-    % Map the play-speed setting to a frame increment and an inter-frame pause,
-    % following the original matVis convention:
-    %   positive speed  -> faster: skip frames (advance every inc = speed+1 frames)
-    %   negative speed  -> slower: pause (speed/10)^2 seconds between frames
+    % Map the play-speed setting to a frame increment and an inter-frame pause.
+    % The setting is a speed multiplier relative to native playback:
+    %   value == 1     -> native: advance one frame per tick, no pause
+    %   value  > 1     -> faster: skip frames (advance round(value) frames per tick)
+    %   0 < value < 1  -> slower: pause so the tick period becomes basePeriod/value
     function [inc, ps] = playSpeedParams()
-        s = 0;
+        v = 1;
         if exist('edtPlaySpeed', 'var') && ~isempty(edtPlaySpeed) && isvalid(edtPlaySpeed)
-            s = round(edtPlaySpeed.Value);
+            v = edtPlaySpeed.Value;
         end
-        if s > 0
-            inc = s + 1; ps = 0;
-        elseif s < 0
-            inc = 1;     ps = (s / 10)^2;
+        if ~(v > 0), v = 1; end          % guard against invalid / non-positive
+        if v >= 1
+            inc = max(1, round(v)); ps = 0;
         else
-            inc = 1;     ps = 0;
+            inc = 1;                ps = basePeriod * (1 / v - 1);
         end
     end
 
@@ -1567,22 +1575,21 @@ fprintf('\n');
         playTic     = tic;
     end
 
-    % Update the framerate readout in the window title from the tick timestamps.
-    function updatePlayTitle()
+    % Update the framerate readout shown next to the play-speed control, from
+    % the tick timestamps.
+    function updateFrameRateDisplay()
         playCt = playCt + 1;
         playTimeBuf(mod(playCt - 1, 10) + 1) = toc(playTic);
         d = diff(sort(playTimeBuf));
         if ~any(~isnan(d)), return; end
         fps = 1 / mean(d, 'omitnan');
-        s   = round(edtPlaySpeed.Value);
-        if s > 0
-            fig.Name = sprintf('%s    fps: %.2f / %.2f (Skip every %d frame)', ...
-                baseTitle, fps, playInc * fps, playInc);
-        elseif s < 0
-            fig.Name = sprintf('%s    fps: %.2f (%g s pause)', ...
-                baseTitle, fps, (s / 10)^2);
+        [inc, ps] = playSpeedParams();
+        if inc > 1
+            lblFrameRate.Text = sprintf('%.1f fps  (skip every %d frames)', fps, inc);
+        elseif ps > 0
+            lblFrameRate.Text = sprintf('%.1f fps  (%.2g s pause)', fps, ps);
         else
-            fig.Name = sprintf('%s    fps: %.2f', baseTitle, fps);
+            lblFrameRate.Text = sprintf('%.1f fps', fps);
         end
     end
 
@@ -1593,7 +1600,7 @@ fprintf('\n');
         model.CurrPos(dimIdx)      = nxt;
         rangeSliders{dimIdx}.Value = nxt;
         doRender();
-        updatePlayTitle();
+        updateFrameRateDisplay();
         drawnow limitrate;
     end
 
@@ -1605,7 +1612,7 @@ fprintf('\n');
         model.CurrPos(dimIdx)      = nxt;
         rangeSliders{dimIdx}.Value = nxt;
         doRender();
-        updatePlayTitle();
+        updateFrameRateDisplay();
         drawnow limitrate;
     end
 
@@ -1621,7 +1628,7 @@ fprintf('\n');
         model.CurrPos(dimIdx)        = newZMin;
         rangeSliders{dimIdx}.Value   = newZMin;
         doRender();
-        updatePlayTitle();
+        updateFrameRateDisplay();
         drawnow limitrate;
     end
 
@@ -1928,6 +1935,10 @@ fprintf('\n');
             snapRoi = [];
         end
 
+        % Load the .NET assembly used by mouseButtonsDown() once, here (off
+        % the per-frame motion path).  Harmless / no-op on non-Windows.
+        try; NET.addAssembly('System.Windows.Forms'); catch; end
+
         setappdata(fig, 'DragMoveActive',    true);
         setappdata(fig, 'DragMoveP1',        p1);
         setappdata(fig, 'DragMoveSnapMain',  snapMain);
@@ -1942,6 +1953,14 @@ fprintf('\n');
 
     function onDragMove()
         if ~isequal(getappdata(fig, 'DragMoveActive'), true), return; end
+
+        % Safety net: a uifigure can drop the button-up event when the window
+        % is repositioned mid-drag, leaving the move mode "stuck".  If the OS
+        % reports no mouse button pressed, exit immediately.
+        if ~mouseButtonsDown()
+            stopDragMove();
+            return;
+        end
 
         p1    = getappdata(fig, 'DragMoveP1');
         p2    = get(0, 'PointerLocation');
@@ -1969,6 +1988,19 @@ fprintf('\n');
         setappdata(fig, 'DragMoveActive', false);
         fig.Pointer = 'arrow';
         fig.WindowButtonUpFcn = '';
+    end
+
+    function tf = mouseButtonsDown()
+        % True if any mouse button is currently pressed (queried at OS level).
+        % Used so the middle-drag window-move can't get stuck if the figure
+        % drops the button-up event.  Windows-only via .NET; defaults to true
+        % elsewhere so behaviour falls back to WindowButtonUpFcn as before.
+        tf = true;
+        try
+            tf = double(System.Windows.Forms.Control.MouseButtons) ~= 0;
+        catch
+            tf = true;
+        end
     end
 
     function tf = isMouseInHistogram()
