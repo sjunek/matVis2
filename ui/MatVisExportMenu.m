@@ -1,0 +1,82 @@
+function MatVisExportMenu(fig, ax, dataFcn, defaultVarName, defaultFileName)
+% MatVisExportMenu  Double-click action menu for image / zoom / plot content.
+%
+%   MatVisExportMenu(fig, ax, dataFcn, defaultVarName, defaultFileName)
+%
+%   Presents the user with a choice of:
+%     Copy                – copy the current content of `ax` to the system
+%                           clipboard as an image (copygraphics).
+%     Export to workspace – assign dataFcn() to a base-workspace variable.
+%     Save as image...    – write the content of `ax` to an image file
+%                           (exportgraphics: png/jpg/tif/pdf).
+%
+%   fig             - parent uifigure (anchors the dialogs)
+%   ax             - axes whose visible content is copied / saved
+%   dataFcn        - @() returning the variable pushed to the workspace
+%                    (e.g. the displayed RGB image, or the plotted traces)
+%   defaultVarName - suggested base-workspace variable name
+%   defaultFileName- suggested file name for "Save as image..."
+
+if nargin < 4 || isempty(defaultVarName),  defaultVarName  = 'matVisData'; end
+if nargin < 5 || isempty(defaultFileName), defaultFileName = 'matVisImage.png'; end
+
+sel = uiconfirm(fig, ...
+    'Choose an action for the current content:', 'matVis', ...
+    'Options', {'Copy', 'Export to workspace', 'Save as image...', 'Cancel'}, ...
+    'DefaultOption', 1, 'CancelOption', 4);
+
+switch sel
+    case 'Copy'
+        copyToClipboard(fig, ax);
+    case 'Export to workspace'
+        exportToWorkspace(fig, dataFcn, defaultVarName);
+    case 'Save as image...'
+        saveAsImage(fig, ax, defaultFileName);
+end
+
+end % MatVisExportMenu
+
+% -------------------------------------------------------------------------
+function copyToClipboard(fig, ax)
+    try
+        copygraphics(ax, 'BackgroundColor', 'current');
+    catch me
+        uialert(fig, sprintf('Copy failed: %s', me.message), 'matVis');
+    end
+end
+
+% -------------------------------------------------------------------------
+function exportToWorkspace(fig, dataFcn, defaultName)
+    answer = inputdlg('Workspace variable name:', 'Export to workspace', ...
+                      1, {defaultName});
+    if isempty(answer), return; end
+    varName = strtrim(answer{1});
+    if ~isvarname(varName)
+        uialert(fig, 'Invalid variable name.', 'Export to workspace');
+        return;
+    end
+    try
+        data = dataFcn();
+        assignin('base', varName, data);
+        fprintf('[matVis] Exported to workspace variable "%s"\n', varName);
+    catch me
+        uialert(fig, sprintf('Export failed: %s', me.message), 'Export to workspace');
+    end
+end
+
+% -------------------------------------------------------------------------
+function saveAsImage(fig, ax, defaultFile)
+    filters = { ...
+        '*.png', 'PNG image (*.png)'; ...
+        '*.jpg', 'JPEG image (*.jpg)'; ...
+        '*.tif', 'TIFF image (*.tif)'; ...
+        '*.pdf', 'PDF (*.pdf)'};
+    [fn, fp] = uiputfile(filters, 'Save as image', defaultFile);
+    if isequal(fn, 0), return; end
+    try
+        exportgraphics(ax, fullfile(fp, fn));
+        fprintf('[matVis] Saved current content to "%s"\n', fullfile(fp, fn));
+    catch me
+        uialert(fig, sprintf('Save failed: %s', me.message), 'Save as image');
+    end
+end

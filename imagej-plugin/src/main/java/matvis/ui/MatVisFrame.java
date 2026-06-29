@@ -170,6 +170,15 @@ public class MatVisFrame extends JFrame implements MatVisListener {
         fldPlotMin.addActionListener(applyPlotScale);
         fldPlotMax.addActionListener(applyPlotScale);
 
+        // Plot local-averaging mode (single pixel / 3×3 / 5×5 / full zoom region)
+        final JComboBox<String> cmbPlotAvg =
+                new JComboBox<>(MatVisController.PLOT_AVG_NAMES);
+        cmbPlotAvg.setSelectedIndex(ctrl.getPlotAvgMode());
+        cmbPlotAvg.setFont(cmbPlotAvg.getFont().deriveFont(10f));
+        cmbPlotAvg.setToolTipText("Plot value source: single pixel, or local mean over a "
+                + "3×3 / 5×5 neighborhood or the full zoom region around the crosshair");
+        cmbPlotAvg.addActionListener(e -> ctrl.setPlotAvgMode(cmbPlotAvg.getSelectedIndex()));
+
         // ROI controls
         final JToggleButton btnShowRois = new JToggleButton("ROIs", ctrl.isShowRois());
         btnShowRois.setFont(btnShowRois.getFont().deriveFont(10f));
@@ -210,6 +219,8 @@ public class MatVisFrame extends JFrame implements MatVisListener {
         toolbar.add(fldPlotMin);
         toolbar.add(new JLabel("Max:"));
         toolbar.add(fldPlotMax);
+        toolbar.add(new JLabel("   Plot avg:"));
+        toolbar.add(cmbPlotAvg);
         toolbar.add(new JLabel("   ROI:"));
         toolbar.add(btnShowRois);
         toolbar.add(btnDrawRoi);

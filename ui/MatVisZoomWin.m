@@ -17,6 +17,7 @@ function zw = MatVisZoomWin(model, zoomFromMouseFcn, positionFromMouseFcn)
 %   Left-drag elsewhere   : rubber-band zoom selection (sub-zoom)
 %   Middle-click          : jump both positions to clicked location
 %   Right-click           : reset zoom to full range
+%   Double-click          : copy / export to workspace / save current crop
 %   Scroll wheel          : zoom in/out centred on cursor
 
 if nargin < 2, zoomFromMouseFcn     = []; end
@@ -25,12 +26,20 @@ if nargin < 3, positionFromMouseFcn = []; end
 fig = uifigure('Name', ['Zoom: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', ...
                'Resize', 'on', 'AutoResizeChildren', 'off', 'Visible', 'off');
 
-ax = uiaxes('Parent', fig, 'Units', 'normalized', 'Position', [0 0 1 1]);
+% No rulers or labels: the cropped image fills the whole figure. uiaxes
+% otherwise reserves a margin on every side, so we pin the *inner* position
+% to the full figure — the image then touches the edges and the only empty
+% space is the single-axis letterbox from the data aspect ratio (drawn in
+% the default figure colour).
+ax = uiaxes('Parent', fig, 'Units', 'normalized');
 disableDefaultInteractivity(ax);
+try; ax.Toolbar.Visible = 'off'; catch; end
 axis(ax, 'image');
-ax.XTick = []; ax.YTick = [];
-ax.XColor = 'none'; ax.YColor = 'none';
-ax.Color  = [0 0 0];
+axis(ax, 'off');
+ax.Color              = 'none';
+ax.PositionConstraint = 'innerposition';
+ax.InnerPosition      = [0 0 1 1];
+applyAspectRatio(model.AspectRatioFixed, model.AspectRatio);
 
 imgHandle = image(ax, zeros(1, 1, 3, 'uint8'));
 imgHandle.Visible       = 'off';
@@ -57,12 +66,19 @@ tempRoiLine = line(ax, NaN, NaN, 'Color', [1 1 0], 'LineWidth', 1.2, ...
     'LineStyle', '--', 'Visible', 'off');
 tempRoiLine.HitTest = 'off';  tempRoiLine.PickableParts = 'none';
 
+% Profile overlay (centerline, width band, direction arrow, name label)
+profLines  = gobjects(1, 0);
+profBands  = gobjects(1, 0);
+profArrows = gobjects(1, 0);
+profTexts  = gobjects(1, 0);
+
 % State variables
 dragStart  = [];   % [x y] in local (zoomed) data coords
 dragMode   = [];   % [] = none; string = 'posV','posH','pos2D','sel'
 currPosXL  = NaN;  % current X position in local coords
 currPosYL  = NaN;  % current Y position in local coords
 lastHW     = [NaN, NaN];  % last image size (skip redundant limit writes)
+lastTickSig = [];  % signature for axis-scale ticks (skip redundant writes)
 
 % ROI interaction state (all positions kept in LOCAL coords; callbacks
 % receive DATA coords)
@@ -83,6 +99,7 @@ zw.imgHandle         = imgHandle;
 zw.Update            = @updateImage;
 zw.SetOverlayVisible = @setOverlayVisible;
 zw.SetRoiMode        = @setRoiMode;
+zw.SetAspectRatio    = @applyAspectRatio;
 
 % -------------------------------------------------------------------------
     function updateImage(rgbImg, posXLocal, posYLocal)
@@ -99,6 +116,17 @@ zw.SetRoiMode        = @setRoiMode;
         end
         if strcmp(imgHandle.Visible, 'off')
             imgHandle.Visible = 'on';
+        end
+
+        % Zoom rulers: data index == local pixel + (ZoomRange start - 1).
+        % Re-label when the crop extent, offset or X/Y assignment changes.
+        xd = model.XDim;  yd = model.YDim;
+        xOff = model.ZoomRange(xd, 1) - 1;
+        yOff = model.ZoomRange(yd, 1) - 1;
+        tickSig = [W, H, xd, yd, xOff, yOff];
+        if ~isequal(tickSig, lastTickSig)
+            MatVisRender.applyAxisScale(ax, model, xd, xOff, yd, yOff);
+            lastTickSig = tickSig;
         end
 
         % Store local position for hit-test
@@ -125,12 +153,27 @@ zw.SetRoiMode        = @setRoiMode;
         end
 
         syncRoiOverlay();
+        syncProfileOverlay();
     end
 
     function setOverlayVisible(tf)
         vis = onOff_(tf);
         set(posLineV, 'Visible', vis);
         set(posLineH, 'Visible', vis);
+    end
+
+    function applyAspectRatio(fixed, ratio)
+        % fixed = true : square/fixed-ratio pixels (letterboxed in window)
+        % fixed = false: stretch image to fill the window
+        if nargin < 2 || numel(ratio) ~= 2, ratio = [1 1]; end
+        if ~isvalid(ax), return; end
+        if fixed
+            ax.DataAspectRatio        = [ratio(1) ratio(2) 1];   % sets mode->manual
+            ax.PlotBoxAspectRatioMode = 'auto';
+        else
+            ax.DataAspectRatioMode    = 'auto';
+            ax.PlotBoxAspectRatioMode = 'auto';
+        end
     end
 
     % ---- ROI overlay (corners converted to local coords) -------------------
@@ -178,6 +221,85 @@ zw.SetRoiMode        = @setRoiMode;
                 'String', model.RoiList(idx).name, 'Color', col, ...
                 'FontWeight', fw, 'Visible', onOff_(model.RoiShowNames));
         end
+    end
+
+    % ---- Profile overlay (coordinates converted to local) ------------------
+    function syncProfileOverlay()
+        visIdx = model.VisibleProfileIndices();
+        n      = numel(visIdx);
+
+        for k = numel(profLines)+1 : n
+            profLines(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'LineWidth', 1.5);
+            profBands(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'LineStyle', ':', 'LineWidth', 1);
+            profArrows(k) = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'LineWidth', 1.5);
+            profTexts(k)  = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
+                'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
+        end
+        for k = n+1 : numel(profLines)
+            if isgraphics(profLines(k)),  delete(profLines(k));  end
+            if isgraphics(profBands(k)),  delete(profBands(k));  end
+            if isgraphics(profArrows(k)), delete(profArrows(k)); end
+            if isgraphics(profTexts(k)),  delete(profTexts(k));  end
+        end
+        profLines  = profLines(1:n);
+        profBands  = profBands(1:n);
+        profArrows = profArrows(1:n);
+        profTexts  = profTexts(1:n);
+        if n == 0, return; end
+
+        xd  = model.XDim;  yd = model.YDim;
+        xOff = model.ZoomRange(xd, 1) - 1;
+        yOff = model.ZoomRange(yd, 1) - 1;
+
+        sel    = model.ProfileSelection;
+        selVis = visIdx(ismember(visIdx, sel));
+        cols   = MatVisRender.roiColors(max(numel(selVis), 1));
+
+        for k = 1:n
+            idx  = visIdx(k);
+            prof = model.ProfileList(idx);
+            sp   = prof.smoothedPoints;
+            [bx, by, axx, ayy] = profileBandArrow(sp);
+            spx = sp(1,:) - xOff;   spy = sp(2,:) - yOff;
+            bx  = bx - xOff;        by  = by - yOff;
+            axx = axx - xOff;       ayy = ayy - yOff;
+            selPos = find(selVis == idx, 1);
+            if ~isempty(selPos)
+                col = cols(selPos, :);  w = 2;  fw = 'bold';
+            else
+                col = [1 1 1];          w = 1;  fw = 'normal';
+            end
+            set(profLines(k),  'XData', spx, 'YData', spy, ...
+                'Color', col, 'LineWidth', w, 'Visible', 'on');
+            set(profBands(k),  'XData', bx, 'YData', by, 'Color', col, ...
+                'Visible', 'on');
+            set(profArrows(k), 'XData', axx, 'YData', ayy, 'Color', col, ...
+                'Visible', onOff_(model.ProfileShowDir));
+            set(profTexts(k),  'Position', [spx(end) + 1, spy(end)], ...
+                'String', prof.name, 'Color', col, 'FontWeight', fw, ...
+                'Visible', onOff_(model.ProfileShowNames));
+        end
+    end
+
+    function [bx, by, axx, ayy] = profileBandArrow(sp)
+        % Width-band outline and direction arrow (data coords) for a path SP.
+        M   = MatVisModel.ProfileSampleMatrix(sp, model.ProfileWidth);
+        s1x = M(1, :, 1);    s1y = M(1, :, 2);
+        s2x = M(end, :, 1);  s2y = M(end, :, 2);
+        bx  = [s1x, fliplr(s2x), s1x(1)];
+        by  = [s1y, fliplr(s2y), s1y(1)];
+        p2  = sp(:, end);
+        p1  = sp(:, max(1, end-1));
+        d   = p2 - p1;  nd = hypot(d(1), d(2));  if nd == 0, nd = 1; end
+        d   = d / nd;   perp = [-d(2); d(1)];
+        aLen = max(3, model.ProfileWidth * 0.7);
+        b1  = p2 - aLen*d + aLen*0.4*perp;
+        b2  = p2 - aLen*d - aLen*0.4*perp;
+        axx = [b1(1), p2(1), b2(1)];
+        ayy = [b1(2), p2(2), b2(2)];
     end
 
     % ---- ROI interaction mode ----------------------------------------------
@@ -238,6 +360,8 @@ zw.SetRoiMode        = @setRoiMode;
         if strcmp(src.SelectionType, 'alt')
             if strcmp(roiMode, 'poly') && size(roiPolyPts, 2) >= 3
                 finishPoly();
+            elseif strcmp(roiMode, 'profile') && size(roiPolyPts, 2) >= 2
+                finishProfile();
             else
                 updateTempRoi([]);
                 roiPolyPts = [];
@@ -249,6 +373,8 @@ zw.SetRoiMode        = @setRoiMode;
         if strcmp(src.SelectionType, 'open')
             if strcmp(roiMode, 'poly') && size(roiPolyPts, 2) >= 3
                 finishPoly();
+            elseif strcmp(roiMode, 'profile') && size(roiPolyPts, 2) >= 2
+                finishProfile();
             end
             return;
         end
@@ -258,7 +384,7 @@ zw.SetRoiMode        = @setRoiMode;
         switch roiMode
             case {'rect', 'ellipse'}
                 roiDragP0 = [x, y];
-            case 'poly'
+            case {'poly', 'profile'}
                 roiPolyPts(:, end+1) = [x; y];
                 roiPolyDraw = true;
                 updateTempRoi(roiPolyPts);
@@ -280,7 +406,7 @@ zw.SetRoiMode        = @setRoiMode;
                 if ~isempty(roiDragP0)
                     updateTempRoi(shapeCorners(roiMode, roiDragP0, [x, y]));
                 end
-            case 'poly'
+            case {'poly', 'profile'}
                 if roiPolyDraw
                     if isempty(roiPolyPts) || ...
                        hypot(x - roiPolyPts(1,end), y - roiPolyPts(2,end)) > 0.5
@@ -313,7 +439,7 @@ zw.SetRoiMode        = @setRoiMode;
                     updateTempRoi([]);
                     emitRoi('shape', localPts2data(pts));
                 end
-            case 'poly'
+            case {'poly', 'profile'}
                 roiPolyDraw = false;
             case 'drag'
                 if ~isempty(roiDragP0)
@@ -334,6 +460,18 @@ zw.SetRoiMode        = @setRoiMode;
         if size(pts, 2) >= 3
             pts(:, end+1) = pts(:, 1);
             emitRoi('shape', localPts2data(pts));
+        end
+    end
+
+    function finishProfile()
+        pts = roiPolyPts;
+        roiPolyPts  = [];
+        roiPolyDraw = false;
+        updateTempRoi([]);
+        keep = [true, any(diff(pts, 1, 2) ~= 0, 1)];
+        pts  = pts(:, keep);
+        if size(pts, 2) >= 2
+            emitRoi('shape', localPts2data(pts));   % open polyline
         end
     end
 
@@ -385,6 +523,15 @@ zw.SetRoiMode        = @setRoiMode;
 
         % ROI mode takes over all mouse interaction
         if roiMouseDown(src, x, y), return; end
+
+        % Double-click: offer copy / export / save of the current crop image
+        if strcmp(src.SelectionType, 'open')
+            selRect.Visible = 'off';
+            dragMode = [];  dragStart = [];  fig.Pointer = 'arrow';
+            MatVisExportMenu(fig, ax, @() imgHandle.CData, ...
+                'matVisZoom', 'matVisZoom.png');
+            return;
+        end
 
         % Middle click: jump to position and start dragging
         if strcmp(src.SelectionType, 'extend')
@@ -446,12 +593,30 @@ zw.SetRoiMode        = @setRoiMode;
             px = clamp_(round(xD), 1, model.Size(xd));
             py = clamp_(round(yD), 1, model.Size(yd));
             [val, alphaVal] = getPixelVal(xL, yL);
+            posStr = posReadout(px, py);
             if isempty(alphaVal)
-                fig.Name = sprintf('%s - Values: %g / Pixel position: (%d,%d)', ...
-                    baseName, val, px, py);
+                fig.Name = sprintf('%s - Values: %g / Position: %s', ...
+                    baseName, val, posStr);
             else
-                fig.Name = sprintf('%s - Value: %g, alphaValue: %g / Pixel position: (%d,%d)', ...
-                    baseName, val, alphaVal, px, py);
+                fig.Name = sprintf('%s - Value: %g, alphaValue: %g / Position: %s', ...
+                    baseName, val, alphaVal, posStr);
+            end
+        end
+    end
+
+    function s = posReadout(px, py)
+        % Pixel position, plus the real-world coordinate when either display
+        % dimension carries a scale.
+        s = sprintf('(%d,%d) px', px, py);
+        xd = model.XDim;  yd = model.YDim;
+        if model.hasRealScale(xd) || model.hasRealScale(yd)
+            rx = model.indexToReal(xd, px);
+            ry = model.indexToReal(yd, py);
+            ux = model.dimUnit(xd);   uy = model.dimUnit(yd);
+            if strcmp(ux, uy)
+                s = sprintf('%s / (%.4g,%.4g) %s', s, rx, ry, ux);
+            else
+                s = sprintf('%s / (%.4g %s, %.4g %s)', s, rx, ux, ry, uy);
             end
         end
     end

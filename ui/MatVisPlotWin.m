@@ -7,6 +7,12 @@ function pw = MatVisPlotWin(model, posChangeFcn, zoomChangeFcn)
 %   posChangeFcn(dimIdx, newPos)   called while position indicator dragged
 %   zoomChangeFcn(dimIdx, lo, hi)  called on mouse release after zoom-drag
 %
+% Mouse interactions:
+%   Left-drag near indicator : move the position indicator
+%   Left-drag elsewhere      : rubber-band zoom selection
+%   Right-click              : reset zoom to full range
+%   Double-click             : copy / export to workspace / save the plot
+%
 % pw.Update(profiles)         refresh profile data, x-limits, and position indicators
 %                             profiles{d} is a column vector, or — for
 %                             multi-trace (ROI) display — a struct with
@@ -54,7 +60,7 @@ try
 catch
     figName = 'Plot Window';
 end
-fig = uifigure('Name', figName, 'NumberTitle', 'off', 'AutoResizeChildren', 'off', 'Visible', 'off');
+fig = uifigure('Name', figName, 'NumberTitle', 'off', 'Resize', 'on', 'AutoResizeChildren', 'off', 'Visible', 'off');
 
 %% ---- Grid layout -------------------------------------------------------
 gridH = uigridlayout(fig, [nDims, 1]);
@@ -78,7 +84,7 @@ for ii = 1:nDims
     ax.Layout.Row    = ii;
     ax.Layout.Column = 1;
 
-    xlabel(ax, model.DimNames{ii});
+    xlabel(ax, xLabelText(ii));
     ylabel(ax, 'Value');
     ax.Title.String = model.DimNames{ii};
 
@@ -310,6 +316,30 @@ pw.SetFixY        = @setFixY;
             if isvalid(posLines{jj}) && posLines{jj}.Value ~= model.CurrPos(jj)
                 posLines{jj}.Value = model.CurrPos(jj);
             end
+
+            relabelXAxis(jj);
+        end
+    end
+
+    % -----------------------------------------------------------------
+    function relabelXAxis(jj)
+        % Keep the plot's X data in index coordinates (so mouse drag/zoom
+        % stay index-based) but relabel the tick marks with the real-world
+        % coordinate of each index when the dimension carries a scale.
+        ax = axHandles{jj};
+        if ~isvalid(ax) || ~model.hasRealScale(jj), return; end
+        t = ax.XTick;
+        if isempty(t), return; end
+        rv = model.indexToReal(jj, t);
+        ax.XTickLabel = arrayfun(@(v) sprintf('%.4g', v), rv, 'UniformOutput', false);
+    end
+
+    % -----------------------------------------------------------------
+    function s = xLabelText(jj)
+        s = model.DimNames{jj};
+        u = model.dimUnit(jj);
+        if ~isempty(u)
+            s = sprintf('%s [%s]', s, u);
         end
     end
 
@@ -477,9 +507,38 @@ pw.SetFixY        = @setFixY;
     end
 
     % -----------------------------------------------------------------
+    function s = collectPlotData(dimIdx)
+        % Gather the visible traces of one plot axis into an export struct.
+        lns   = [lineHandles{dimIdx}, extraLines{dimIdx}];
+        x     = [];
+        Y     = [];
+        names = {};
+        for k = 1:numel(lns)
+            ln = lns(k);
+            if isgraphics(ln) && strcmp(ln.Visible, 'on')
+                x = ln.XData(:);
+                Y = [Y, ln.YData(:)]; %#ok<AGROW>
+                names{end+1} = ln.DisplayName; %#ok<AGROW>
+            end
+        end
+        s = struct('x', x, 'y', Y, 'names', {names}, ...
+                   'dimension', model.DimNames{dimIdx});
+    end
+
+    % -----------------------------------------------------------------
     function onMouseDown(~, ~)
         dimIdx = axUnderMouse();
         if dimIdx == 0, return; end
+
+        % Double-click: offer copy / export / save of the current plot
+        if strcmp(fig.SelectionType, 'open')
+            dragActive  = false;  dragMode = '';  dragDimIdx = 0;
+            dragStartX  = NaN;  dragCurrX = NaN;  lastDragPos = NaN;
+            fig.Pointer = 'arrow';
+            MatVisExportMenu(fig, axHandles{dimIdx}, ...
+                @() collectPlotData(dimIdx), 'matVisPlot', 'matVisPlot.png');
+            return;
+        end
 
         if strcmp(fig.SelectionType, 'alt')
             zoomChangeFcn(dimIdx, 1, model.Size(dimIdx));

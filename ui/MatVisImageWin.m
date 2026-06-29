@@ -23,18 +23,23 @@ function iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn)
 %   Left-drag on zoom rect: pan the zoom rectangle
 %   Middle-click          : jump both positions to clicked location
 %   Right-click           : reset zoom to full range
+%   Double-click          : copy / export to workspace / save current image
 %   Scroll wheel          : zoom in/out centred on cursor
 
 if nargin < 2, zoomFromMouseFcn     = []; end
 if nargin < 3, positionFromMouseFcn = []; end
 
-fig = uifigure('Name', ['Image: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', 'MenuBar', 'none', 'Visible', 'off');
+fig = uifigure('Name', ['Image: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', ...
+               'Resize', 'on', 'AutoResizeChildren', 'off', 'Visible', 'off');
 
-ax = uiaxes(fig, 'Units', 'normalized', 'Position', [0 0 1 1]);
+% Axes are shown as regular MATLAB axes with rulers on the left/bottom so
+% real-world (or, when no scale is supplied, pixel) coordinates are visible.
+ax = uiaxes(fig, 'Units', 'normalized', 'Position', [0.12 0.11 0.85 0.85]);
 disableDefaultInteractivity(ax);
 ax.Toolbar.Visible = 'off';
+ax.FontSize = 9;
 axis(ax, 'image');
-ax.XTick = []; ax.YTick = [];
+applyAspectRatio(model.AspectRatioFixed, model.AspectRatio);
 
 % Image (disable hit-testing so clicks reach the figure callbacks)
 imgHandle = image(ax, zeros(1, 1, 3, 'uint8'));
@@ -70,6 +75,12 @@ tempRoiLine = line(ax, NaN, NaN, 'Color', [1 1 0], 'LineWidth', 1.2, ...
     'LineStyle', '--', 'Visible', 'off');
 tempRoiLine.HitTest = 'off';  tempRoiLine.PickableParts = 'none';
 
+% Profile overlay (centerline, width band, direction arrow, name label)
+profLines  = gobjects(1, 0);
+profBands  = gobjects(1, 0);
+profArrows = gobjects(1, 0);
+profTexts  = gobjects(1, 0);
+
 % State variables
 dragStart    = [];   % [x y] in data coords where drag began
 dragMode     = [];   % [] = none; string = 'posV','posH','pos2D','zoom','sel'
@@ -78,6 +89,7 @@ currPosY     = NaN;  % last known Y position (data coord)
 currZoomRect = [];   % [x1 y1 w h] of visible zoom rect, [] when hidden
 rectShown    = strcmp(initVis, 'on');  % rectHandle visibility state
 lastHW       = [NaN, NaN];             % last image size (skip redundant limit writes)
+lastTickSig  = [];                     % signature for axis-scale ticks (skip redundant writes)
 
 % ROI interaction state
 roiMode     = '';    % '', 'rect', 'ellipse', 'poly', 'drag'
@@ -101,6 +113,7 @@ iw.rectHandle        = rectHandle;
 iw.Update            = @updateDisplay;
 iw.SetOverlayVisible = @setOverlayVisible;
 iw.SetRoiMode        = @setRoiMode;
+iw.SetAspectRatio    = @applyAspectRatio;
 
 % -------------------------------------------------------------------------
     function updateDisplay(rgbImg, zoomRect, posX, posY)
@@ -114,6 +127,14 @@ iw.SetRoiMode        = @setRoiMode;
             lastHW  = [H, W];
             ax.XLim = [0.5, W + 0.5];
             ax.YLim = [0.5, H + 0.5];
+        end
+
+        % Full-image rulers: data index == pixel (offset 0). Re-label only
+        % when the display extent or the X/Y dimension assignment changes.
+        tickSig = [W, H, model.XDim, model.YDim];
+        if ~isequal(tickSig, lastTickSig)
+            MatVisRender.applyAxisScale(ax, model, model.XDim, 0, model.YDim, 0);
+            lastTickSig = tickSig;
         end
 
         % Store current position for hit-test
@@ -151,6 +172,7 @@ iw.SetRoiMode        = @setRoiMode;
         end
 
         syncRoiOverlay();
+        syncProfileOverlay();
     end
 
     function setOverlayVisible(tf)
@@ -159,6 +181,20 @@ iw.SetRoiMode        = @setRoiMode;
         set(posLineV,   'Visible', vis);
         set(posLineH,   'Visible', vis);
         rectShown = logical(tf);
+    end
+
+    function applyAspectRatio(fixed, ratio)
+        % fixed = true : square/fixed-ratio pixels (letterboxed in window)
+        % fixed = false: stretch image to fill the window
+        if nargin < 2 || numel(ratio) ~= 2, ratio = [1 1]; end
+        if ~isvalid(ax), return; end
+        if fixed
+            ax.DataAspectRatio        = [ratio(1) ratio(2) 1];   % sets mode->manual
+            ax.PlotBoxAspectRatioMode = 'auto';
+        else
+            ax.DataAspectRatioMode    = 'auto';
+            ax.PlotBoxAspectRatioMode = 'auto';
+        end
     end
 
     % ---- ROI overlay ------------------------------------------------------
@@ -201,6 +237,78 @@ iw.SetRoiMode        = @setRoiMode;
                 'String', model.RoiList(idx).name, 'Color', col, ...
                 'FontWeight', fw, 'Visible', onOff_(model.RoiShowNames));
         end
+    end
+
+    % ---- Profile overlay --------------------------------------------------
+    function syncProfileOverlay()
+        visIdx = model.VisibleProfileIndices();
+        n      = numel(visIdx);
+
+        for k = numel(profLines)+1 : n
+            profLines(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'LineWidth', 1.5);
+            profBands(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'LineStyle', ':', 'LineWidth', 1);
+            profArrows(k) = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                'PickableParts', 'none', 'LineWidth', 1.5);
+            profTexts(k)  = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
+                'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
+        end
+        for k = n+1 : numel(profLines)
+            if isgraphics(profLines(k)),  delete(profLines(k));  end
+            if isgraphics(profBands(k)),  delete(profBands(k));  end
+            if isgraphics(profArrows(k)), delete(profArrows(k)); end
+            if isgraphics(profTexts(k)),  delete(profTexts(k));  end
+        end
+        profLines  = profLines(1:n);
+        profBands  = profBands(1:n);
+        profArrows = profArrows(1:n);
+        profTexts  = profTexts(1:n);
+        if n == 0, return; end
+
+        sel    = model.ProfileSelection;
+        selVis = visIdx(ismember(visIdx, sel));
+        cols   = MatVisRender.roiColors(max(numel(selVis), 1));
+
+        for k = 1:n
+            idx  = visIdx(k);
+            prof = model.ProfileList(idx);
+            sp   = prof.smoothedPoints;
+            [bx, by, axx, ayy] = profileBandArrow(sp);
+            selPos = find(selVis == idx, 1);
+            if ~isempty(selPos)
+                col = cols(selPos, :);  w = 2;  fw = 'bold';
+            else
+                col = [1 1 1];          w = 1;  fw = 'normal';
+            end
+            set(profLines(k),  'XData', sp(1,:), 'YData', sp(2,:), ...
+                'Color', col, 'LineWidth', w, 'Visible', 'on');
+            set(profBands(k),  'XData', bx, 'YData', by, 'Color', col, ...
+                'Visible', 'on');
+            set(profArrows(k), 'XData', axx, 'YData', ayy, 'Color', col, ...
+                'Visible', onOff_(model.ProfileShowDir));
+            set(profTexts(k),  'Position', [sp(1,end) + 1, sp(2,end)], ...
+                'String', prof.name, 'Color', col, 'FontWeight', fw, ...
+                'Visible', onOff_(model.ProfileShowNames));
+        end
+    end
+
+    function [bx, by, axx, ayy] = profileBandArrow(sp)
+        % Width-band outline and direction arrow (data coords) for a path SP.
+        M   = MatVisModel.ProfileSampleMatrix(sp, model.ProfileWidth);
+        s1x = M(1, :, 1);    s1y = M(1, :, 2);
+        s2x = M(end, :, 1);  s2y = M(end, :, 2);
+        bx  = [s1x, fliplr(s2x), s1x(1)];
+        by  = [s1y, fliplr(s2y), s1y(1)];
+        p2  = sp(:, end);
+        p1  = sp(:, max(1, end-1));
+        d   = p2 - p1;  nd = hypot(d(1), d(2));  if nd == 0, nd = 1; end
+        d   = d / nd;   perp = [-d(2); d(1)];
+        aLen = max(3, model.ProfileWidth * 0.7);
+        b1  = p2 - aLen*d + aLen*0.4*perp;
+        b2  = p2 - aLen*d - aLen*0.4*perp;
+        axx = [b1(1), p2(1), b2(1)];
+        ayy = [b1(2), p2(2), b2(2)];
     end
 
     % ---- ROI interaction mode ----------------------------------------------
@@ -253,9 +361,11 @@ iw.SetRoiMode        = @setRoiMode;
         if ~handled, return; end
 
         if strcmp(src.SelectionType, 'alt')
-            % Right-click: finish polygon, or exit the ROI mode
+            % Right-click: finish polygon/profile, or exit the mode
             if strcmp(roiMode, 'poly') && size(roiPolyPts, 2) >= 3
                 finishPoly();
+            elseif strcmp(roiMode, 'profile') && size(roiPolyPts, 2) >= 2
+                finishProfile();
             else
                 updateTempRoi([]);
                 roiPolyPts = [];
@@ -265,9 +375,11 @@ iw.SetRoiMode        = @setRoiMode;
         end
 
         if strcmp(src.SelectionType, 'open')
-            % Double-click: finish polygon
+            % Double-click: finish polygon/profile
             if strcmp(roiMode, 'poly') && size(roiPolyPts, 2) >= 3
                 finishPoly();
+            elseif strcmp(roiMode, 'profile') && size(roiPolyPts, 2) >= 2
+                finishProfile();
             end
             return;
         end
@@ -277,7 +389,7 @@ iw.SetRoiMode        = @setRoiMode;
         switch roiMode
             case {'rect', 'ellipse'}
                 roiDragP0 = [x, y];
-            case 'poly'
+            case {'poly', 'profile'}
                 roiPolyPts(:, end+1) = [x; y];
                 roiPolyDraw = true;
                 updateTempRoi(roiPolyPts);
@@ -298,7 +410,7 @@ iw.SetRoiMode        = @setRoiMode;
                 if ~isempty(roiDragP0)
                     updateTempRoi(shapeCorners(roiMode, roiDragP0, [x, y]));
                 end
-            case 'poly'
+            case {'poly', 'profile'}
                 if roiPolyDraw
                     % Freehand: accumulate while the button is held
                     if isempty(roiPolyPts) || ...
@@ -332,7 +444,7 @@ iw.SetRoiMode        = @setRoiMode;
                     updateTempRoi([]);
                     emitRoi('shape', pts);
                 end
-            case 'poly'
+            case {'poly', 'profile'}
                 roiPolyDraw = false;
             case 'drag'
                 if ~isempty(roiDragP0)
@@ -352,6 +464,19 @@ iw.SetRoiMode        = @setRoiMode;
         pts  = pts(:, keep);
         if size(pts, 2) >= 3
             pts(:, end+1) = pts(:, 1);
+            emitRoi('shape', pts);
+        end
+    end
+
+    function finishProfile()
+        pts = roiPolyPts;
+        roiPolyPts  = [];
+        roiPolyDraw = false;
+        updateTempRoi([]);
+        % Remove consecutive duplicates, keep open (no closing vertex)
+        keep = [true, any(diff(pts, 1, 2) ~= 0, 1)];
+        pts  = pts(:, keep);
+        if size(pts, 2) >= 2
             emitRoi('shape', pts);
         end
     end
@@ -414,6 +539,15 @@ iw.SetRoiMode        = @setRoiMode;
         % ROI mode takes over all mouse interaction
         if roiMouseDown(src, x, y), return; end
 
+        % Double-click: offer copy / export / save of the current image
+        if strcmp(src.SelectionType, 'open')
+            selRect.Visible = 'off';
+            dragMode = [];  dragStart = [];  fig.Pointer = 'arrow';
+            MatVisExportMenu(fig, ax, @() imgHandle.CData, ...
+                'matVisImage', 'matVisImage.png');
+            return;
+        end
+
         % Middle click: jump to position and start dragging
         if strcmp(src.SelectionType, 'extend')
             if ~isempty(positionFromMouseFcn)
@@ -468,12 +602,30 @@ iw.SetRoiMode        = @setRoiMode;
             fig.Name = baseName;
         else
             [val, alphaVal] = getPixelVal(px, py);
+            posStr = posReadout(round(px), round(py));
             if isempty(alphaVal)
-                fig.Name = sprintf('%s - Values: %g / Pixel position: (%d,%d)', ...
-                    baseName, val, round(px), round(py));
+                fig.Name = sprintf('%s - Values: %g / Position: %s', ...
+                    baseName, val, posStr);
             else
-                fig.Name = sprintf('%s - Value: %g, alphaValue: %g / Pixel position: (%d,%d)', ...
-                    baseName, val, alphaVal, round(px), round(py));
+                fig.Name = sprintf('%s - Value: %g, alphaValue: %g / Position: %s', ...
+                    baseName, val, alphaVal, posStr);
+            end
+        end
+    end
+
+    function s = posReadout(px, py)
+        % Pixel position, plus the real-world coordinate when either display
+        % dimension carries a scale (e.g. '(60,40) px / (120,80) µm').
+        s = sprintf('(%d,%d) px', px, py);
+        xd = model.XDim;  yd = model.YDim;
+        if model.hasRealScale(xd) || model.hasRealScale(yd)
+            rx = model.indexToReal(xd, px);
+            ry = model.indexToReal(yd, py);
+            ux = model.dimUnit(xd);   uy = model.dimUnit(yd);
+            if strcmp(ux, uy)
+                s = sprintf('%s / (%.4g,%.4g) %s', s, rx, ry, ux);
+            else
+                s = sprintf('%s / (%.4g %s, %.4g %s)', s, rx, ux, ry, uy);
             end
         end
     end

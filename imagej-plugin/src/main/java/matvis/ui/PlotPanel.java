@@ -114,6 +114,11 @@ public class PlotPanel extends JPanel {
                 g2.setColor(new Color(0, 150, 150));
                 String note = selIdxs.length == 1 ? "ROI mean" : selIdxs.length + " ROI means";
                 g2.drawString(note, MARGIN_LEFT + 4, MARGIN_TOP + 10);
+            } else if (ctrl.getPlotAvgMode() != MatVisController.PLOT_AVG_PIXEL) {
+                // single-pixel profile averaged over a local XY neighborhood
+                g2.setFont(g2.getFont().deriveFont(Font.PLAIN, 9f));
+                g2.setColor(new Color(0, 150, 150));
+                g2.drawString(ctrl.getPlotAvgName() + " mean", MARGIN_LEFT + 4, MARGIN_TOP + 10);
             }
 
             // profile data

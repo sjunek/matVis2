@@ -1,4 +1,10 @@
 classdef MatVisRender
+    properties (Constant)
+        % Fraction of the RGB-stretch slider track reserved at each end for
+        % solid blue / red (the rainbow fills the middle 1 - 2*PAD).
+        RGB_STRETCH_PAD = 0.15;
+    end
+
     methods (Static)
 
         function raw = getRawSlice(model)
@@ -64,14 +70,17 @@ classdef MatVisRender
             idx{model.YDim} = yRange;
             [doProj, pd] = MatVisRender.projState_(model);
             [doRGB, rd]  = MatVisRender.rgbState_(model, doProj, pd);
+            doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
             if doProj
                 idx{pd} = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
             end
-            if doRGB
-                idx{rd} = 1 : model.Size(rd);
+            if doStretch
+                idx{rd} = MatVisRender.stretchRangeIdx_(model, rd);
+            elseif doRGB
+                idx{rd} = MatVisRender.rgbTriadIdx_(model, rd);
             end
             raw = double(data(idx{:}));
-            raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd);
+            raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd, doStretch);
         end
 
         function raw = getRawFullSliceFromData(model, data)
@@ -80,6 +89,7 @@ classdef MatVisRender
             idx{model.YDim} = 1 : model.Size(model.YDim);
             [doProj, pd] = MatVisRender.projState_(model);
             [doRGB, rd]  = MatVisRender.rgbState_(model, doProj, pd);
+            doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
             if doProj
                 if model.ProjZoomLock
                     idx{pd} = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
@@ -87,11 +97,13 @@ classdef MatVisRender
                     idx{pd} = 1 : model.Size(pd);
                 end
             end
-            if doRGB
-                idx{rd} = 1 : model.Size(rd);
+            if doStretch
+                idx{rd} = MatVisRender.stretchRangeIdx_(model, rd);
+            elseif doRGB
+                idx{rd} = MatVisRender.rgbTriadIdx_(model, rd);
             end
             raw = double(data(idx{:}));
-            raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd);
+            raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd, doStretch);
         end
 
         function profile1D = renderProfileFromData(model, data, dimIdx)
@@ -205,6 +217,57 @@ classdef MatVisRender
             cols = cols(1:max(n, 1), :);
         end
 
+        % ==================================================================
+        %  Profile (line-trace) sampling
+        % ==================================================================
+        function img = sampleProfileImage(model, data, profile)
+            % sampleProfileImage  Straightened profile image for the current
+            % slice: an [width × length] array sampled perpendicular to the
+            % profile path.  Out-of-bounds samples are NaN.
+            sp = profile.smoothedPoints;
+            if isempty(sp) || size(sp, 2) < 2, img = []; return; end
+            M  = MatVisModel.ProfileSampleMatrix(sp, model.ProfileWidth);
+            S  = MatVisRender.currentScalarSlice_(model, data);
+            img = interp2(S, M(:, :, 1), M(:, :, 2));   % S(row=y, col=x)
+        end
+
+        function p = profileProject(img, method)
+            % profileProject  Reduce a [width × length] profile image across
+            % its width (dim 1) using the named projection.  Returns a
+            % column vector of length = profile length.
+            if isempty(img), p = []; return; end
+            switch method
+                case 'Sum', p = sum(img, 1, 'omitnan');
+                case 'Max', p = max(img, [], 1);
+                case 'Min', p = min(img, [], 1);
+                otherwise,  p = mean(img, 1, 'omitnan');
+            end
+            p = p(:);
+        end
+
+        function traceMat = profileTraceAlongDim(model, data, dimIdx, profile)
+            % profileTraceAlongDim  Projected profile sampled at every index
+            % along dimIdx.  Returns a [length × nSteps] matrix.  dimIdx must
+            % not be one of the display (XY) dimensions.
+            sp = profile.smoothedPoints;
+            if isempty(sp) || size(sp, 2) < 2, traceMat = []; return; end
+            M   = MatVisModel.ProfileSampleMatrix(sp, model.ProfileWidth);
+            xq  = M(:, :, 1);  yq = M(:, :, 2);
+            nT  = model.Size(dimIdx);
+            L   = size(M, 2);
+            traceMat = NaN(L, nT);
+            idx = num2cell(model.CurrPos);
+            idx{model.XDim} = 1 : model.Size(model.XDim);
+            idx{model.YDim} = 1 : model.Size(model.YDim);
+            for t = 1:nT
+                idx{dimIdx} = t;
+                raw = squeeze(double(data(idx{:})));
+                if model.XDim < model.YDim, raw = raw.'; end
+                img = interp2(raw, xq, yq);
+                traceMat(:, t) = MatVisRender.profileProject(img, model.ProfileProjection);
+            end
+        end
+
         function profile1D = renderProfileNeighbor(model, dimIdx, avgMode)
             % renderProfileNeighbor  Extract zoom-range profile averaged over an XY neighborhood.
             %   avgMode: 0=1x1 (single pixel), 1=3x3, 2=5x5, 3=full zoom XY extent
@@ -229,6 +292,98 @@ classdef MatVisRender
                 img = data;
             else
                 img = data .^ gamma;
+            end
+        end
+
+        function out = filterImage(raw, filterType, filterPar)
+            % Apply a spatial filter to a raw 2-D slice (or H×W×3 RGB stack —
+            % each channel is filtered independently in x/y).  Mirrors the
+            % original matVis Image Processing Toolbox filters; operates on
+            % raw (un-normalized) values so contrast bounds stay unaffected.
+            %   filterType : 'none' | 'gauss' | 'median' | 'mean' | 'unsharp'
+            %   filterPar  : scalar (isotropic) or [x y] (anisotropic).
+            %                gauss   -> Gaussian sigma
+            %                median  -> median neighbourhood size
+            %                mean    -> averaging disk radius
+            %                unsharp -> radius (2nd element, if given = amount)
+            %                0 or [] disables filtering.
+            out = raw;
+            if nargin < 2 || isempty(filterType) || strcmp(filterType, 'none')
+                return;
+            end
+            if nargin < 3 || isempty(filterPar)
+                return;
+            end
+            fs = double(filterPar(:)');
+            if all(fs == 0) || ~MatVisRender.filterAvailable()
+                return;
+            end
+            % Map the parameter to a [rows cols] = [y x] size.  A 2-element
+            % vector is entered as [x y]; swap to match the row/col layout of
+            % the finalized slice (rows = Y, cols = X), as the original does.
+            if isscalar(fs)
+                sz = [fs fs];
+            else
+                sz = fs([2 1]);
+            end
+            if ndims(out) == 3 && size(out, 3) == 3
+                for c = 1:3
+                    out(:, :, c) = MatVisRender.filter2D_(out(:, :, c), filterType, sz, fs);
+                end
+            else
+                out = MatVisRender.filter2D_(out, filterType, sz, fs);
+            end
+        end
+
+        function tf = filterAvailable()
+            % True when the Image Processing Toolbox filtering functions are
+            % on the path.  Cached after the first probe.
+            persistent avail
+            if isempty(avail)
+                avail = ~isempty(which('imfilter')) && ~isempty(which('fspecial'));
+            end
+            tf = avail;
+        end
+
+        function tf = filterActive(model)
+            % True when an image filter is selected that would alter the data.
+            tf = ~isempty(model.FilterType) && ~strcmp(model.FilterType, 'none') ...
+                 && any(model.FilterPar(:) ~= 0) && MatVisRender.filterAvailable();
+        end
+
+        function [pRaw, pFilt] = renderFilteredSpatialProfile(model, data, dimIdx, useZoom)
+            % Profile along a display (X or Y) dimension together with its
+            % spatially-filtered counterpart, for overlaying both traces in
+            % the plot window.  dimIdx must be model.XDim or model.YDim.
+            %
+            % The 2-D (XDim,YDim) slice at CurrPos is filtered as a whole,
+            % then the line through CurrPos is extracted, so the filtered
+            % trace reflects the same neighbourhood smoothing shown in the
+            % image.  Both profiles are returned in data index order (matching
+            % renderProfileFromData), so toggling the filter never flips the
+            % unfiltered trace relative to the unfiltered-only display.
+            xd = model.XDim;  yd = model.YDim;
+            idx = num2cell(model.CurrPos);
+            idx{xd} = 1 : model.Size(xd);
+            idx{yd} = 1 : model.Size(yd);
+            slab = squeeze(double(data(idx{:})));   % only XDim/YDim are non-singleton
+            if xd < yd
+                slab = slab.';                       % orient to [Y x X]
+            end
+            filt = MatVisRender.filterImage(slab, model.FilterType, model.FilterPar);
+            if dimIdx == xd          % vary X (columns) at the current Y (row)
+                r = model.CurrPos(yd);
+                pRaw  = slab(r, :).';
+                pFilt = filt(r, :).';
+            else                     % vary Y (rows) at the current X (column)
+                c = model.CurrPos(xd);
+                pRaw  = slab(:, c);
+                pFilt = filt(:, c);
+            end
+            if useZoom
+                zr = model.ZoomRange(dimIdx, :);
+                pRaw  = pRaw(zr(1):zr(2));
+                pFilt = pFilt(zr(1):zr(2));
             end
         end
 
@@ -257,6 +412,113 @@ classdef MatVisRender
             bg  = 0;
             if nargin >= 5 && bgWhite, bg = 255; end
             img = uint8(double(img) .* a + bg * (1 - a));
+        end
+
+        function tf = rgbActive(model)
+            % True when the RGB dimension is eligible for colour display
+            % (selected, not an X/Y axis, not colliding with a projection).
+            [doProj, pd] = MatVisRender.projState_(model);
+            tf = MatVisRender.rgbState_(model, doProj, pd);
+        end
+
+        function tf = stretchActive(model)
+            % True when a whole-dimension RGB stretch (mean/max) is in effect.
+            tf = MatVisRender.rgbActive(model) && ...
+                 ~strcmp(model.RGBStretchMode, 'none');
+        end
+
+        function img = renderStretchImage(model, stack, cMin, cMax, gamma)
+            % Colour-code a whole RGB dimension into a display image, à la
+            % matVis "MeanStretch"/"MaxStretch".
+            %   stack : H×W×N raw intensities (already oriented + flipped)
+            %   cMin/cMax : contrast bounds (data units)
+            %   gamma : brightness gamma
+            % Returns a uint8 H×W×3 image.
+            if nargin < 5 || isempty(gamma), gamma = 1; end
+            [H, W, N] = size(stack);
+            P = H * W;
+
+            % Rainbow colour for each slice. RGBStretchRange holds the two
+            % slider positions in [0,1]; the rainbow occupies the middle 70%
+            % (0.15..0.85) and slider positions in the outer 15% map to solid
+            % blue / red. Indices interpolate linearly between the two thumbs.
+            pad = MatVisRender.RGB_STRETCH_PAD;
+            rng = model.RGBStretchRange;
+            colors = zeros(N, 3);
+            for k = 1:N
+                sp = rng(1) + (rng(2) - rng(1)) * (k - 1) / max(N - 1, 1);
+                t  = (sp - pad) / max(1 - 2*pad, eps);   % slider space -> rainbow pos
+                t  = max(0, min(1, t));                  % outer margins -> solid blue/red
+                colors(k, :) = MatVisRender.rainbowRGB(t, 3, 1);
+            end
+
+            minV = min(stack(:));
+            maxV = max(stack(:));
+            S = reshape(double(stack), P, N);
+
+            if strcmp(model.RGBStretchMode, 'mean')
+                % Intensity-weighted sum of slice colours (normalized so the
+                % brightest achievable colour-sum maps to full scale).
+                s = sum(colors, 1);
+                denom = max(s);
+                if denom > 0, colors = colors / denom; end
+                out = S * colors;                      % P×3
+            else  % 'max'
+                [mx, ind] = max(S, [], 2);             % brightest slice / pixel
+                out = repmat(mx, 1, 3) .* colors(ind, :);
+            end
+
+            img3 = reshape(out, H, W, 3);
+
+            % Spatial filter (applied to the coloured image, as in matVis).
+            if ~strcmp(model.FilterType, 'none')
+                img3 = MatVisRender.filterImage(img3, model.FilterType, model.FilterPar);
+            end
+
+            % Contrast + gamma on brightness, preserving hue.
+            if maxV > minV
+                relMin = (cMin - minV) / (maxV - minV);
+                relMax = (cMax - minV) / (maxV - minV);
+            else
+                relMin = 0;  relMax = 1;
+            end
+            img3 = MatVisRender.rgbContrastAdjust(img3, relMin, relMax, gamma);
+            img  = uint8(max(0, min(1, img3)) * 255);
+        end
+
+        function out = rgbContrastAdjust(in, relMin, relMax, gamma)
+            % Scale brightness of an H×W×3 image by a relative [min,max]
+            % window and gamma while preserving hue (the RGB direction).
+            % Ported from the original matVis rgbContrastAdjust.
+            if nargin < 4 || isempty(gamma), gamma = 1; end
+            sz = size(in);
+            if numel(sz) < 3, sz(3) = 1; end
+            in = reshape(double(in) - min(in(:)), [], sz(3));   % shift >= 0
+
+            brightness = sqrt(sum(in.^2, 2, 'omitnan'));        % vector norm
+            mx = max(in, [], 2);
+            maxBright = in ./ mx;
+            maxBright(mx == 0, :) = 0;
+            maxBright = sqrt(sum(maxBright.^2, 2, 'omitnan'));
+
+            hue = in ./ brightness;
+            hue(brightness == 0, :) = 0;
+
+            brightness = brightness ./ maxBright;
+            brightness(isnan(brightness)) = 0;
+
+            bmax = max(brightness(:));
+            if bmax > 0, brightness = brightness / bmax; end    % -> [0,1]
+            if relMax > relMin
+                brightness = (brightness - relMin) / (relMax - relMin);
+            end
+            brightness = max(0, min(1, brightness));
+            if gamma ~= 1, brightness = brightness .^ gamma; end
+            brightness = brightness .* maxBright;               % restore scale
+
+            out = hue .* brightness;
+            out(out > 1) = 1;
+            out = reshape(out, sz);
         end
 
         function alphaNorm = renderAlphaSlice(raw, aMin, aMax, alphaGamma)
@@ -344,9 +606,132 @@ classdef MatVisRender
             lastIdx = cmapIdx;  lastN = nColors;  lastMap = cmap;
         end
 
+        % ------------------------------------------------------------------
+        %  Real-world axis scaling (ticks + labels for image/zoom axes)
+        %
+        %  Image/zoom axes hold the data in PIXEL coordinates (1..W / 1..H);
+        %  the data index along a dimension is  pixel + offset  (offset = 0
+        %  for the full image, ZoomRange(dim,1)-1 for the zoom crop).  These
+        %  helpers relabel the rulers with real-world coordinates derived
+        %  from model.DimScale, leaving the pixel coordinate system (and all
+        %  mouse interaction) untouched.  When no scale is supplied the
+        %  labels reduce to the plain pixel indices.
+        % ------------------------------------------------------------------
+        function applyAxisScale(ax, model, xDim, xOffset, yDim, yOffset)
+            if isempty(ax) || ~isvalid(ax), return; end
+            [xt, xl] = MatVisRender.axisTicks_(model, xDim, xOffset, ax.XLim);
+            [yt, yl] = MatVisRender.axisTicks_(model, yDim, yOffset, ax.YLim);
+            if ~isempty(xt)
+                ax.XTick = xt;  ax.XTickLabel = xl;
+            end
+            if ~isempty(yt)
+                ax.YTick = yt;  ax.YTickLabel = yl;
+            end
+            ax.XLabel.String = MatVisRender.axisLabel_(model, xDim);
+            ax.YLabel.String = MatVisRender.axisLabel_(model, yDim);
+        end
+
+        function ticks = niceTicks(lo, hi, maxN)
+            % Choose ~maxN "nice" round tick values spanning [lo, hi].
+            if nargin < 3, maxN = 5; end
+            if ~isfinite(lo) || ~isfinite(hi) || hi == lo
+                ticks = lo;  return;
+            end
+            if hi < lo, tmp = lo;  lo = hi;  hi = tmp; end
+            raw  = (hi - lo) / max(maxN, 1);
+            mag  = 10 ^ floor(log10(raw));
+            n    = raw / mag;
+            if     n < 1.5, step = 1;
+            elseif n < 3,   step = 2;
+            elseif n < 7,   step = 5;
+            else            step = 10;
+            end
+            step  = step * mag;
+            t0    = ceil(lo / step) * step;
+            ticks = t0 : step : hi + step * 1e-9;
+            ticks = ticks + 0;   % normalize IEEE negative zero (-0 -> 0)
+        end
+
+        function cmap = rgbStretchColormap(n)
+            % Public n×3 rainbow (blue-cyan-green-yellow-red) used for RGB
+            % stretch colour coding and the stretch-bar colourbar.
+            if nargin < 1, n = 256; end
+            cmap = MatVisRender.buildRainbow(n, 3, 1);
+        end
     end
 
     methods (Static, Access = private)
+        function [pixTicks, labels] = axisTicks_(model, dim, offset, lim)
+            % Nice real-world ticks for the pixel axis with limits LIM.
+            real0 = model.indexToReal(dim, lim(1) + offset);
+            real1 = model.indexToReal(dim, lim(2) + offset);
+            rt    = MatVisRender.niceTicks(real0, real1, 5);
+
+            sc1 = model.indexToReal(dim, 1);
+            f   = model.pixelSize(dim);
+            if f == 0, f = 1; end
+            idx      = 1 + (rt - sc1) / f;   % real -> data index (linear)
+            pixTicks = idx - offset;         % data index -> pixel coordinate
+
+            keep     = pixTicks >= lim(1) - 1e-6 & pixTicks <= lim(2) + 1e-6;
+            pixTicks = pixTicks(keep);
+            rt       = rt(keep);
+            % XTick/YTick must be strictly increasing (scale may be reversed)
+            [pixTicks, order] = sort(pixTicks);
+            rt = rt(order);
+            if isempty(pixTicks)
+                pixTicks = [lim(1), lim(2)];
+                rt       = [real0, real1];
+            end
+            labels = arrayfun(@(v) sprintf('%.4g', v), rt, 'UniformOutput', false);
+        end
+
+        function s = axisLabel_(model, dim)
+            if dim >= 1 && dim <= numel(model.DimNames)
+                s = model.DimNames{dim};
+            else
+                s = sprintf('Dim%d', dim);
+            end
+            u = model.dimUnit(dim);
+            if ~isempty(u)
+                s = sprintf('%s [%s]', s, u);
+            end
+        end
+    end
+
+    methods (Static, Access = private)
+
+        function out = filter2D_(in, filterType, sz, fs)
+            % Filter a single 2-D plane.  sz = [rows cols] derived size;
+            % fs = the raw parameter vector (for unsharp amount).  NaNs are
+            % preserved by routing around them where the filter would spread
+            % them across the whole image.
+            switch filterType
+                case 'gauss'
+                    sigma = max(sz(1), 0.5);
+                    hsize = max(3, round(sz * 5));   % ~5*sigma window, per axis
+                    h     = fspecial('gaussian', hsize, sigma);
+                    out   = imfilter(in, h, 'replicate');
+                case 'median'
+                    out = medfilt2(in, max(1, round(sz)));
+                case 'mean'
+                    h   = fspecial('disk', max(1, sz(1)));
+                    out = imfilter(in, h, 'replicate');
+                case 'unsharp'
+                    if ~isempty(which('imsharpen'))
+                        if numel(fs) >= 2
+                            out = imsharpen(in, 'Radius', max(0.1, fs(1)), 'Amount', fs(2));
+                        else
+                            out = imsharpen(in, 'Radius', max(0.1, fs(1)));
+                        end
+                    else
+                        h   = fspecial('unsharp', min(1, sz(1) / 10));
+                        out = imfilter(in, h, 'replicate');
+                    end
+                otherwise
+                    out = in;
+            end
+        end
 
         function [doProj, pd] = projState_(model)
             pd = model.ProjDim;
@@ -364,46 +749,67 @@ classdef MatVisRender
                     ~(doProj && rd == pd);
         end
 
-        function raw = finalizeSlice_(data, model, doProj, pd, doRGB, rd)
+        function raw = finalizeSlice_(data, model, doProj, pd, doRGB, rd, doStretch)
             % Reduce extracted data to a 2-D slice or, in RGB mode, an
-            % H×W×3 array, then apply axis flips.
+            % H×W×nCh array, then apply axis flips.
+            %   triad RGB  : nCh = 3 ([prev,curr,next] -> R/G/B)
+            %   stretch RGB: nCh = number of slices along rd (coloured later)
+            if nargin < 7, doStretch = false; end
             if ~doRGB
                 raw = MatVisRender.finalize2D(data, doProj, model.ProjFun, ...
                     pd, model.XDim, model.YDim);
             else
-                groups = MatVisRender.rgbGroups_(size(data, rd));
-                chans  = cell(1, 3);
-                nd     = ndims(data);
-                for c = 1:3
-                    if isempty(groups{c}), continue; end
+                nd  = ndims(data);
+                if doStretch
+                    nCh = size(data, rd);
+                else
+                    nCh = 3;
+                end
+                chans = cell(1, nCh);
+                for c = 1:nCh
                     idxc = repmat({':'}, 1, nd);
-                    idxc{rd} = groups{c};
-                    sub = data(idxc{:});
-                    if numel(groups{c}) > 1
-                        sub = mean(sub, rd);
-                    end
-                    chans{c} = MatVisRender.finalize2D(sub, doProj, ...
+                    idxc{rd} = c;
+                    chans{c} = MatVisRender.finalize2D(data(idxc{:}), doProj, ...
                         model.ProjFun, pd, model.XDim, model.YDim);
                 end
-                ref = chans{find(~cellfun(@isempty, chans), 1)};
-                raw = zeros(size(ref, 1), size(ref, 2), 3);
-                for c = 1:3
-                    if ~isempty(chans{c}), raw(:, :, c) = chans{c}; end
+                raw = zeros(size(chans{1}, 1), size(chans{1}, 2), nCh);
+                for c = 1:nCh
+                    raw(:, :, c) = chans{c};
                 end
             end
             if model.FlipX, raw = fliplr(raw); end
             if model.FlipY, raw = flipud(raw); end
         end
 
-        function groups = rgbGroups_(n)
-            % Map n slices to the three color channels: direct slice→channel
-            % for n<=3, otherwise three equal contiguous groups (mean each).
-            groups = cell(1, 3);
-            if n <= 3
-                for c = 1:min(n, 3), groups{c} = c; end
+        function idx = stretchRangeIdx_(model, rd)
+            % Indices along the RGB dimension used for stretch projection:
+            % the full extent, or the zoom interval when the stretch lock is on.
+            if model.RGBStretchZoomLock
+                idx = model.ZoomRange(rd, 1) : model.ZoomRange(rd, 2);
             else
-                edges = round(linspace(0, n, 4));
-                for c = 1:3, groups{c} = edges(c)+1 : edges(c+1); end
+                idx = 1 : model.Size(rd);
+            end
+            if isempty(idx), idx = 1; end
+        end
+
+        function idx3 = rgbTriadIdx_(model, rd)
+            % Three consecutive positions along rd around CurrPos(rd), with
+            % wraparound: [prev, curr, next] -> [red, green, blue].
+            n = model.Size(rd);
+            c = model.CurrPos(rd);
+            idx3 = mod([c-2, c-1, c], n) + 1;
+        end
+
+        function S = currentScalarSlice_(model, data)
+            % 2-D scalar slice of the current position oriented as S(y, x):
+            % row = YDim index, column = XDim index (same orientation in
+            % which ROI/profile overlays are drawn, ignoring axis flips).
+            idx = num2cell(model.CurrPos);
+            idx{model.XDim} = 1 : model.Size(model.XDim);
+            idx{model.YDim} = 1 : model.Size(model.YDim);
+            S = squeeze(double(data(idx{:})));
+            if model.XDim < model.YDim
+                S = S.';
             end
         end
 

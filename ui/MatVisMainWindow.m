@@ -48,10 +48,10 @@ rowH_playSpeed  = 26;   % height of the play-speed control row inside posPanel
 rowH_spacing    = 10;
 panelTitleH     = 36;
 panelPadV       = 5;
-figWidth        = 420;
+figWidth        = 436;
 
 posPanelH      = nDims * rowH_slider + max(0, nDims-1) * rowH_spacing + rowH_playSpeed + rowH_spacing + rowH_plotBtns + rowH_spacing + 2*panelPadV + panelTitleH;
-imagePanelH    = 2*rowH_dimSel + 4 + 2*4 + panelTitleH;   % two rows (dims/proj + RGB)
+imagePanelH    = 3*rowH_dimSel + 4 + 2*4 + panelTitleH;   % three rows (dims/proj + RGB/aspect + filter)
 contrastPanelH = rowH_contrast + 2*panelPadV + panelTitleH;
 bottomH        = rowH_bottom;
 
@@ -102,6 +102,8 @@ for d = 1:nDims
     rs.Layout.Column = 1;
     rs.Limits   = [1, nSteps];
     rs.DimLabel = dimLabel;
+    rs.ScaleFactor = model.pixelSize(d);
+    rs.ScaleUnit   = model.dimUnit(d);
     rs.Value    = model.CurrPos(d);
     rs.ZoomMin  = model.ZoomRange(d, 1);
     rs.ZoomMax  = model.ZoomRange(d, 2);
@@ -171,16 +173,16 @@ btnPlotAvg = uibutton(plotBtnRow, 'push', ...
     'ButtonPushedFcn', @onPlotAvgToggle);
 btnPlotAvg.Layout.Column = 1;
 
-% 2) Show/hide '.' marker
+% 2) Show/hide markers — icon is a line with a dot in the middle
 btnPlotMarker = uibutton(plotBtnRow, 'state', ...
-    'Text', '.', 'FontSize', 18, 'FontWeight', 'bold', ...
+    'Text', '', 'Icon', makeMarkerIcon(), ...
     'Tooltip', 'Show/hide point markers on plots', ...
     'ValueChangedFcn', @onPlotMarkerToggle);
 btnPlotMarker.Layout.Column = 2;
 
 % 3) Fix X-scale  (right-click → enter limits)
 btnPlotFixX = uibutton(plotBtnRow, 'state', ...
-    'Text', 'X', 'FontSize', 11, ...
+    'Text', 'x lim', 'FontSize', 10, ...
     'Tooltip', 'Fix plot X-axis scale (right-click to set limits)', ...
     'ValueChangedFcn', @onPlotFixXToggle);
 btnPlotFixX.Layout.Column = 3;
@@ -190,7 +192,7 @@ btnPlotFixX.ContextMenu = cmPlotX;
 
 % 4) Fix Y-scale  (right-click → enter limits)
 btnPlotFixY = uibutton(plotBtnRow, 'state', ...
-    'Text', 'Y', 'FontSize', 11, ...
+    'Text', 'y lim', 'FontSize', 10, ...
     'Tooltip', 'Fix plot Y-axis scale (right-click to set limits)', ...
     'ValueChangedFcn', @onPlotFixYToggle);
 btnPlotFixY.Layout.Column = 4;
@@ -200,7 +202,7 @@ btnPlotFixY.ContextMenu = cmPlotY;
 
 % 5) Export data subset
 btnPlotExport = uibutton(plotBtnRow, 'push', ...
-    'Text', 'Exp', 'FontSize', 10, ...
+    'Text', 'Export', 'FontSize', 10, ...
     'Tooltip', 'Export data subset to workspace', ...
     'ButtonPushedFcn', @onPlotExportData);
 btnPlotExport.Layout.Column = 5;
@@ -233,7 +235,47 @@ imageCtrlPanel = uipanel(grid, 'Title', 'Image controls', ...
     'FontSize', 13, 'FontWeight', 'bold', 'TitlePosition', 'centertop');
 imageCtrlPanel.Layout.Row    = 2;
 imageCtrlPanel.Layout.Column = 1;
-dimSelector = MatVisDimSelector(imageCtrlPanel, model, renderFcn); %#ok<NASGU>
+
+% The panel stacks the dimension/RGB/projection/filter controls on top and the
+% RGB-stretch blue/red-point bar below them. The bar's row is reserved
+% permanently (it fits in the existing panel height), so toggling a stretch
+% mode only shows/hides the bar — it never resizes or repositions anything.
+stretchBarH = 22;     % height (px) of the reserved stretch-bar row
+imgWrap = uigridlayout(imageCtrlPanel, [2 1]);
+imgWrap.ColumnWidth = {'1x'};
+imgWrap.RowHeight   = {'1x', stretchBarH};
+imgWrap.Padding     = [0 0 0 0];
+imgWrap.RowSpacing  = 2;
+
+dimSelHost = uipanel(imgWrap, 'BorderType', 'none', 'BackgroundColor', fig.Color);
+dimSelHost.Layout.Row = 1;
+dimSelector = MatVisDimSelector(dimSelHost, model, renderFcn);
+
+% Dock the bar in row 2, indented to line up with the RGB dropdown (the
+% DimSelector label column is 30 px) and ending at the lock's right edge.
+barWrap = uigridlayout(imgWrap, [1 2]);
+barWrap.Layout.Row    = 2;
+barWrap.ColumnWidth   = {23, '1x'};
+barWrap.RowHeight     = {'1x'};
+barWrap.Padding       = [2 1 2 0];
+barWrap.ColumnSpacing = 4;
+stretchBar = MatVisRGBStretchBar(barWrap, @onRGBStretchRangeChanged);
+stretchBar.root.Layout.Row    = 1;
+stretchBar.root.Layout.Column = 2;
+stretchBar.SetValue(model.RGBStretchRange);
+stretchBar.SetVisible(false);
+
+% Aspect ratio + window scaling: DimSelector builds the buttons; the
+% behaviour lives here because it acts on the image/zoom windows.
+dimSelector.btnAspect.ValueChangedFcn   = @(~,~) onAspectToggle();
+cmAspect = uicontextmenu(fig);
+uimenu(cmAspect, 'Text', 'Set aspect ratio...', 'MenuSelectedFcn', @(~,~) onAspectSetRatio());
+dimSelector.btnAspect.ContextMenu = cmAspect;
+
+dimSelector.btnWinScale.ButtonPushedFcn = @(~,~) applyWindowScale();
+cmWinScale = uicontextmenu(fig);
+uimenu(cmWinScale, 'Text', 'Set window scale...', 'MenuSelectedFcn', @(~,~) onWinScaleSet());
+dimSelector.btnWinScale.ContextMenu = cmWinScale;
 mvTiming_.labels{end+1} = 'DimSelector created'; mvTiming_.times(end+1) = toc(mvT0_);
 
 %% Contrast Panel
@@ -526,10 +568,10 @@ addlistener(model, 'ActiveDatasetChanged', @(~,~) onModelActiveDatasetChanged())
 
 mvTiming_.labels{end+1} = 'contrast panel created'; mvTiming_.times(end+1) = toc(mvT0_);
 %% Bottom controls
-bottomGrid = uigridlayout(grid, [1, 7]);
+bottomGrid = uigridlayout(grid, [1, 8]);
 bottomGrid.Layout.Row    = 4;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', '1x', '1x'};
+bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', '1x', '1x', '1x'};
 bottomGrid.RowHeight     = {'1x'};
 bottomGrid.Padding       = [0 0 0 0];
 
@@ -550,18 +592,23 @@ btnToggleRoi = uibutton(bottomGrid, 'state', 'Text', 'ROI', 'Value', false, ...
     'ValueChangedFcn', @(src, ~) toggleRoiWindow(src.Value));
 btnToggleRoi.Layout.Column = 4;
 
+btnToggleProfile = uibutton(bottomGrid, 'state', 'Text', 'Prof', 'Value', false, ...
+    'Tooltip', 'Show/hide the Profile Manager', ...
+    'ValueChangedFcn', @(src, ~) toggleProfileWindow(src.Value));
+btnToggleProfile.Layout.Column = 5;
+
 btnOverlay = uibutton(bottomGrid, 'state', 'Text', 'Overlay', 'Value', true, ...
     'Tooltip', 'Show/hide crop rectangle and position lines', ...
     'ValueChangedFcn', @(src, ~) setOverlay(src.Value));
-btnOverlay.Layout.Column = 5;
+btnOverlay.Layout.Column = 6;
 
 btnSaveConfig = uibutton(bottomGrid, 'Text', 'Save Config', ...
     'ButtonPushedFcn', @(~,~) onSaveConfig());
-btnSaveConfig.Layout.Column = 6;
+btnSaveConfig.Layout.Column = 7;
 
 btnLoadConfig = uibutton(bottomGrid, 'Text', 'Load Config', ...
     'ButtonPushedFcn', @(~,~) onLoadConfig());
-btnLoadConfig.Layout.Column = 7;
+btnLoadConfig.Layout.Column = 8;
 
 setappdata(fig, 'OverlayVisible', true);
 
@@ -571,14 +618,26 @@ roiCbs = struct();
 roiCbs.setRoiMode    = @setRoiModeAllWins;
 roiCbs.applyPosition = @applyRoiPosition;
 roiCbs.onHide        = @() set(btnToggleRoi, 'Value', false);
+roiCbs.onActivate    = @deactivateProfileTools;   % engaging an ROI tool frees profile tools
 roiMgr = [];
 roiMgrDefaultPos = [];   % set by onWindowShown, applied at creation
 mvTiming_.labels{end+1} = 'ROI manager (deferred)'; mvTiming_.times(end+1) = toc(mvT0_);
 
-addlistener(model, 'RoiChanged', @(~,~) doRender());
+%% Profile Manager window — also created lazily on first use
+profCbs = struct();
+profCbs.setRoiMode    = @setRoiModeAllWins;       % shares the image/zoom mouse funnel
+profCbs.applyPosition = @applyRoiPosition;
+profCbs.onHide        = @() set(btnToggleProfile, 'Value', false);
+profCbs.onActivate    = @deactivateRoiTools;      % engaging a profile tool frees ROI tools
+profMgr = [];
+profMgrDefaultPos = [];
+
+addlistener(model, 'RoiChanged',     @(~,~) doRender());
+addlistener(model, 'ProfileChanged', @(~,~) doRender());
 
 %% Output struct
 mw.fig          = fig;
+mw.model        = model;
 mw.rangeSliders = rangeSliders;
 mw.dimSelector  = dimSelector;
 mw.imageWins    = imageWins;
@@ -588,6 +647,7 @@ mw.imageWin     = imageWins{1};   % legacy single-window fields
 mw.zoomWin      = zoomWins{1};
 mw.plotWin      = plotWins{1};
 mw.getRoiMgr    = @getRoiMgr;     % ROI manager is created lazily
+mw.getProfileMgr = @getProfileMgr;% Profile manager is created lazily
 mw.histAx       = histAx;
 mw.rbGlobal     = rbGlobal;
 mw.rbImage      = rbImage;
@@ -619,14 +679,9 @@ try
 catch
 end
 
-posPanelH      = nDims*rowH_slider + max(0,nDims-1)*rowH_spacing + rowH_plotBtns + rowH_spacing + 2*panelPadV + actualTitleH;
-imagePanelH    = 2*rowH_dimSel + 4 + 2*4 + actualTitleH;
+posPanelH      = nDims*rowH_slider + max(0,nDims-1)*rowH_spacing + rowH_playSpeed + rowH_spacing + rowH_plotBtns + rowH_spacing + 2*panelPadV + actualTitleH;
 contrastPanelH = rowH_contrast + 2*panelPadV + actualTitleH;
-figHeight      = posPanelH + imagePanelH + contrastPanelH + bottomH ...
-               + 3*rowH_spacing + 12 + actualChromeH;
-
-grid.RowHeight    = {posPanelH, imagePanelH, contrastPanelH, bottomH};
-fig.Position(3:4) = [figWidth, figHeight];
+applyPanelHeights();
 
 for ds = 1:nDatasets
     imageWins{ds}.fig.Visible = 'off';
@@ -716,6 +771,14 @@ fprintf('\n');
         end
         roiCols = MatVisRender.roiColors(max(numel(selRois), 1));
 
+        % When a spatial filter is active, plots along the X/Y display dims
+        % overlay the unfiltered and filtered profiles (see profile loop).
+        filtOn = MatVisRender.filterActive(model);
+
+        % Whole-dimension RGB colour coding (MeanStretch / MaxStretch): the
+        % raw slices below are H×W×N stacks composed via renderStretchImage.
+        stretchOn = MatVisRender.stretchActive(model);
+
         rf_ads = [];
         rz_ads = [];
         for ds = 1:nDatasets
@@ -735,28 +798,50 @@ fprintf('\n');
             cmax_arr(ds) = cmax_ds;
             gamma_ds     = getGammaForDataset(ds);
 
-            norm_full = MatVisRender.normalizeData(raw_full, cmin_ds, cmax_ds);
-            norm_zoom = MatVisRender.normalizeData(raw_zoom, cmin_ds, cmax_ds);
-
-            if withAlpha
-                % Slice the alpha map exactly like the data (zoom /
-                % projection / flips), then blend against the background.
-                aMap  = model.AlphaMaps{ds};
-                aLo   = model.AlphaContrastMins(ds);
-                aHi   = model.AlphaContrastMaxs(ds);
-                aFull = MatVisRender.renderAlphaSlice( ...
-                    MatVisRender.getRawFullSliceFromData(model, aMap), ...
-                    aLo, aHi, model.AlphaGamma);
-                aZoom = MatVisRender.renderAlphaSlice( ...
-                    MatVisRender.getRawSliceFromData(model, aMap), ...
-                    aLo, aHi, model.AlphaGamma);
-                rgb_full = MatVisRender.composeImageWithAlpha(norm_full, gamma_ds, ...
-                    model.ColormapIdx, aFull, model.AlphaBgWhite);
-                rgb_zoom = MatVisRender.composeImageWithAlpha(norm_zoom, gamma_ds, ...
-                    model.ColormapIdx, aZoom, model.AlphaBgWhite);
+            if stretchOn
+                % Whole RGB dimension colour-coded into one image; contrast/
+                % gamma/filter are handled inside renderStretchImage.
+                rgb_full = MatVisRender.renderStretchImage(model, raw_full, cmin_ds, cmax_ds, gamma_ds);
+                rgb_zoom = MatVisRender.renderStretchImage(model, raw_zoom, cmin_ds, cmax_ds, gamma_ds);
+                if withAlpha
+                    aMap  = model.AlphaMaps{ds};
+                    aLo   = model.AlphaContrastMins(ds);
+                    aHi   = model.AlphaContrastMaxs(ds);
+                    aFull = stretchAlpha_(MatVisRender.getRawFullSliceFromData(model, aMap), aLo, aHi, model.AlphaGamma);
+                    aZoom = stretchAlpha_(MatVisRender.getRawSliceFromData(model, aMap),     aLo, aHi, model.AlphaGamma);
+                    rgb_full = blendStretchAlpha_(rgb_full, aFull, model.AlphaBgWhite);
+                    rgb_zoom = blendStretchAlpha_(rgb_zoom, aZoom, model.AlphaBgWhite);
+                end
             else
-                rgb_full = MatVisRender.composeImage(norm_full, gamma_ds, model.ColormapIdx);
-                rgb_zoom = MatVisRender.composeImage(norm_zoom, gamma_ds, model.ColormapIdx);
+                % Spatial filter is applied to the displayed image only; contrast
+                % bounds above are computed from the unfiltered data (as in the
+                % original matVis, which kept currImVal before filtering).
+                disp_full = MatVisRender.filterImage(raw_full, model.FilterType, model.FilterPar);
+                disp_zoom = MatVisRender.filterImage(raw_zoom, model.FilterType, model.FilterPar);
+
+                norm_full = MatVisRender.normalizeData(disp_full, cmin_ds, cmax_ds);
+                norm_zoom = MatVisRender.normalizeData(disp_zoom, cmin_ds, cmax_ds);
+
+                if withAlpha
+                    % Slice the alpha map exactly like the data (zoom /
+                    % projection / flips), then blend against the background.
+                    aMap  = model.AlphaMaps{ds};
+                    aLo   = model.AlphaContrastMins(ds);
+                    aHi   = model.AlphaContrastMaxs(ds);
+                    aFull = MatVisRender.renderAlphaSlice( ...
+                        MatVisRender.getRawFullSliceFromData(model, aMap), ...
+                        aLo, aHi, model.AlphaGamma);
+                    aZoom = MatVisRender.renderAlphaSlice( ...
+                        MatVisRender.getRawSliceFromData(model, aMap), ...
+                        aLo, aHi, model.AlphaGamma);
+                    rgb_full = MatVisRender.composeImageWithAlpha(norm_full, gamma_ds, ...
+                        model.ColormapIdx, aFull, model.AlphaBgWhite);
+                    rgb_zoom = MatVisRender.composeImageWithAlpha(norm_zoom, gamma_ds, ...
+                        model.ColormapIdx, aZoom, model.AlphaBgWhite);
+                else
+                    rgb_full = MatVisRender.composeImage(norm_full, gamma_ds, model.ColormapIdx);
+                    rgb_zoom = MatVisRender.composeImage(norm_zoom, gamma_ds, model.ColormapIdx);
+                end
             end
 
             imageWins{ds}.Update(rgb_full, zoomRect, posX, posY);
@@ -771,7 +856,16 @@ fprintf('\n');
             profiles = cell(1, nDims);
             for ii = 1:nDims
                 if model.PlotDims(ii)
-                    if ~isempty(selRois) && ii ~= xd && ii ~= yd
+                    if filtOn && (ii == xd || ii == yd) && ~withAlpha && isempty(selRois)
+                        % Spatial profile + its filtered counterpart, drawn in
+                        % two colours (matches the original matVis behaviour of
+                        % overlaying filtered/unfiltered along x/y).
+                        [pRaw, pFilt] = MatVisRender.renderFilteredSpatialProfile( ...
+                            model, dsData, ii, model.PlotLock(ii));
+                        profiles{ii} = struct('data', [pRaw, pFilt], ...
+                            'names', {{'unfiltered', 'filtered'}}, ...
+                            'colors', [0 0 0; 0.85 0.33 0.10]);
+                    elseif ~isempty(selRois) && ii ~= xd && ii ~= yd
                         % ROI traces: mean over each ROI mask along dim ii
                         % (alpha-weighted mean + mean-alpha trace with alpha)
                         if model.PlotLock(ii)
@@ -841,6 +935,71 @@ fprintf('\n');
                 update2DHist(rf_ads, cmin_arr(ads), cmax_arr(ads));
             end
         end
+
+        % Reconcile RGB-stretch controls + stretch-bar visibility with state.
+        syncStretchUI();
+
+        % Keep the Profile Manager's 1-D/straightened view in sync with the
+        % current slice while it is open (it samples the live data).
+        if ~isempty(profMgr) && isvalid(profMgr.fig) && ...
+                strcmp(profMgr.fig.Visible, 'on')
+            try; profMgr.Refresh(); catch; end
+        end
+    end
+
+    % ------------------------------------------------------------------
+    %  RGB stretch (MeanStretch / MaxStretch) UI plumbing
+    % ------------------------------------------------------------------
+    function applyPanelHeights()
+        % Panel + figure heights. The stretch-bar row is reserved inside the
+        % existing image-panel height, so this does not depend on stretch state.
+        imgPanelH = 3*rowH_dimSel + 4 + 2*4 + actualTitleH;
+        figH      = posPanelH + imgPanelH + contrastPanelH + bottomH ...
+                  + 3*rowH_spacing + 12 + actualChromeH;
+        grid.RowHeight    = {posPanelH, imgPanelH, contrastPanelH, bottomH};
+        fig.Position(3:4) = [figWidth, figH];
+    end
+
+    function syncStretchUI()
+        % Enable/value of the Mean/Max/lock buttons and stretch-bar visibility
+        % follow the model. Programmatic Value writes don't fire callbacks.
+        rgbOn = MatVisRender.rgbActive(model);
+        if ~rgbOn && ~strcmp(model.RGBStretchMode, 'none')
+            model.RGBStretchMode = 'none';   % drop stale mode when RGB is off
+        end
+        mode       = model.RGBStretchMode;
+        dimSelector.btnRGBMean.Enable = onOffStr_(rgbOn);
+        dimSelector.btnRGBMax.Enable  = onOffStr_(rgbOn);
+        dimSelector.btnRGBMean.Value  = rgbOn && strcmp(mode, 'mean');
+        dimSelector.btnRGBMax.Value   = rgbOn && strcmp(mode, 'max');
+        shown = rgbOn && ~strcmp(mode, 'none');
+        dimSelector.btnRGBLock.Enable = onOffStr_(shown);
+        dimSelector.btnRGBLock.Value  = logical(model.RGBStretchZoomLock);
+        % The bar's row is always reserved, so this only shows/hides it —
+        % no figure resize or element repositioning.
+        stretchBar.SetVisible(shown);
+    end
+
+    function onRGBStretchRangeChanged(v)
+        model.RGBStretchRange = v;
+        doRender();
+    end
+
+    function a = stretchAlpha_(rawA, lo, hi, g)
+        % Collapse an N-slice alpha stack (stretch mode) to a 2-D weight map.
+        if ndims(rawA) == 3, rawA = mean(rawA, 3); end
+        a = MatVisRender.renderAlphaSlice(rawA, lo, hi, g);
+    end
+
+    function img = blendStretchAlpha_(img, a, bgWhite)
+        a  = max(0, min(1, double(a)));
+        bg = 0;
+        if bgWhite, bg = 255; end
+        img = uint8(double(img) .* a + bg * (1 - a));
+    end
+
+    function s = onOffStr_(tf)
+        if tf, s = 'on'; else, s = 'off'; end
     end
 
     % ------------------------------------------------------------------
@@ -1856,12 +2015,18 @@ fprintf('\n');
         if ~isempty(list)
             for k_ = 1:numel(list)
                 rs_ = list{k_};
-                if ~isempty(rs_) && isvalid(rs_)
+                if isa(rs_, 'function_handle')
+                    % External hover provider (e.g. the RGB stretch bar):
+                    % returns a Pointer string or '' when not applicable.
+                    c_ = rs_();
+                elseif ~isempty(rs_) && isvalid(rs_)
                     c_ = rs_.GetHoverCursor();
-                    if ~isempty(c_)
-                        fig.Pointer = c_;
-                        return;
-                    end
+                else
+                    continue;
+                end
+                if ~isempty(c_)
+                    fig.Pointer = c_;
+                    return;
                 end
             end
         end
@@ -2099,6 +2264,42 @@ fprintf('\n');
         end
     end
 
+    function deactivateRoiTools()
+        if ~isempty(roiMgr) && isvalid(roiMgr.fig)
+            try; roiMgr.DeactivateTools(); catch; end
+        end
+    end
+
+    function deactivateProfileTools()
+        if ~isempty(profMgr) && isvalid(profMgr.fig)
+            try; profMgr.DeactivateTools(); catch; end
+        end
+    end
+
+    % ------------------------------------------------------------------
+    %  Profile Manager wiring
+    % ------------------------------------------------------------------
+    function pm = getProfileMgr()
+        if isempty(profMgr) || ~isvalid(profMgr.fig)
+            profMgr = MatVisProfileWin(model, profCbs);
+            if ~isempty(profMgrDefaultPos)
+                profMgr.fig.Position(1:2) = profMgrDefaultPos;
+            end
+        end
+        pm = profMgr;
+    end
+
+    function toggleProfileWindow(isVisible)
+        if isVisible
+            pm = getProfileMgr();
+            pm.fig.Visible = 'on';
+            figure(pm.fig);
+        elseif ~isempty(profMgr) && isvalid(profMgr.fig)
+            profMgr.fig.Visible = 'off';
+            setRoiModeAllWins('', []);
+        end
+    end
+
     function applyRoiPosition(pos, zoomVal)
         % Jump navigation state to an ROI's stored position/zoom and sync sliders.
         if numel(pos) == nDims
@@ -2197,6 +2398,19 @@ fprintf('\n');
                 btnAlphaBg.Value   = model.AlphaBgWhite;
             end
         end
+
+        % Image/zoom axes display state (aspect ratio + window scale)
+        if isfield(config, 'aspectRatioFixed')
+            model.AspectRatioFixed = logical(config.aspectRatioFixed);
+        end
+        if isfield(config, 'aspectRatio') && numel(config.aspectRatio) == 2
+            model.AspectRatio = config.aspectRatio(:)';
+        end
+        if isfield(config, 'winScalePct') && isfinite(config.winScalePct) && config.winScalePct > 0
+            model.WinScalePct = config.winScalePct;
+        end
+        dimSelector.Update();   % refresh aspect/win-scale button captions
+        applyAspectRatio();     % window-scale is applied only on explicit click
 
         % Window positions (support per-dataset keys and legacy single keys)
         if isfield(config, 'windowPositions')
@@ -2324,6 +2538,12 @@ fprintf('\n');
             if ~isempty(roiMgr) && isvalid(roiMgr.fig)
                 roiMgr.fig.Position(1:2) = roiMgrDefaultPos;
             end
+
+            % Profile Manager (created lazily): offset from the ROI manager
+            profMgrDefaultPos = [leftX + 60, 40];
+            if ~isempty(profMgr) && isvalid(profMgr.fig)
+                profMgr.fig.Position(1:2) = profMgrDefaultPos;
+            end
         end
 
         fig.Visible = 'on';
@@ -2332,6 +2552,87 @@ fprintf('\n');
             if btnToggleZoom.Value,  zoomWins{ds}.fig.Visible  = 'on'; end
             if btnTogglePlot.Value,  plotWins{ds}.fig.Visible  = 'on'; end
         end
+    end
+
+    % ---- Aspect ratio & window scaling -------------------------------------
+    function txt = aspectButtonText()
+        if model.AspectRatioFixed
+            r   = model.AspectRatio;
+            txt = sprintf('%g:%g', r(1), r(2));
+        else
+            txt = 'fill';
+        end
+    end
+
+    function applyAspectRatio()
+        % Push the current aspect-ratio state onto every image/zoom axes.
+        for ds = 1:nDatasets
+            try, imageWins{ds}.SetAspectRatio(model.AspectRatioFixed, model.AspectRatio); catch; end
+            try, zoomWins{ds}.SetAspectRatio(model.AspectRatioFixed, model.AspectRatio);  catch; end
+        end
+    end
+
+    function onAspectToggle()
+        % Left click: toggle between fixed aspect ratio and fill.
+        model.AspectRatioFixed   = logical(dimSelector.btnAspect.Value);
+        dimSelector.btnAspect.Text = aspectButtonText();
+        applyAspectRatio();
+    end
+
+    function onAspectSetRatio()
+        % Right click: prompt for a custom [x y] ratio and switch to fixed.
+        r      = model.AspectRatio;
+        answer = inputdlg('Aspect ratio [x y]:', 'Set Aspect Ratio', 1, ...
+            {sprintf('%g %g', r(1), r(2))});
+        if isempty(answer), return; end
+        v = str2num(answer{1}); %#ok<ST2NM>
+        if numel(v) ~= 2 || any(~isfinite(v)) || any(v <= 0), return; end
+        model.AspectRatio        = v(:)';
+        model.AspectRatioFixed   = true;
+        dimSelector.btnAspect.Value = true;
+        dimSelector.btnAspect.Text  = aspectButtonText();
+        applyAspectRatio();
+    end
+
+    function applyWindowScale()
+        % Resize every zoom window so the current zoom region is shown at
+        % WinScalePct % (100 % ≈ one data pixel per screen pixel). The
+        % top-left corner of each window is kept fixed.
+        xd   = model.XDim;  yd = model.YDim;
+        zwPx = diff(model.ZoomRange(xd, :)) + 1;   % zoom width  in data px
+        zhPx = diff(model.ZoomRange(yd, :)) + 1;   % zoom height in data px
+        if zwPx <= 0 || zhPx <= 0, return; end
+
+        scale = model.WinScalePct / 100;
+        ss    = get(0, 'ScreenSize');
+        maxW  = ss(3) - 20;  maxH = ss(4) - 80;
+        tW    = zwPx * scale;  tH = zhPx * scale;
+        if tW > maxW || tH > maxH
+            model.WinScalePct = max(1, floor(model.WinScalePct * min(maxW/tW, maxH/tH)));
+            scale = model.WinScalePct / 100;
+        end
+        tW = max(50, round(zwPx * scale));
+        tH = max(50, round(zhPx * scale));
+
+        for ds = 1:nDatasets
+            zf = zoomWins{ds}.fig;
+            if ~isvalid(zf), continue; end
+            p   = zf.Position;
+            top = p(2) + p(4);                 % keep top edge fixed
+            zf.Position = [p(1), max(0, top - tH), tW, tH];
+        end
+        dimSelector.btnWinScale.Text = sprintf('%d%%', round(model.WinScalePct));
+    end
+
+    function onWinScaleSet()
+        % Right click: prompt for the scaling factor, then apply it.
+        answer = inputdlg('Window scaling factor [%]:', 'Window Scale', 1, ...
+            {num2str(round(model.WinScalePct))});
+        if isempty(answer), return; end
+        v = str2double(answer{1});
+        if ~isfinite(v) || v <= 0, return; end
+        model.WinScalePct = v;
+        applyWindowScale();
     end
 
 end % MatVisMainWindow
@@ -2407,12 +2708,13 @@ function cdata = makePlotAvgIcon(mode)
 %   mode 1 → center 3×3 blue          (3×3)
 %   mode 2 → all 25 cells blue        (5×5)
 %   mode 3 → all 25 cells green       (zoom)
+%   The zoom mode also draws a red square outline (mirroring the red
+%   zoom-crop indicator in the image window) so it is easy to recognise.
 cellSz = 5;  gap = 1;  nC = 5;
 sz = nC * cellSz + (nC - 1) * gap;   % 29
 
 bgCol  = [0.82 0.82 0.82];
 hiCol  = [0.18 0.52 0.88];
-hiColZ = [0.18 0.72 0.35];
 gapCol = [0.55 0.55 0.55];
 
 cdata = zeros(sz, sz, 3);
@@ -2424,17 +2726,43 @@ for row = 1:nC
         c0 = (col-1)*(cellSz+gap)+1;  c1 = c0+cellSz-1;
         dr = row-3;  dc = col-3;
         switch mode
-            case 0,  active = (dr==0 && dc==0);           col_ = hiCol;
-            case 1,  active = (abs(dr)<=1 && abs(dc)<=1); col_ = hiCol;
-            case 2,  active = true;                        col_ = hiCol;
-            case 3,  active = true;                        col_ = hiColZ;
-            otherwise, active = (dr==0 && dc==0);         col_ = hiCol;
+            case 0,  active = (dr==0 && dc==0);           % 1x1
+            case 1,  active = (abs(dr)<=1 && abs(dc)<=1); % 3x3
+            case 2,  active = true;                        % 5x5
+            case 3,  active = true;                        % zoom
+            otherwise, active = (dr==0 && dc==0);
         end
         if active
-            for c = 1:3, cdata(r0:r1,c0:c1,c) = col_(c); end
+            for c = 1:3, cdata(r0:r1,c0:c1,c) = hiCol(c); end
         else
             for c = 1:3, cdata(r0:r1,c0:c1,c) = bgCol(c); end
         end
     end
+end
+
+% Zoom mode: overlay a red square outline, like the image-window crop rect.
+if mode == 3
+    rc = [0.85 0.10 0.10];  bw = 3;
+    for c = 1:3
+        cdata(1:bw,         :, c)        = rc(c);
+        cdata(end-bw+1:end, :, c)        = rc(c);
+        cdata(:, 1:bw,         c)        = rc(c);
+        cdata(:, end-bw+1:end, c)        = rc(c);
+    end
+end
+end
+
+function cdata = makeMarkerIcon()
+% Icon for the "show point markers" toggle: a horizontal line with a filled
+% dot at its centre (a line plot carrying a marker).
+sz = 20;  bg = 0.94;  fg = 0.12;
+cdata = repmat(bg, sz, sz, 3);
+mid   = (sz + 1) / 2;
+[X, Y] = meshgrid(1:sz, 1:sz);
+lineMask = abs(Y - mid) <= 0.6 & X >= 2 & X <= sz - 1;   % 1-2 px line
+dotMask  = (X - mid).^2 + (Y - mid).^2 <= 3.3^2;          % centred dot
+mask     = lineMask | dotMask;
+for c = 1:3
+    ch = cdata(:, :, c);  ch(mask) = fg;  cdata(:, :, c) = ch;
 end
 end

@@ -35,8 +35,19 @@ classdef MatVisModel < handle
         ProjDim         % scalar integer — dimension to project along (0 = off)
         ProjFun         % string: 'max','min','mean','std','var','tile','none'
         RGBDim          % scalar integer — dimension mapped to R/G/B channels (0 = off)
+        RGBStretchMode  % string: 'none','mean','max' — color-code the whole RGB
+                        %   dimension (matVis "MeanStretch"/"MaxStretch") instead
+                        %   of showing three consecutive slices as R/G/B
+        RGBStretchRange % 1×2 double [bluePoint redPoint] in [0,1] — rainbow
+                        %   positions assigned to the first/last RGB-dim index
+        RGBStretchZoomLock % logical — when true, stretch only over the RGB
+                        %   dimension's zoom interval (mirrors ProjZoomLock)
         Gamma           % scalar double in [0.1, 5.0]
         ColormapIdx     % scalar positive integer
+        FilterType      % string: 'none','gauss','median','mean','unsharp'
+        FilterPar       % numeric vector — filter parameter (scalar = isotropic,
+                        %   [x y] = anisotropic); meaning depends on FilterType
+                        %   (sigma / neighbourhood size / radius)
         PlotDims        % 1×N logical vector
         PlotLock        % 1×N logical vector
         ProjZoomLock    % logical
@@ -45,6 +56,11 @@ classdef MatVisModel < handle
         ContrastMode    % string: 'Global', 'Image', 'Zoom', 'Manual'
         FlipX           % logical
         FlipY           % logical
+
+        % Image/zoom axes display state
+        AspectRatioFixed % logical — true=fixed aspect ratio, false=fill window
+        AspectRatio      % 1×2 double [x y] — data aspect ratio when fixed
+        WinScalePct      % scalar — zoom-window display scale [%] (100 = 1:1 px)
 
         % Alpha channel state (empty AlphaMaps = no alpha; see SetAlphaMaps)
         AlphaMaps         % 1×K cell of numeric N-D arrays (same size as data), or {}
@@ -70,6 +86,22 @@ classdef MatVisModel < handle
         RoiShowNames    % logical — show ROI name labels in image/zoom windows
         RoiLineWidth    % scalar — outline width of selected ROIs
         RoiLineStyle    % char — outline line style ('-','--',':','-.')
+
+        % Profile (line-trace) state.  ProfileList is a struct array using the
+        % same field layout as the original matVis profile export format, so
+        % profile files are interchangeable between versions:
+        %   points          2×N clicked vertices [x; y] (pixel coords)
+        %   smoothedPoints  2×M interpolated path at ~1 px spacing [x; y]
+        %   name            char
+        %   number          scalar
+        %   length          scalar — path length (pixels)
+        %   settings        struct: .position, .zoomVal, .xySel
+        ProfileList         % 1×P struct array (see above)
+        ProfileSelection    % vector of selected indices into ProfileList
+        ProfileShowNames    % logical — show profile name labels in image/zoom
+        ProfileShowDir      % logical — show profile direction arrow
+        ProfileWidth        % scalar — perpendicular sampling width (pixels)
+        ProfileProjection   % char — 'Mean' | 'Sum' | 'Max' | 'Min'
     end
 
     properties (SetAccess = private)
@@ -98,6 +130,7 @@ classdef MatVisModel < handle
         ContrastModeChanged
         ActiveDatasetChanged
         RoiChanged          % ROI list, geometry, or selection changed
+        ProfileChanged      % profile list, geometry, or selection changed
     end
 
     % ------------------------------------------------------------------
@@ -194,14 +227,29 @@ classdef MatVisModel < handle
             % ProjDim — the UI enforces mutual exclusion when active)
             obj.RGBDim = 0;
 
+            % RGB stretch (whole-dimension colour coding); off by default.
+            % Range is in slider space [0,1]: the rainbow occupies the middle
+            % 70% (0.15..0.85), with solid blue/red in the outer 15%. The
+            % default indicators sit at the rainbow boundaries (0.15, 0.85).
+            obj.RGBStretchMode     = 'none';
+            obj.RGBStretchRange    = [0.15, 0.85];
+            obj.RGBStretchZoomLock = false;
+
             % Rendering
             obj.Gamma        = 1.0;
             obj.ColormapIdx  = 1;
+            obj.FilterType   = 'none';
+            obj.FilterPar    = 1;
             obj.PlotDims     = false(1, N);
             obj.PlotLock     = false(1, N);
             obj.ProjZoomLock = false;
             obj.FlipX        = false;
             obj.FlipY        = false;
+
+            % Image/zoom axes display defaults (fixed square pixels, 100%)
+            obj.AspectRatioFixed = true;
+            obj.AspectRatio      = [1 1];
+            obj.WinScalePct      = 100;
 
             % Alpha channel (off until SetAlphaMaps is called)
             obj.AlphaMaps         = {};
@@ -216,6 +264,14 @@ classdef MatVisModel < handle
             obj.RoiShowNames = true;
             obj.RoiLineWidth = 1;
             obj.RoiLineStyle = '-';
+
+            % Profiles
+            obj.ProfileList       = MatVisModel.EmptyProfileList();
+            obj.ProfileSelection  = [];
+            obj.ProfileShowNames  = true;
+            obj.ProfileShowDir    = false;
+            obj.ProfileWidth      = 5;
+            obj.ProfileProjection = 'Mean';
 
             % Contrast — set directly to avoid setter ordering issues
             obj.ContrastMin  = allMins(1);
@@ -366,6 +422,27 @@ classdef MatVisModel < handle
                 error('MatVisModel:invalidDim', 'RGBDim must be in [0, %d].', N);
             end
             obj.RGBDim = value;
+        end
+
+        function set.RGBStretchMode(obj, value)
+            value = validatestring(value, {'none', 'mean', 'max'}, ...
+                'MatVisModel.set.RGBStretchMode', 'RGBStretchMode');
+            obj.RGBStretchMode = value;
+        end
+
+        function set.RGBStretchRange(obj, value)
+            validateattributes(value, {'numeric'}, ...
+                {'vector', 'numel', 2, 'finite'}, ...
+                'MatVisModel.set.RGBStretchRange', 'RGBStretchRange');
+            v = double(value(:)');
+            v = max(0, min(1, v));            % clamp to [0,1]
+            obj.RGBStretchRange = [min(v), max(v)];   % keep blue <= red
+        end
+
+        function set.RGBStretchZoomLock(obj, value)
+            validateattributes(value, {'logical', 'numeric'}, {'scalar'}, ...
+                'MatVisModel.set.RGBStretchZoomLock', 'RGBStretchZoomLock');
+            obj.RGBStretchZoomLock = logical(value);
         end
 
         function set.CurrPos(obj, value)
@@ -623,6 +700,70 @@ classdef MatVisModel < handle
     end
 
     % ------------------------------------------------------------------
+    %  Dimension scaling helpers
+    %
+    %  DimScale{d} holds the real-world coordinate of every index along
+    %  dimension d (default 1:Size(d), i.e. coordinate == index).  These
+    %  helpers map between integer/fractional indices and real-world
+    %  coordinates (µm, ms, …) so the image/zoom axes, plots and the zoom
+    %  readout can display real units while navigation stays index-based.
+    % ------------------------------------------------------------------
+    methods
+        function r = indexToReal(obj, dim, idx)
+            % indexToReal  Real-world coordinate(s) at the given index/indices
+            % along DIM.  Integer in-range indices return the stored value
+            % exactly; fractional / out-of-range indices are linearly
+            % interpolated/extrapolated.
+            if dim < 1 || dim > numel(obj.DimScale)
+                r = idx; return;
+            end
+            sc = obj.DimScale{dim};
+            n  = numel(sc);
+            if n == 0
+                r = idx;
+            elseif n == 1
+                r = repmat(sc(1), size(idx));
+            else
+                r = interp1(1:n, sc, idx, 'linear', 'extrap');
+            end
+        end
+
+        function f = pixelSize(obj, dim)
+            % pixelSize  Real-world size of one index step along DIM
+            % (uniform-spacing estimate from the DimScale endpoints).
+            f = 1;
+            if dim < 1 || dim > numel(obj.DimScale), return; end
+            sc = obj.DimScale{dim};
+            n  = numel(sc);
+            if n >= 2
+                f = (sc(end) - sc(1)) / (n - 1);
+            end
+        end
+
+        function u = dimUnit(obj, dim)
+            % dimUnit  Unit string for DIM ('' when none was supplied).
+            if dim >= 1 && dim <= numel(obj.DimUnits)
+                u = obj.DimUnits{dim};
+            else
+                u = '';
+            end
+        end
+
+        function tf = hasRealScale(obj, dim)
+            % hasRealScale  True when DIM carries non-trivial scale info: a
+            % unit string, or a DimScale that differs from the plain 1:N
+            % index vector.
+            tf = false;
+            if dim < 1 || dim > numel(obj.Size), return; end
+            if ~isempty(obj.dimUnit(dim)), tf = true; return; end
+            sc = obj.DimScale{dim};
+            if isempty(sc), return; end
+            f = obj.pixelSize(dim);
+            tf = abs(f - 1) > 1e-9 || abs(sc(1) - 1) > 1e-9;
+        end
+    end
+
+    % ------------------------------------------------------------------
     %  ROI methods
     % ------------------------------------------------------------------
     methods
@@ -777,6 +918,163 @@ classdef MatVisModel < handle
             end
             notify(obj, 'RoiChanged');
         end
+
+        % ==================================================================
+        %  Profiles (line traces) — mirror the ROI API above
+        % ==================================================================
+        function idx = AddProfile(obj, points, name)
+            % AddProfile  Append a new profile built from polyline vertices
+            % (pixel coords, 2×N [x;y]).  Returns the new index, which is
+            % also selected.  Degenerate (single-point) paths are ignored.
+            prof = obj.buildProfile_(points);
+            if isempty(prof), idx = []; return; end
+            if nargin >= 3 && ~isempty(name), prof.name = name; end
+            obj.ProfileList(end+1) = prof;
+            idx = numel(obj.ProfileList);
+            obj.ProfileSelection = idx;
+            notify(obj, 'ProfileChanged');
+        end
+
+        function ReplaceProfileGeometry(obj, idx, points)
+            % ReplaceProfileGeometry  Replace path of profile idx, keeping
+            % its name, number and stored settings.
+            if idx < 1 || idx > numel(obj.ProfileList), return; end
+            old  = obj.ProfileList(idx);
+            prof = obj.buildProfile_(points);
+            if isempty(prof), return; end
+            prof.name     = old.name;
+            prof.number   = old.number;
+            prof.settings = old.settings;
+            obj.ProfileList(idx) = prof;
+            notify(obj, 'ProfileChanged');
+        end
+
+        function RecomputeProfile(obj, indices)
+            % RecomputeProfile  Rebuild smoothedPoints/length for profiles
+            % whose vertices were edited in place (shift).
+            for idx = indices(:)'
+                if idx < 1 || idx > numel(obj.ProfileList), continue; end
+                p  = obj.ProfileList(idx).points;
+                sp = MatVisModel.SmoothProfilePoints(p);
+                obj.ProfileList(idx).smoothedPoints = sp;
+                obj.ProfileList(idx).length         = MatVisModel.ProfilePathLength(sp);
+            end
+            notify(obj, 'ProfileChanged');
+        end
+
+        function DeleteProfiles(obj, indices)
+            indices = indices(indices >= 1 & indices <= numel(obj.ProfileList));
+            if isempty(indices), return; end
+            obj.ProfileList(indices) = [];
+            nLeft = numel(obj.ProfileList);
+            if nLeft == 0
+                obj.ProfileSelection = [];
+            else
+                obj.ProfileSelection = min(min(indices), nLeft);
+            end
+            notify(obj, 'ProfileChanged');
+        end
+
+        function CopyProfiles(obj, indices)
+            newSel = [];
+            for idx = indices(:)'
+                if idx < 1 || idx > numel(obj.ProfileList), continue; end
+                src  = obj.ProfileList(idx);
+                prof = obj.buildProfile_(src.points);
+                if isempty(prof), continue; end
+                prof.settings = src.settings;
+                obj.ProfileList(end+1) = prof;
+                newSel(end+1) = numel(obj.ProfileList); %#ok<AGROW>
+            end
+            if ~isempty(newSel)
+                obj.ProfileSelection = newSel;
+                notify(obj, 'ProfileChanged');
+            end
+        end
+
+        function RenameProfile(obj, idx, name)
+            if idx < 1 || idx > numel(obj.ProfileList), return; end
+            obj.ProfileList(idx).name = char(name);
+            notify(obj, 'ProfileChanged');
+        end
+
+        function SetProfileSelection(obj, sel)
+            sel = unique(sel(sel >= 1 & sel <= numel(obj.ProfileList)));
+            obj.ProfileSelection = sel(:)';
+            notify(obj, 'ProfileChanged');
+        end
+
+        function SetProfileWidth(obj, w)
+            obj.ProfileWidth = max(1, round(w));
+            notify(obj, 'ProfileChanged');
+        end
+
+        function SetProfileProjection(obj, method)
+            if ismember(method, {'Mean', 'Sum', 'Max', 'Min'})
+                obj.ProfileProjection = method;
+                notify(obj, 'ProfileChanged');
+            end
+        end
+
+        function TouchProfiles(obj)
+            % TouchProfiles  Notify listeners after in-place vertex edits
+            % (used for live previews during mouse shifting).
+            notify(obj, 'ProfileChanged');
+        end
+
+        function vis = VisibleProfileIndices(obj)
+            % Indices of profiles defined in the current XY display plane.
+            vis = [];
+            for k = 1:numel(obj.ProfileList)
+                xy = obj.ProfileList(k).settings.xySel;
+                if numel(xy) == 2 && xy(1) == obj.XDim && xy(2) == obj.YDim
+                    vis(end+1) = k; %#ok<AGROW>
+                end
+            end
+        end
+
+        function nImported = ImportProfiles(obj, profs, append)
+            % ImportProfiles  Import a struct array in the matVis profile
+            % export format.  Rebuilds the smoothed path from the stored
+            % vertices.  append=false replaces the existing list.
+            if nargin < 3, append = true; end
+            if ~append
+                obj.ProfileList      = MatVisModel.EmptyProfileList();
+                obj.ProfileSelection = [];
+            end
+            nImported = 0;
+            for k = 1:numel(profs)
+                r = profs(k);
+                if isfield(r, 'points') && ~isempty(r.points)
+                    p = double(r.points);
+                else
+                    continue;
+                end
+                if size(p, 1) ~= 2 && size(p, 2) == 2, p = p.'; end
+                % Flip if imported plane is the reverse of the current one
+                if isfield(r, 'settings') && isfield(r.settings, 'xySel')
+                    xy = r.settings.xySel;
+                    if numel(xy) == 2 && xy(1) == obj.YDim && xy(2) == obj.XDim
+                        p = p([2 1], :);
+                    end
+                end
+                prof = obj.buildProfile_(p);
+                if isempty(prof), continue; end
+                if isfield(r, 'name') && ~isempty(r.name)
+                    prof.name = char(r.name);
+                end
+                if isfield(r, 'settings')
+                    if isfield(r.settings, 'position'), prof.settings.position = r.settings.position; end
+                    if isfield(r.settings, 'zoomVal'),  prof.settings.zoomVal  = r.settings.zoomVal;  end
+                end
+                obj.ProfileList(end+1) = prof;
+                nImported = nImported + 1;
+            end
+            if nImported > 0
+                obj.ProfileSelection = numel(obj.ProfileList);
+            end
+            notify(obj, 'ProfileChanged');
+        end
     end
 
     methods (Access = private)
@@ -843,6 +1141,32 @@ classdef MatVisModel < handle
             catch
             end
         end
+
+        function prof = buildProfile_(obj, points)
+            % Build a complete profile struct from polyline vertices
+            % (2×N [x;y], pixel coords).  Returns [] for degenerate paths.
+            prof = [];
+            if isempty(points) || size(points, 1) ~= 2 || size(points, 2) < 2
+                return;
+            end
+            points = double(points);
+            sp = MatVisModel.SmoothProfilePoints(points);
+            if size(sp, 2) < 2, return; end
+
+            number = 1;
+            if ~isempty(obj.ProfileList)
+                number = max([obj.ProfileList.number]) + 1;
+            end
+
+            prof.points         = points;
+            prof.smoothedPoints = sp;
+            prof.name           = sprintf('Prof%d', number);
+            prof.number         = number;
+            prof.length         = MatVisModel.ProfilePathLength(sp);
+            prof.settings       = struct('position', obj.CurrPos, ...
+                                         'zoomVal',  obj.ZoomRange, ...
+                                         'xySel',    [obj.XDim, obj.YDim]);
+        end
     end
 
     methods (Static)
@@ -869,6 +1193,65 @@ classdef MatVisModel < handle
             in = inpolygon(XX, YY, cx, cy);
             mask(x0:x1, y0:y1) = in;
             [ix, iy] = find(mask);
+        end
+
+        function s = EmptyProfileList()
+            % Empty struct array with the canonical profile field order.
+            s = struct('points', {}, 'smoothedPoints', {}, 'name', {}, ...
+                       'number', {}, 'length', {}, 'settings', {});
+        end
+
+        function sp = SmoothProfilePoints(points)
+            % SmoothProfilePoints  Interpolate a polyline (2×N [x;y]) into a
+            % smooth path sampled at ~1 px spacing.  Mirrors the original
+            % matVis imgTraceSmooth (pchip along cumulative arc length).
+            x = points(1, :).';  y = points(2, :).';
+            if numel(unique(x)) <= 1 && numel(unique(y)) <= 1
+                sp = points;  return;
+            end
+            d = [0; cumsum(hypot(diff(x), diff(y)))];
+            [d, ia] = unique(d);
+            x = x(ia);  y = y(ia);
+            if numel(d) < 2, sp = points; return; end
+            if numel(d) >= 3, method = 'pchip'; else, method = 'linear'; end
+            dt = (0:ceil(d(end))).';
+            xp = interp1(d, x, dt, method);
+            yp = interp1(d, y, dt, method);
+            % Re-parametrize to unit spacing along the resulting curve
+            d2  = [0; cumsum(hypot(diff(xp), diff(yp)))];
+            dt2 = (0:ceil(d2(end))).';
+            xp  = interp1(d2, xp, dt2, 'linear', 'extrap');
+            yp  = interp1(d2, yp, dt2, 'linear', 'extrap');
+            sp  = [xp.'; yp.'];
+        end
+
+        function L = ProfilePathLength(sp)
+            if size(sp, 2) < 2, L = 0; return; end
+            L = sum(hypot(diff(sp(1, :)), diff(sp(2, :))));
+        end
+
+        function M = ProfileSampleMatrix(sp, width)
+            % ProfileSampleMatrix  Build a perpendicular sampling grid along
+            % a smoothed path.  Returns an [width × L × 2] array where
+            % M(:,:,1)/M(:,:,2) are the X/Y sample coordinates.  Mirrors the
+            % original matVis imgTraceMatrix.
+            xp = sp(1, :).';  yp = sp(2, :).';
+            lw = max(1, round(width));
+            w  = (0:lw-1) - (lw-1)/2;
+            T  = numel(xp);  t = 1:T;
+            t1 = max([t-1; ones(1, T)]);
+            t2 = min([t+1; T*ones(1, T)]);
+            dp = [xp(t2) yp(t2)] - [xp(t1) yp(t1)];
+            nrm = hypot(dp(:, 1), dp(:, 2));  nrm(nrm == 0) = 1;
+            dp = dp ./ nrm;
+            dp = dp.';
+            dp = dp(:) * w;
+            dp = reshape(dp.', lw, 2, []);
+            dp = reshape(permute(dp, [1 3 2]), [], 2);
+            dp = dp * [0 1; -1 0];                 % rotate 90° -> perpendicular
+            xi = reshape(dp(:, 1), lw, []) + repmat(xp.', [lw 1]);
+            yi = reshape(dp(:, 2), lw, []) + repmat(yp.', [lw 1]);
+            M  = cat(3, xi, yi);
         end
     end
 end

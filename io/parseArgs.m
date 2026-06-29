@@ -123,12 +123,28 @@ end
 end
 
 function out = padCellVec(c, n, data)
-% Ensure c is a row cell of numeric vectors with exactly n entries.
+% Ensure c is a row cell of per-index coordinate vectors with exactly n
+% entries.  Each supplied entry may be either
+%   * a full coordinate vector of length size(data,i), used verbatim, or
+%   * a scalar per-index scaling factor (e.g. µm/pixel), expanded to the
+%     coordinate vector (0:size-1)*factor.
+% Missing or mismatched entries default to the plain index vector 1:size.
 sz = size(data);
 out = cell(1, n);
 for i = 1:n
     if i <= numel(c) && ~isempty(c{i})
-        out{i} = c{i};
+        v = c{i};
+        if isscalar(v)
+            out{i} = (0:sz(i)-1) * double(v);
+        elseif numel(v) == sz(i)
+            out{i} = v;
+        else
+            warning('parseArgs:dimScaleMismatch', ...
+                ['''dimScale'' entry %d has %d elements but dimension %d ' ...
+                 'has size %d; using index coordinates instead.'], ...
+                i, numel(v), i, sz(i));
+            out{i} = 1:sz(i);
+        end
     else
         out{i} = 1:sz(i);
     end

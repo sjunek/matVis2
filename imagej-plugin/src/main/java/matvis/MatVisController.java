@@ -104,6 +104,18 @@ public class MatVisController {
     private boolean plotAutoScale = true;
     private double plotScaleMin, plotScaleMax;
 
+    // ---- plot local-averaging mode -----------------------------------------
+    // Single-pixel profiles can instead average over an XY neighborhood around
+    // the current position, mirroring the Matlab avgMode:
+    //   0 = single pixel, 1 = 3x3, 2 = 5x5, 3 = full zoom XY region.
+    public static final int PLOT_AVG_PIXEL = 0;
+    public static final int PLOT_AVG_3X3   = 1;
+    public static final int PLOT_AVG_5X5   = 2;
+    public static final int PLOT_AVG_ZOOM  = 3;
+    /** Human-readable labels for the plot-averaging modes (indexed by mode). */
+    public static final String[] PLOT_AVG_NAMES = {"Pixel", "3×3", "5×5", "Zoom region"};
+    private int plotAvgMode = PLOT_AVG_PIXEL;
+
     // location of the brightest pixel, found during computeGlobalMinMax
     private int brightX, brightY, brightZ, brightC, brightT;
 
@@ -466,6 +478,12 @@ public class MatVisController {
     /**
      * Returns a 1-D profile along active dim [activeDimIdx] at the current
      * position. Length = dimSize of that dimension.
+     *
+     * When {@link #getPlotAvgMode()} is not {@code PLOT_AVG_PIXEL}, the value at
+     * each step is the mean over an XY neighborhood around the current X/Y
+     * position (3×3, 5×5, or the full zoom rectangle). Only the non-profile
+     * axes are widened — e.g. an X profile averages over a Y band but still
+     * varies along X. This mirrors the Matlab avgMode behaviour.
      */
     public float[] getProfile(int activeDimIdx) {
         int globalDim = activeDimIndices[activeDimIdx];
@@ -475,8 +493,6 @@ public class MatVisController {
         int z0 = getNavCurrPos(2);
         int c0 = getNavCurrPos(3);
         int t0 = getNavCurrPos(4);
-        int xPos = getNavCurrPos(0);
-        int yPos = getNavCurrPos(1);
 
         // If an ROI is selected, nav-dim profiles average over the ROI pixels.
         java.awt.Point[] roiPts = null;
@@ -485,32 +501,62 @@ public class MatVisController {
             if (roi != null) roiPts = roiPoints(roi);
         }
 
+        // Plot-averaging neighborhood in native image X/Y (single pixel in
+        // PLOT_AVG_PIXEL mode). The profile axis itself is never widened.
+        int[] xr = avgRange(0);
+        int[] yr = avgRange(1);
+
         for (int p = 0; p < sz; p++) {
             int z = globalDim == 2 ? p : z0;
             int c = globalDim == 3 ? p : c0;
             int t = globalDim == 4 ? p : t0;
 
             if (globalDim == 0) {
-                // X profile: vary x at fixed y,z,c,t
-                int stackIdx = imp.getStackIndex(c0 + 1, z0 + 1, t0 + 1);
-                profile[p] = imp.getStack().getProcessor(stackIdx).getf(p, yPos);
+                // X profile: vary x at column p, average over the Y band
+                ImageProcessor ip = imp.getStack().getProcessor(imp.getStackIndex(c0 + 1, z0 + 1, t0 + 1));
+                profile[p] = meanOverNeighborhood(ip, p, p, yr[0], yr[1]);
             } else if (globalDim == 1) {
-                // Y profile: vary y at fixed x,z,c,t
-                int stackIdx = imp.getStackIndex(c0 + 1, z0 + 1, t0 + 1);
-                profile[p] = imp.getStack().getProcessor(stackIdx).getf(xPos, p);
+                // Y profile: vary y at row p, average over the X band
+                ImageProcessor ip = imp.getStack().getProcessor(imp.getStackIndex(c0 + 1, z0 + 1, t0 + 1));
+                profile[p] = meanOverNeighborhood(ip, xr[0], xr[1], p, p);
             } else {
-                int stackIdx = imp.getStackIndex(c + 1, z + 1, t + 1);
-                ImageProcessor ip = imp.getStack().getProcessor(stackIdx);
+                ImageProcessor ip = imp.getStack().getProcessor(imp.getStackIndex(c + 1, z + 1, t + 1));
                 if (roiPts != null) {
                     double sum = 0;
                     for (java.awt.Point pt : roiPts) sum += ip.getf(pt.x, pt.y);
                     profile[p] = (float) (sum / roiPts.length);
                 } else {
-                    profile[p] = ip.getf(xPos, yPos);
+                    profile[p] = meanOverNeighborhood(ip, xr[0], xr[1], yr[0], yr[1]);
                 }
             }
         }
         return profile;
+    }
+
+    /**
+     * Inclusive [min,max] index range of the plot-averaging neighborhood along
+     * native dim {@code globalXY} (0 = X, 1 = Y), clamped to the image bounds.
+     * In PLOT_AVG_PIXEL mode this is the single current position.
+     */
+    private int[] avgRange(int globalXY) {
+        int size = dimSizes[globalXY];
+        if (plotAvgMode == PLOT_AVG_ZOOM) {
+            int ad = activeDim(globalXY);
+            return new int[]{ zoomMin[ad], zoomMax[ad] };
+        }
+        int hw = plotAvgMode; // 0 (pixel), 1 (3x3) or 2 (5x5)
+        int c  = getNavCurrPos(globalXY);
+        return new int[]{ Math.max(0, c - hw), Math.min(size - 1, c + hw) };
+    }
+
+    /** Mean of ip over the inclusive pixel rectangle [x0..x1] × [y0..y1]. */
+    private static float meanOverNeighborhood(ImageProcessor ip, int x0, int x1, int y0, int y1) {
+        if (x0 == x1 && y0 == y1) return ip.getf(x0, y0);
+        double sum = 0;
+        int n = 0;
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++) { sum += ip.getf(x, y); n++; }
+        return n > 0 ? (float) (sum / n) : 0f;
     }
 
     /**
@@ -713,11 +759,18 @@ public class MatVisController {
      * a different dim still applies via the normal extractSlice path.
      */
     private float[][][] extractRGBChannels() {
+        // Three consecutive positions of the RGB dimension, centered on the
+        // current position, map to R/G/B with wraparound at the edges:
+        //   red   = current - 1
+        //   green = current
+        //   blue  = current + 1
         float[][][] ch = new float[3][][];
-        int nCh = Math.min(3, getActiveDimSize(rgbActiveDim));
+        int sz    = getActiveDimSize(rgbActiveDim);
         int saved = currPos[rgbActiveDim];
-        for (int k = 0; k < nCh; k++) {
-            currPos[rgbActiveDim] = k;
+        int[] offsets = { -1, 0, +1 };   // ch[0]=R, ch[1]=G, ch[2]=B
+        for (int k = 0; k < 3; k++) {
+            int p = ((saved + offsets[k]) % sz + sz) % sz;   // wrap into [0, sz)
+            currPos[rgbActiveDim] = p;
             ch[k] = extractSlice(false);
         }
         currPos[rgbActiveDim] = saved;
@@ -1198,6 +1251,19 @@ public class MatVisController {
 
     public void setPercLow(double v)  { percLow  = Math.max(0, Math.min(100, v)); fireUpdate(); }
     public void setPercHigh(double v) { percHigh = Math.max(0, Math.min(100, v)); fireUpdate(); }
+
+    // ---- plot averaging-mode getters / setters -----------------------------
+
+    public int getPlotAvgMode() { return plotAvgMode; }
+
+    /** Current plot-averaging mode as a label ("Pixel" | "3×3" | "5×5" | "Zoom region"). */
+    public String getPlotAvgName() { return PLOT_AVG_NAMES[plotAvgMode]; }
+
+    /** Set the local-averaging mode for single-pixel plot profiles. */
+    public void setPlotAvgMode(int mode) {
+        plotAvgMode = Math.max(PLOT_AVG_PIXEL, Math.min(PLOT_AVG_ZOOM, mode));
+        fireUpdate();
+    }
 
     /** True when tile projection is active (crosshairs/zoom rect are suppressed). */
     public boolean isProjectingTiled() { return isNativePlane() && "tile".equals(projFun) && projActiveDim >= 0; }

@@ -36,6 +36,8 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         PlotLock (1,1) logical = false
         PlayMode (1,:) char    = 'none'
         IsPlaying (1,1) logical = false
+        ScaleFactor (1,1) double = 1    % real-world size of one index step
+        ScaleUnit (1,:) char   = ''     % unit for the real-world scale ('' = none)
     end
 
     events (HasCallbackProperty, NotifyAccess = protected)
@@ -255,7 +257,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             zoomRow.Layout.Row    = 2;
             zoomRow.Layout.Column = 3;        % track column only — keeps edits under track
             zoomRow.RowHeight     = {'1x'};
-            zoomRow.ColumnWidth   = {21, 38, 12, 38, 30, '1x'};
+            zoomRow.ColumnWidth   = {6, 38, 12, 38, 'fit', '1x'};
             zoomRow.Padding       = [0 0 0 0];
             zoomRow.ColumnSpacing = 2;
 
@@ -286,8 +288,9 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
                 'HorizontalAlignment', 'left', ...
                 'FontSize', 10, ...
                 'FontColor', [0.35 0.35 0.35], ...
-                'Tooltip', 'Number of frames in the current zoom range');
-            obj.ZoomLenLabel_.Layout.Column = 5;
+                'Tooltip', ['Zoom range length in indices, and — when a real-world ' ...
+                            'scale is defined for this dimension — in scaled units']);
+            obj.ZoomLenLabel_.Layout.Column = [5 6];
 
             obj.DragState_  = 'none';
             obj.DragOffset_ = 0;
@@ -333,7 +336,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             obj.setIfChanged_(obj.ZoomMinEdit_, 'Value',  zm);
             obj.setIfChanged_(obj.ZoomMaxEdit_, 'Limits', [lo + 1, hi]);
             obj.setIfChanged_(obj.ZoomMaxEdit_, 'Value',  zx);
-            obj.setIfChanged_(obj.ZoomLenLabel_, 'Text', sprintf(': %d', zx - zm + 1));
+            obj.setIfChanged_(obj.ZoomLenLabel_, 'Text', obj.zoomLenText_(zx - zm + 1));
 
             pauseTxt  = '||';
             txtFull   = char(9654);
@@ -447,42 +450,25 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             lo    = obj.Limits(1);
             hi    = obj.Limits(2);
             range = hi - lo;
-            zm    = obj.ZoomMin;
-            zx    = obj.ZoomMax;
-            zminN = (zm - lo) / range;
-            zmaxN = (zx - lo) / range;
-            posN  = (obj.Value - lo) / range;
-            hw      = max(0.008, 1.0 / max(range, 1));
-            edgeTol = max(0.02,  4   / max(range, 1));
 
             fig = ancestor(obj, 'figure');
 
-            hitLeft  = abs(x - zminN) <= edgeTol;
-            hitRight = abs(x - zmaxN) <= edgeTol;
-            hitPos   = abs(x - posN)  <= hw + edgeTol;
-            hitBody  = x > zminN + edgeTol && x < zmaxN - edgeTol;
-
-            if hitLeft
-                obj.DragState_ = 'zoomLeft';
-            elseif hitRight
-                obj.DragState_ = 'zoomRight';
-            elseif hitPos
-                obj.DragState_ = 'pos';
-                newVal = max(lo, min(hi, round(lo + x * range)));
-                if newVal ~= obj.Value
-                    obj.Value = newVal;
-                    notify(obj, 'ValueChanged');
-                end
-            elseif hitBody
-                obj.DragState_  = 'zoomBar';
-                obj.DragOffset_ = x - zminN;
-            else
-                obj.DragState_ = 'pos';
-                newVal = max(lo, min(hi, round(lo + x * range)));
-                if newVal ~= obj.Value
-                    obj.Value = newVal;
-                    notify(obj, 'ValueChanged');
-                end
+            switch obj.hitTest_(x)
+                case 'zoomLeft'
+                    obj.DragState_ = 'zoomLeft';
+                case 'zoomRight'
+                    obj.DragState_ = 'zoomRight';
+                case 'zoomBar'
+                    obj.DragState_  = 'zoomBar';
+                    zminN = (obj.ZoomMin - lo) / max(range, 1);
+                    obj.DragOffset_ = x - zminN;
+                otherwise   % 'pos'
+                    obj.DragState_ = 'pos';
+                    newVal = max(lo, min(hi, round(lo + x * range)));
+                    if newVal ~= obj.Value
+                        obj.Value = newVal;
+                        notify(obj, 'ValueChanged');
+                    end
             end
 
             if ~isempty(fig) && isvalid(fig)
@@ -490,6 +476,44 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
                 setappdata(fig, 'RS_SavedMotionFcn', fig.WindowButtonMotionFcn);
                 fig.WindowButtonMotionFcn = @obj.onMouseMove_;
                 fig.WindowButtonUpFcn     = @obj.onMouseUp_;
+            end
+        end
+
+        function target = hitTest_(obj, x)
+            % Decide which element a click/hover at normalized x targets.
+            % Returns 'pos' | 'zoomLeft' | 'zoomRight' | 'zoomBar'.
+            %
+            % The position indicator has PRIORITY: when the cursor is inside
+            % the position hit zone and no closer to a zoom edge, position
+            % wins.  This matters for short dimensions, where edgeTol/hw span
+            % most of the track and the zoom edges would otherwise always be
+            % picked first — making the position marker impossible to grab.
+            lo    = obj.Limits(1);
+            hi    = obj.Limits(2);
+            range = hi - lo;
+            if range <= 0, range = 1; end
+
+            zminN = (obj.ZoomMin - lo) / range;
+            zmaxN = (obj.ZoomMax - lo) / range;
+            posN  = (obj.Value   - lo) / range;
+            % Cap edgeTol so it can't swallow the whole track on short dims.
+            hw      = max(0.008, 1.0 / max(range, 1));
+            edgeTol = min(0.15, max(0.02, 4 / max(range, 1)));
+
+            dPos   = abs(x - posN);
+            dLeft  = abs(x - zminN);
+            dRight = abs(x - zmaxN);
+
+            if dPos <= hw + edgeTol && dPos <= dLeft && dPos <= dRight
+                target = 'pos';
+            elseif dLeft <= edgeTol
+                target = 'zoomLeft';
+            elseif dRight <= edgeTol
+                target = 'zoomRight';
+            elseif x > zminN + edgeTol && x < zmaxN - edgeTol
+                target = 'zoomBar';
+            else
+                target = 'pos';
             end
         end
 
@@ -617,27 +641,11 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             if isempty(cp), return; end
             x = max(0, min(1, cp(1,1)));
 
-            lo    = obj.Limits(1);
-            hi    = obj.Limits(2);
-            rng   = hi - lo;
-            zm    = obj.ZoomMin;
-            zx    = obj.ZoomMax;
-            zminN = (zm - lo) / rng;
-            zmaxN = (zx - lo) / rng;
-            posN  = (obj.Value - lo) / rng;
-            hw      = max(0.008, 1.0 / max(rng, 1));
-            edgeTol = max(0.02,  4   / max(rng, 1));
-
-            if abs(x - zminN) <= edgeTol
-                cursor = 'left';
-            elseif abs(x - zmaxN) <= edgeTol
-                cursor = 'right';
-            elseif abs(x - posN) <= hw + edgeTol
-                cursor = 'crosshair';
-            elseif x > zminN + edgeTol && x < zmaxN - edgeTol
-                cursor = 'hand';
-            else
-                cursor = 'crosshair';
+            switch obj.hitTest_(x)
+                case 'zoomLeft',  cursor = 'left';
+                case 'zoomRight', cursor = 'right';
+                case 'zoomBar',   cursor = 'hand';
+                otherwise,        cursor = 'crosshair';
             end
         end
 
@@ -717,6 +725,23 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         function out = orDefault_(~, val, def)
             if isempty(val), out = def; else, out = val; end
         end
+
+        function txt = zoomLenText_(obj, nPx)
+            % Zoom-range length label.  Shows the index count and, when a
+            % real-world scale is defined, the scaled length, e.g.
+            % '120 px (240 µm)'.  Falls back to the plain ': N' form when the
+            % dimension has no scaling information.
+            if ~isempty(obj.ScaleUnit) || abs(obj.ScaleFactor - 1) > 1e-9
+                realLen = nPx * obj.ScaleFactor;
+                if isempty(obj.ScaleUnit)
+                    txt = sprintf('%d px (%.4g)', nPx, realLen);
+                else
+                    txt = sprintf('%d px (%.4g %s)', nPx, realLen, obj.ScaleUnit);
+                end
+            else
+                txt = sprintf(': %d', nPx);
+            end
+        end
     end
 
     % ==================================================================
@@ -787,8 +812,15 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 
             for k = 1:numel(list)
                 rs = list{k};
-                if isempty(rs) || ~isvalid(rs), continue; end
-                c = rs.getHoverCursor_();
+                if isa(rs, 'function_handle')
+                    % External hover provider (e.g. the RGB stretch bar):
+                    % returns a Pointer string or '' when not applicable.
+                    c = rs();
+                elseif ~isempty(rs) && isvalid(rs)
+                    c = rs.getHoverCursor_();
+                else
+                    continue;
+                end
                 if ~isempty(c)
                     fig.Pointer = c;
                     return;

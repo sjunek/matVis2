@@ -30,6 +30,7 @@ if nargin < 2, cb = struct(); end
 if ~isfield(cb, 'setRoiMode'),    cb.setRoiMode    = @(varargin) []; end
 if ~isfield(cb, 'applyPosition'), cb.applyPosition = @(varargin) []; end
 if ~isfield(cb, 'onHide'),        cb.onHide        = @() [];        end
+if ~isfield(cb, 'onActivate'),    cb.onActivate    = @() [];        end
 
 %% ---- Local state --------------------------------------------------------
 activeTool   = '';      % '', 'rect','ellipse','poly','shift','rotate','scale'
@@ -200,8 +201,9 @@ roiListener = addlistener(model, 'RoiChanged', @(~,~) refreshUI());
 fig.DeleteFcn = @(~,~) onFigureDeleted();
 
 %% ---- Output ---------------------------------------------------------------
-rm.fig     = fig;
-rm.Refresh = @refreshUI;
+rm.fig             = fig;
+rm.Refresh         = @refreshUI;
+rm.DeactivateTools = @deactivateTool;
 
 refreshUI();
 
@@ -355,6 +357,7 @@ refreshUI();
                 return;
             end
 
+            try; cb.onActivate(); catch; end   % release profile tools
             activeTool = toolName;
             if isTransform
                 cb.setRoiMode('drag', @onDragEvent);
