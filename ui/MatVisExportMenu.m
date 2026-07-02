@@ -1,19 +1,25 @@
-function MatVisExportMenu(fig, ax, dataFcn, defaultVarName, defaultFileName)
+function MatVisExportMenu(fig, ax, exportSpec, defaultVarName, defaultFileName)
 % MatVisExportMenu  Double-click action menu for image / zoom / plot content.
 %
-%   MatVisExportMenu(fig, ax, dataFcn, defaultVarName, defaultFileName)
+%   MatVisExportMenu(fig, ax, exportSpec, defaultVarName, defaultFileName)
 %
 %   Presents the user with a choice of:
 %     Copy                – copy the current content of `ax` to the system
 %                           clipboard as an image (copygraphics).
-%     Export to workspace – assign dataFcn() to a base-workspace variable.
+%     Export to workspace – assign one or more variables to the base
+%                           workspace (see exportSpec below).
 %     Save as image...    – write the content of `ax` to an image file
 %                           (exportgraphics: png/jpg/tif/pdf).
 %
 %   fig             - parent uifigure (anchors the dialogs)
 %   ax             - axes whose visible content is copied / saved
-%   dataFcn        - @() returning the variable pushed to the workspace
-%                    (e.g. the displayed RGB image, or the plotted traces)
+%   exportSpec     - N×2 cell {suffix, @()value; ...} describing the
+%                    workspace export. The user is prompted for a base name;
+%                    each row is assigned to  <base><suffix> = value().
+%                    Use a single row with an empty suffix to export one
+%                    plain variable. Example (image window):
+%                       {'_raw',     @() MatVisRender.getRawFullSlice(model); ...
+%                        '_display', @() imgHandle.CData}
 %   defaultVarName - suggested base-workspace variable name
 %   defaultFileName- suggested file name for "Save as image..."
 
@@ -29,7 +35,7 @@ switch sel
     case 'Copy'
         copyToClipboard(fig, ax);
     case 'Export to workspace'
-        exportToWorkspace(fig, dataFcn, defaultVarName);
+        exportToWorkspace(fig, exportSpec, defaultVarName);
     case 'Save as image...'
         saveAsImage(fig, ax, defaultFileName);
 end
@@ -46,19 +52,28 @@ function copyToClipboard(fig, ax)
 end
 
 % -------------------------------------------------------------------------
-function exportToWorkspace(fig, dataFcn, defaultName)
+function exportToWorkspace(fig, spec, defaultName)
     answer = inputdlg('Workspace variable name:', 'Export to workspace', ...
                       1, {defaultName});
     if isempty(answer), return; end
-    varName = strtrim(answer{1});
-    if ~isvarname(varName)
-        uialert(fig, 'Invalid variable name.', 'Export to workspace');
-        return;
+    baseName = strtrim(answer{1});
+
+    % Every <base><suffix> combination must be a legal variable name.
+    for i = 1:size(spec, 1)
+        if ~isvarname([baseName, spec{i, 1}])
+            uialert(fig, 'Invalid variable name.', 'Export to workspace');
+            return;
+        end
     end
+
     try
-        data = dataFcn();
-        assignin('base', varName, data);
-        fprintf('[matVis] Exported to workspace variable "%s"\n', varName);
+        made = cell(1, size(spec, 1));
+        for i = 1:size(spec, 1)
+            vn = [baseName, spec{i, 1}];
+            assignin('base', vn, spec{i, 2}());
+            made{i} = vn;
+        end
+        fprintf('[matVis] Exported to workspace: %s\n', strjoin(made, ', '));
     catch me
         uialert(fig, sprintf('Export failed: %s', me.message), 'Export to workspace');
     end

@@ -1,4 +1,4 @@
-function pw = MatVisPlotWin(model, posChangeFcn, zoomChangeFcn)
+function pw = MatVisPlotWin(model, posChangeFcn, zoomChangeFcn, dsIdx)
 % MatVisPlotWin  Standalone plot window with interactive position/zoom controls.
 %
 %   pw = MatVisPlotWin(model)
@@ -30,6 +30,10 @@ function pw = MatVisPlotWin(model, posChangeFcn, zoomChangeFcn)
 
 if nargin < 2 || isempty(posChangeFcn),  posChangeFcn  = @(~,~)   []; end
 if nargin < 3 || isempty(zoomChangeFcn), zoomChangeFcn = @(~,~,~) []; end
+if nargin < 4 || isempty(dsIdx), dsIdx = model.ActiveDataset; end
+if isempty(dsIdx), dsIdx = 1; end
+dsTag = '';                             % disambiguate exports across datasets
+if model.NumDatasets > 1, dsTag = ['_ds' num2str(dsIdx)]; end
 
 %% ---- Input validation --------------------------------------------------
 validateattributes(model.PlotDims,  {'logical','numeric'}, {'vector'},                     'MatVisPlotWin', 'model.PlotDims');
@@ -536,7 +540,8 @@ pw.SetFixY        = @setFixY;
             dragStartX  = NaN;  dragCurrX = NaN;  lastDragPos = NaN;
             fig.Pointer = 'arrow';
             MatVisExportMenu(fig, axHandles{dimIdx}, ...
-                @() collectPlotData(dimIdx), 'matVisPlot', 'matVisPlot.png');
+                {'', @() collectPlotData(dimIdx)}, ...
+                ['matVisPlot' dsTag], ['matVisPlot' dsTag '.png']);
             return;
         end
 

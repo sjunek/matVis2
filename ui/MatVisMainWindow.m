@@ -214,9 +214,9 @@ zoomWins  = cell(1, nDatasets);
 plotWins  = cell(1, nDatasets);
 
 for ds = 1:nDatasets
-    imageWins{ds} = MatVisImageWin(model, @onZoomFromMouse, @onPositionFromMouse);
-    zoomWins{ds}  = MatVisZoomWin(model,  @onZoomFromMouse, @onPositionFromMouse);
-    plotWins{ds}  = MatVisPlotWin(model, @onPlotPosChange, @onPlotZoomChange);
+    imageWins{ds} = MatVisImageWin(model, @onZoomFromMouse, @onPositionFromMouse, ds);
+    zoomWins{ds}  = MatVisZoomWin(model,  @onZoomFromMouse, @onPositionFromMouse, ds);
+    plotWins{ds}  = MatVisPlotWin(model, @onPlotPosChange, @onPlotZoomChange, ds);
 
     if nDatasets > 1
         dsName = model.DatasetNames{ds};

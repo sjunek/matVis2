@@ -1,4 +1,4 @@
-function iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn)
+function iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn, dsIdx)
 % MatVisImageWin  Full-image display + zoom indicator + position cross-hair.
 %
 %   iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn)
@@ -28,6 +28,10 @@ function iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn)
 
 if nargin < 2, zoomFromMouseFcn     = []; end
 if nargin < 3, positionFromMouseFcn = []; end
+if nargin < 4 || isempty(dsIdx), dsIdx = model.ActiveDataset; end
+if isempty(dsIdx), dsIdx = 1; end
+dsTag = '';                             % disambiguate exports across datasets
+if model.NumDatasets > 1, dsTag = ['_ds' num2str(dsIdx)]; end
 
 fig = uifigure('Name', ['Image: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', ...
                'Resize', 'on', 'AutoResizeChildren', 'off', 'Visible', 'off');
@@ -543,8 +547,10 @@ iw.SetAspectRatio    = @applyAspectRatio;
         if strcmp(src.SelectionType, 'open')
             selRect.Visible = 'off';
             dragMode = [];  dragStart = [];  fig.Pointer = 'arrow';
-            MatVisExportMenu(fig, ax, @() imgHandle.CData, ...
-                'matVisImage', 'matVisImage.png');
+            MatVisExportMenu(fig, ax, ...
+                {'_raw',     @() MatVisRender.getRawFullSliceFromData(model, model.Datasets{dsIdx}); ...
+                 '_display', @() imgHandle.CData}, ...
+                ['matVisImage' dsTag], ['matVisImage' dsTag '.png']);
             return;
         end
 
