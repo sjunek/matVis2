@@ -16,7 +16,7 @@ for k = 1:40
     data(:, :, k) = k;
 end
 
-mw = matVis(data, 'datasetNames', {'SmokeSet'});
+mw = matVis2(data, 'datasetNames', {'SmokeSet'});
 cleanup = onCleanup(@() closeAll(mw));
 
 assert(isfield(mw, 'fig') && isvalid(mw.fig), 'main figure not created');

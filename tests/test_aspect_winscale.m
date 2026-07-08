@@ -10,7 +10,7 @@ nFail = 0;
 data = rand(60, 80, 3, 10);
 data(5, 8, 2, 6) = 10;   % brightest pixel
 
-mw = matVis(data);
+mw = matVis2(data);
 cleanupObj = onCleanup(@() close(mw.fig, 'force'));
 dsel  = mw.dimSelector;
 model = mw.model;

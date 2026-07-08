@@ -191,7 +191,7 @@ lblStats.Layout.Column = 1;
 histAx = uiaxes(infoGrid);
 histAx.Layout.Column = 2;
 disableDefaultInteractivity(histAx);
-try; histAx.Toolbar.Visible = 'off'; catch; end
+try; histAx.Toolbar = []; catch; end   % remove toolbar + R2026a chevron
 histAx.FontSize = 8;
 histAx.YTick = [];
 title(histAx, 'Pixel value histogram', 'FontSize', 9);
@@ -563,7 +563,7 @@ refreshUI();
         try
             save(fullfile(fPath, fName), 'matVisRoiExport');
             assignin('base', 'matVisRoiExport', model.RoiList);
-            fprintf('[matVis] Exported %d ROI(s) to %s (and workspace variable "matVisRoiExport")\n', ...
+            fprintf('[matVis2] Exported %d ROI(s) to %s (and workspace variable "matVisRoiExport")\n', ...
                 numel(model.RoiList), fullfile(fPath, fName));
         catch me
             uialert(fig, sprintf('Export failed: %s', me.message), 'ROI Export');
@@ -615,7 +615,7 @@ refreshUI();
             uialert(fig, ['No ROIs could be imported (empty masks after ' ...
                 'clipping to the current data size?).'], 'ROI Import');
         else
-            fprintf('[matVis] Imported %d ROI(s) from %s\n', nImp, ...
+            fprintf('[matVis2] Imported %d ROI(s) from %s\n', nImp, ...
                 fullfile(fPath, fName));
         end
     end
@@ -658,7 +658,7 @@ refreshUI();
         varName = sprintf('roiDataNames_%s', suffix);
         assignin('base', varData, traces);
         assignin('base', varName, names);
-        fprintf(['[matVis] Exported ROI traces: "%s" (%d x %d, steps x ROIs) ' ...
+        fprintf(['[matVis2] Exported ROI traces: "%s" (%d x %d, steps x ROIs) ' ...
             'and "%s" to the base workspace\n'], varData, nT, numel(sel), varName);
     end
 

@@ -5,17 +5,17 @@ Multi-dimensional data viewer for MATLAB — displays N-D arrays as 2D images an
 ## Launch
 
 ```matlab
-matVis(myData)
-matVis(myData, 'dimNames', {'X','Y','Z'}, 'gamma', 0.8)
-matVis(myData, 'startPar', {'xySel', [1 2], 'gamma', 0.8})
-handles = matVis(myData)
+matVis2(myData)
+matVis2(myData, 'dimNames', {'X','Y','Z'}, 'gamma', 0.8)
+matVis2(myData, 'startPar', {'xySel', [1 2], 'gamma', 0.8})
+handles = matVis2(myData)
 ```
 
 ## File Structure
 
 | Path | Purpose |
 |------|---------|
-| `matVis.m` | Entry point — path setup, arg parsing, model creation, GUI launch |
+| `matVis2.m` | Entry point — path setup, arg parsing, model creation, GUI launch |
 | `core/` | Framework-agnostic logic: `MatVisModel` (data + metadata), `MatVisRender` (slice/profile/colormap) |
 | `ui/` | MATLAB uifigure components: main window, image/zoom/plot windows, sliders, contrast controls |
 | `io/` | Input handling: `parseArgs` (inputParser wrapper), `loadFiles` (.mat and .tif loaders) |

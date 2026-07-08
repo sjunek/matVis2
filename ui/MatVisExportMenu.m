@@ -73,7 +73,7 @@ function exportToWorkspace(fig, spec, defaultName)
             assignin('base', vn, spec{i, 2}());
             made{i} = vn;
         end
-        fprintf('[matVis] Exported to workspace: %s\n', strjoin(made, ', '));
+        fprintf('[matVis2] Exported to workspace: %s\n', strjoin(made, ', '));
     catch me
         uialert(fig, sprintf('Export failed: %s', me.message), 'Export to workspace');
     end
@@ -90,7 +90,7 @@ function saveAsImage(fig, ax, defaultFile)
     if isequal(fn, 0), return; end
     try
         exportgraphics(ax, fullfile(fp, fn));
-        fprintf('[matVis] Saved current content to "%s"\n', fullfile(fp, fn));
+        fprintf('[matVis2] Saved current content to "%s"\n', fullfile(fp, fn));
     catch me
         uialert(fig, sprintf('Save failed: %s', me.message), 'Save as image');
     end

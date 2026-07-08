@@ -40,7 +40,7 @@ fig = uifigure('Name', ['Image: ' model.DatasetNames{model.ActiveDataset}], 'Num
 % real-world (or, when no scale is supplied, pixel) coordinates are visible.
 ax = uiaxes(fig, 'Units', 'normalized', 'Position', [0.12 0.11 0.85 0.85]);
 disableDefaultInteractivity(ax);
-ax.Toolbar.Visible = 'off';
+try; ax.Toolbar = []; catch; end   % remove toolbar + R2026a chevron
 ax.FontSize = 9;
 axis(ax, 'image');
 applyAspectRatio(model.AspectRatioFixed, model.AspectRatio);

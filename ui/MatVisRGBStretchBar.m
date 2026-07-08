@@ -29,7 +29,7 @@ gl.RowHeight   = {'1x'};
 
 ax = uiaxes(gl);
 disableDefaultInteractivity(ax);
-try, ax.Toolbar.Visible = 'off'; catch, end
+try, ax.Toolbar = []; catch, end   % remove toolbar + R2026a chevron
 ax.XLim = [0 1];   ax.YLim = [0 1];
 ax.XTick = [];     ax.YTick = [];
 ax.Box   = 'on';

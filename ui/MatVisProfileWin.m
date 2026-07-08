@@ -194,14 +194,14 @@ lblLen.Layout.Row = 1;
 profAx = uiaxes(viewGrid);
 profAx.Layout.Row = 2;
 disableDefaultInteractivity(profAx);
-try; profAx.Toolbar.Visible = 'off'; catch; end
+try; profAx.Toolbar = []; catch; end   % remove toolbar + R2026a chevron
 profAx.FontSize = 8;
 title(profAx, 'Profile', 'FontSize', 9);
 
 imgAx = uiaxes(viewGrid);
 imgAx.Layout.Row = 3;
 disableDefaultInteractivity(imgAx);
-try; imgAx.Toolbar.Visible = 'off'; catch; end
+try; imgAx.Toolbar = []; catch; end   % remove toolbar + R2026a chevron
 imgAx.FontSize = 8;
 title(imgAx, 'Straightened band', 'FontSize', 9);
 
@@ -531,7 +531,7 @@ refreshUI();
         try
             save(fullfile(fPath, fName), 'matVisProfileExport');
             assignin('base', 'matVisProfileExport', model.ProfileList);
-            fprintf(['[matVis] Exported %d profile(s) to %s (and workspace ' ...
+            fprintf(['[matVis2] Exported %d profile(s) to %s (and workspace ' ...
                 'variable "matVisProfileExport")\n'], numel(model.ProfileList), ...
                 fullfile(fPath, fName));
         catch me
@@ -582,7 +582,7 @@ refreshUI();
         if nImp == 0
             uialert(fig, 'No profiles could be imported.', 'Profile Import');
         else
-            fprintf('[matVis] Imported %d profile(s) from %s\n', nImp, ...
+            fprintf('[matVis2] Imported %d profile(s) from %s\n', nImp, ...
                 fullfile(fPath, fName));
         end
     end
@@ -618,7 +618,7 @@ refreshUI();
             nameSuffix = matlab.lang.makeValidName(model.ProfileList(sel(k)).name);
             varData = sprintf('profileData_%s_%s', suffix, nameSuffix);
             assignin('base', varData, traceMat);
-            fprintf(['[matVis] Exported profile data: "%s" (%d x %d, ' ...
+            fprintf(['[matVis2] Exported profile data: "%s" (%d x %d, ' ...
                 'length x steps) to the base workspace\n'], varData, ...
                 size(traceMat, 1), size(traceMat, 2));
         end

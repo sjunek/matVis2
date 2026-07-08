@@ -37,7 +37,7 @@ fig = uifigure('Name', ['Zoom: ' model.DatasetNames{model.ActiveDataset}], 'Numb
 % the default figure colour).
 ax = uiaxes('Parent', fig, 'Units', 'normalized');
 disableDefaultInteractivity(ax);
-try; ax.Toolbar.Visible = 'off'; catch; end
+try; ax.Toolbar = []; catch; end   % remove toolbar + R2026a chevron
 axis(ax, 'image');
 axis(ax, 'off');
 ax.Color              = 'none';

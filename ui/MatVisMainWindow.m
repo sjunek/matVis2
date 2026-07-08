@@ -432,8 +432,9 @@ histAx.YTick = [];
 histAx.Box   = 'off';
 histAx.Color = [0.95 0.95 0.95];
 disableDefaultInteractivity(histAx);
-try; histAx.Toolbar.Visible = 'off'; catch; end
-try; axtoolbar(histAx, {}); catch; end
+% Remove the axes toolbar entirely — since R2026a it carries a collapse/
+% expand chevron that Visible='off' does not hide and that steals height.
+try; histAx.Toolbar = []; catch; end
 setappdata(fig, 'HistYScale', 'linear');
 
 % Row 7: Contrast min / gamma / max
@@ -698,7 +699,7 @@ mvTiming_.labels{end+1} = 'onWindowShown (positioning)'; mvTiming_.times(end+1) 
 % ── Print startup timing report ──────────────────────────────────────────
 mvDts_ = diff([0, mvTiming_.times]);
 [~, mvOrd_] = sort(mvDts_, 'descend');
-fprintf('\n[matVis] Startup timing  (data size: %s, nDims=%d)\n', ...
+fprintf('\n[matVis2] Startup timing  (data size: %s, nDims=%d)\n', ...
         mat2str(model.Size), nDims);
 fprintf('  %-45s  %6s  %6s\n', 'Section', 'sec', 'cumul');
 fprintf('  %s\n', repmat('-', 1, 62));
@@ -707,7 +708,7 @@ for mvK_ = 1:numel(mvTiming_.labels)
         mvTiming_.labels{mvK_}, mvDts_(mvK_), mvTiming_.times(mvK_));
 end
 fprintf('  %s\n  %-45s  %6.3f\n\n', repmat('-', 1, 62), 'TOTAL', mvTiming_.times(end));
-fprintf('[matVis] Top-5 slowest sections:\n');
+fprintf('[matVis2] Top-5 slowest sections:\n');
 for mvK_ = 1:min(5, numel(mvOrd_))
     fprintf('  %d. %-45s  %.3f s\n', mvK_, mvTiming_.labels{mvOrd_(mvK_)}, mvDts_(mvOrd_(mvK_)));
 end
@@ -1640,7 +1641,7 @@ fprintf('\n');
         try
             exportData = data(idx{:});
             assignin('base', varName, exportData);
-            fprintf('[matVis] Exported %s → workspace variable "%s"\n', ...
+            fprintf('[matVis2] Exported %s → workspace variable "%s"\n', ...
                 mat2str(size(exportData)), varName);
             delete(dlg);
         catch me

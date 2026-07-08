@@ -148,8 +148,11 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             obj.TrackAx_.YColor  = 'none';
             obj.TrackAx_.Color   = 'none';
             disableDefaultInteractivity(obj.TrackAx_);
-            try; obj.TrackAx_.Toolbar.Visible = 'off'; catch; end
-            try; axtoolbar(obj.TrackAx_, {}); catch; end
+            % Remove the axes toolbar entirely (not just Visible='off'): since
+            % R2026a the toolbar has a collapse/expand chevron that Visible does
+            % not hide and that steals vertical space. Setting Toolbar = []
+            % removes it (also works on older releases).
+            try; obj.TrackAx_.Toolbar = []; catch; end
 
             btnStepRight = uibutton(trackContainer, 'push', ...
                 'Text', '', ...
