@@ -21,6 +21,9 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 %   Properties:
 %     Value    ZoomMin  ZoomMax  Limits  DimLabel
 %     ShowPlot PlotLock PlayMode IsPlaying
+%     RGBIndicatorMode RGBTriadPos RGBStretchSpan RGBStretchColors
+%       — set by the owner on whichever slider is the RGB dimension, to
+%         overlay the RGB triad/stretch colour-coding on the position track.
 %
 %   Events:
 %     ValueChanged  ZoomChanged  PlayModeChanged
@@ -38,6 +41,18 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         IsPlaying (1,1) logical = false
         ScaleFactor (1,1) double = 1    % real-world size of one index step
         ScaleUnit (1,:) char   = ''     % unit for the real-world scale ('' = none)
+
+        % RGB overlay on the position track (set by the owner when this
+        % slider is the dimension mapped to RGBDim):
+        %   'none'    - plain position marker (default)
+        %   'triad'   - three 1-frame markers: red=prev, green=current
+        %               (the normal position marker, recoloured), blue=next
+        %   'stretch' - a rainbow bar spanning the frames folded into the
+        %               whole-dimension RGB stretch (MeanStretch/MaxStretch)
+        RGBIndicatorMode (1,:) char   = 'none'
+        RGBTriadPos      (1,2) double = [1 1]        % triad mode: [prevIdx, nextIdx]
+        RGBStretchSpan   (1,2) double = [1 2]        % stretch mode: [startIdx, endIdx]
+        RGBStretchColors double       = zeros(0, 3)  % stretch mode: Nx3 colours across RGBStretchSpan
     end
 
     events (HasCallbackProperty, NotifyAccess = protected)
@@ -57,6 +72,9 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         BgPatch_
         ZoomPatch_
         PosPatch_
+        RGBPatchR_      % triad mode: 1-frame marker at the "prev" frame (red)
+        RGBPatchB_      % triad mode: 1-frame marker at the "next" frame (blue)
+        RGBStretchImg_  % stretch mode: rainbow bar spanning the folded-in frames
         BtnPlayFull_   matlab.ui.control.StateButton
         BtnPlayZoom_   matlab.ui.control.StateButton
         BtnPlayShift_  matlab.ui.control.StateButton
@@ -180,6 +198,25 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
                 [0.9 0.15 0.15], 'EdgeColor', [0.6 0 0], 'LineWidth', 0.5, ...
                 'PickableParts', 'all');
             obj.PosPatch_.ButtonDownFcn = @obj.onTrackClick_;
+
+            % RGB triad markers (prev=red, next=blue; "current"=green reuses
+            % PosPatch_ above). Visual only — clicks pass through to the
+            % axes/other patches below so dragging still works normally.
+            obj.RGBPatchR_ = patch(obj.TrackAx_, ...
+                [0 0 0.005 0.005], [0 1 1 0], [1 0 0], ...
+                'EdgeColor', 'none', 'HitTest', 'off', 'PickableParts', 'none', ...
+                'Visible', 'off');
+            obj.RGBPatchB_ = patch(obj.TrackAx_, ...
+                [0 0 0.005 0.005], [0 1 1 0], [0.1 0.1 0.95], ...
+                'EdgeColor', 'none', 'HitTest', 'off', 'PickableParts', 'none', ...
+                'Visible', 'off');
+
+            % RGB stretch bar: rainbow gradient over the frames folded into
+            % the whole-dimension stretch. Also visual only (see above).
+            obj.RGBStretchImg_ = image(obj.TrackAx_, ...
+                'XData', [0 1], 'YData', [0.05 0.95], ...
+                'CData', reshape([0.1 0.1 0.95], [1 1 3]), ...
+                'HitTest', 'off', 'PickableParts', 'none', 'Visible', 'off');
 
             obj.TrackAx_.ButtonDownFcn = @obj.onTrackClick_;
 
@@ -364,15 +401,55 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             obj.setIfChanged_(obj.BtnPlayShift_, 'Value', valShift);
             obj.setIfChanged_(obj.BtnPlayShift_, 'Text',  txtShift);
 
-            range = hi - lo;
-            zminN = (zm - lo) / range;
-            zmaxN = (zx - lo) / range;
-            posN  = (v  - lo) / range;
+            % nCells = number of discrete index values (Limits span, inclusive).
+            % The track reserves half a cell of margin at each end, so a
+            % 1-frame marker is always fully on-track, never clipped: the
+            % first value's marker is centred half a cell in from x=0, the
+            % last value's marker half a cell in from x=1.
+            nCells = hi - lo + 1;
+            zminN  = (zm - lo)     / nCells;   % left edge of zm's cell
+            zmaxN  = (zx - lo + 1) / nCells;   % right edge of zx's cell
+            posN   = obj.idxToNormCenter_(v, lo, nCells);
 
             obj.setIfChanged_(obj.ZoomPatch_, 'XData', [zminN zmaxN zmaxN zminN]);
-            hw = max(0.006, 1.0 / max(range, 1));
-            obj.setIfChanged_(obj.PosPatch_, 'XData', ...
-                [max(0,posN-hw), max(0,posN-hw), min(1,posN+hw), min(1,posN+hw)]);
+            % Half-width of a 1-frame marker == half a cell.
+            hw = 0.5 / nCells;
+
+            switch obj.RGBIndicatorMode
+                case 'triad'
+                    rN = obj.idxToNormCenter_(obj.RGBTriadPos(1), lo, nCells);
+                    bN = obj.idxToNormCenter_(obj.RGBTriadPos(2), lo, nCells);
+                    obj.setIfChanged_(obj.PosPatch_, 'FaceColor', [0.1 0.75 0.1]);
+                    obj.setIfChanged_(obj.PosPatch_,  'XData', obj.markerXData_(posN, hw));
+                    obj.setIfChanged_(obj.RGBPatchR_, 'XData', obj.markerXData_(rN, hw));
+                    obj.setIfChanged_(obj.RGBPatchB_, 'XData', obj.markerXData_(bN, hw));
+                    obj.setIfChanged_(obj.PosPatch_,   'Visible', 'on');
+                    obj.setIfChanged_(obj.RGBPatchR_,  'Visible', 'on');
+                    obj.setIfChanged_(obj.RGBPatchB_,  'Visible', 'on');
+                    obj.setIfChanged_(obj.RGBStretchImg_, 'Visible', 'off');
+                case 'stretch'
+                    s0 = max(0, min(1, (obj.RGBStretchSpan(1) - lo)     / nCells));
+                    s1 = max(0, min(1, (obj.RGBStretchSpan(2) - lo + 1) / nCells));
+                    obj.setIfChanged_(obj.PosPatch_,  'Visible', 'off');
+                    obj.setIfChanged_(obj.RGBPatchR_, 'Visible', 'off');
+                    obj.setIfChanged_(obj.RGBPatchB_, 'Visible', 'off');
+                    if s1 > s0 && ~isempty(obj.RGBStretchColors)
+                        nC = size(obj.RGBStretchColors, 1);
+                        obj.setIfChanged_(obj.RGBStretchImg_, 'CData', ...
+                            reshape(obj.RGBStretchColors, [1 nC 3]));
+                        obj.setIfChanged_(obj.RGBStretchImg_, 'XData', [s0 s1]);
+                        obj.setIfChanged_(obj.RGBStretchImg_, 'Visible', 'on');
+                    else
+                        obj.setIfChanged_(obj.RGBStretchImg_, 'Visible', 'off');
+                    end
+                otherwise
+                    obj.setIfChanged_(obj.PosPatch_, 'FaceColor', [0.9 0.15 0.15]);
+                    obj.setIfChanged_(obj.PosPatch_, 'XData', obj.markerXData_(posN, hw));
+                    obj.setIfChanged_(obj.PosPatch_,      'Visible', 'on');
+                    obj.setIfChanged_(obj.RGBPatchR_,     'Visible', 'off');
+                    obj.setIfChanged_(obj.RGBPatchB_,     'Visible', 'off');
+                    obj.setIfChanged_(obj.RGBStretchImg_, 'Visible', 'off');
+            end
         end
     end
 
@@ -389,6 +466,25 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
                 return;
             end
             h.(prop) = val;
+        end
+
+        function xd = markerXData_(~, centerN, hw)
+            % XData for a 1-frame marker patch centred at normalized
+            % position CENTERN with half-width HW, clamped to the track.
+            xd = [max(0,centerN-hw), max(0,centerN-hw), ...
+                  min(1,centerN+hw), min(1,centerN+hw)];
+        end
+
+        function xN = idxToNormCenter_(~, idx, lo, nCells)
+            % Cell-centre normalized track position for index IDX (one cell
+            % = 1/nCells; see the nCells comment in update()).
+            xN = (idx - lo + 0.5) / nCells;
+        end
+
+        function idx = normToIdx_(~, xN, lo, nCells)
+            % Inverse of idxToNormCenter_: nearest index whose cell centre
+            % is closest to normalized track position XN.
+            idx = round(lo - 0.5 + xN * nCells);
         end
 
         % ---- Edit / zoom callbacks -----------------------------------
@@ -450,9 +546,9 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             if isempty(cp), return; end
             x = max(0, min(1, cp(1, 1)));
 
-            lo    = obj.Limits(1);
-            hi    = obj.Limits(2);
-            range = hi - lo;
+            lo     = obj.Limits(1);
+            hi     = obj.Limits(2);
+            nCells = max(hi - lo + 1, 1);
 
             fig = ancestor(obj, 'figure');
 
@@ -463,11 +559,11 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
                     obj.DragState_ = 'zoomRight';
                 case 'zoomBar'
                     obj.DragState_  = 'zoomBar';
-                    zminN = (obj.ZoomMin - lo) / max(range, 1);
+                    zminN = (obj.ZoomMin - lo) / nCells;   % left edge of ZoomMin's cell
                     obj.DragOffset_ = x - zminN;
                 otherwise   % 'pos'
                     obj.DragState_ = 'pos';
-                    newVal = max(lo, min(hi, round(lo + x * range)));
+                    newVal = max(lo, min(hi, obj.normToIdx_(x, lo, nCells)));
                     if newVal ~= obj.Value
                         obj.Value = newVal;
                         notify(obj, 'ValueChanged');
@@ -491,17 +587,16 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             % wins.  This matters for short dimensions, where edgeTol/hw span
             % most of the track and the zoom edges would otherwise always be
             % picked first — making the position marker impossible to grab.
-            lo    = obj.Limits(1);
-            hi    = obj.Limits(2);
-            range = hi - lo;
-            if range <= 0, range = 1; end
+            lo     = obj.Limits(1);
+            hi     = obj.Limits(2);
+            nCells = max(hi - lo + 1, 1);
 
-            zminN = (obj.ZoomMin - lo) / range;
-            zmaxN = (obj.ZoomMax - lo) / range;
-            posN  = (obj.Value   - lo) / range;
+            zminN = (obj.ZoomMin - lo)     / nCells;   % left edge of ZoomMin's cell
+            zmaxN = (obj.ZoomMax - lo + 1) / nCells;   % right edge of ZoomMax's cell
+            posN  = obj.idxToNormCenter_(obj.Value, lo, nCells);
             % Cap edgeTol so it can't swallow the whole track on short dims.
-            hw      = max(0.008, 1.0 / max(range, 1));
-            edgeTol = min(0.15, max(0.02, 4 / max(range, 1)));
+            hw      = max(0.008, 1.0 / nCells);
+            edgeTol = min(0.15, max(0.02, 4 / nCells));
 
             dPos   = abs(x - posN);
             dLeft  = abs(x - zminN);
@@ -527,25 +622,25 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             if isempty(cp), return; end
             x = max(0, min(1, cp(1, 1)));
 
-            lo    = obj.Limits(1);
-            hi    = obj.Limits(2);
-            range = hi - lo;
+            lo     = obj.Limits(1);
+            hi     = obj.Limits(2);
+            nCells = max(hi - lo + 1, 1);
 
             switch obj.DragState_
                 case 'pos'
-                    newVal = max(lo, min(hi, round(lo + x * range)));
+                    newVal = max(lo, min(hi, obj.normToIdx_(x, lo, nCells)));
                     if newVal ~= obj.Value
                         obj.Value = newVal;
                         notify(obj, 'ValueChanged');
                     end
                 case 'zoomLeft'
-                    zm = max(lo, min(obj.ZoomMax - 1, round(lo + x * range)));
+                    zm = max(lo, min(obj.ZoomMax - 1, round(lo + x * nCells)));
                     if zm ~= obj.ZoomMin
                         obj.ZoomMin = zm;
                         notify(obj, 'ZoomChanged');
                     end
                 case 'zoomRight'
-                    zx = max(obj.ZoomMin + 1, min(hi, round(lo + x * range)));
+                    zx = max(obj.ZoomMin + 1, min(hi, round(lo + x * nCells)));
                     if zx ~= obj.ZoomMax
                         obj.ZoomMax = zx;
                         notify(obj, 'ZoomChanged');
@@ -553,7 +648,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
                 case 'zoomBar'
                     width  = obj.ZoomMax - obj.ZoomMin;
                     newMin = max(lo, min(hi - width, ...
-                                 round(lo + (x - obj.DragOffset_) * range)));
+                                 round(lo + (x - obj.DragOffset_) * nCells)));
                     if newMin ~= obj.ZoomMin
                         obj.ZoomMin = newMin;
                         obj.ZoomMax = newMin + width;

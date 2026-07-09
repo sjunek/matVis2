@@ -427,6 +427,35 @@ classdef MatVisRender
                  ~strcmp(model.RGBStretchMode, 'none');
         end
 
+        function idx3 = rgbTriadIndices(model)
+            % Public accessor: the [prev, curr, next] source-frame indices
+            % along model.RGBDim behind the RGB triad (R,G,B) overlay — for
+            % UI indicators (e.g. the position-slider RGB markers).
+            idx3 = MatVisRender.rgbTriadIdx_(model, model.RGBDim);
+        end
+
+        function idx = rgbStretchSpanIndices(model)
+            % Public accessor: the frame indices along model.RGBDim included
+            % in the current RGB stretch (full extent, or the zoom interval
+            % when RGBStretchZoomLock is on) — for UI indicators.
+            idx = MatVisRender.stretchRangeIdx_(model, model.RGBDim);
+        end
+
+        function colors = stretchSliceColors(model, N)
+            % Per-slice rainbow colours for N frames evenly spanning
+            % model.RGBStretchRange (mirrors the colour assignment used in
+            % renderStretchImage; shared so UI indicators stay in sync).
+            pad = MatVisRender.RGB_STRETCH_PAD;
+            rng = model.RGBStretchRange;
+            colors = zeros(N, 3);
+            for k = 1:N
+                sp = rng(1) + (rng(2) - rng(1)) * (k - 1) / max(N - 1, 1);
+                t  = (sp - pad) / max(1 - 2*pad, eps);   % slider space -> rainbow pos
+                t  = max(0, min(1, t));                  % outer margins -> solid blue/red
+                colors(k, :) = MatVisRender.rainbowRGB(t, 3, 1);
+            end
+        end
+
         function img = renderStretchImage(model, stack, cMin, cMax, gamma)
             % Colour-code a whole RGB dimension into a display image, à la
             % matVis "MeanStretch"/"MaxStretch".
@@ -442,15 +471,7 @@ classdef MatVisRender
             % slider positions in [0,1]; the rainbow occupies the middle 70%
             % (0.15..0.85) and slider positions in the outer 15% map to solid
             % blue / red. Indices interpolate linearly between the two thumbs.
-            pad = MatVisRender.RGB_STRETCH_PAD;
-            rng = model.RGBStretchRange;
-            colors = zeros(N, 3);
-            for k = 1:N
-                sp = rng(1) + (rng(2) - rng(1)) * (k - 1) / max(N - 1, 1);
-                t  = (sp - pad) / max(1 - 2*pad, eps);   % slider space -> rainbow pos
-                t  = max(0, min(1, t));                  % outer margins -> solid blue/red
-                colors(k, :) = MatVisRender.rainbowRGB(t, 3, 1);
-            end
+            colors = MatVisRender.stretchSliceColors(model, N);
 
             minV = min(stack(:));
             maxV = max(stack(:));

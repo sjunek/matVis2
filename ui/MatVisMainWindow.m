@@ -997,6 +997,30 @@ fprintf('\n');
         % The bar's row is always reserved, so this only shows/hides it —
         % no figure resize or element repositioning.
         stretchBar.SetVisible(shown);
+
+        syncRGBIndicator(rgbOn, mode);
+    end
+
+    function syncRGBIndicator(rgbOn, mode)
+        % Overlay the RGB triad/stretch colour-coding on the position track
+        % of whichever slider is the RGB dimension; all others stay plain.
+        rd = model.RGBDim;
+        for d = 1:nDims
+            if d == rd && rgbOn
+                if strcmp(mode, 'none')
+                    idx3 = MatVisRender.rgbTriadIndices(model);
+                    rangeSliders{d}.RGBTriadPos      = idx3([1 3]);
+                    rangeSliders{d}.RGBIndicatorMode = 'triad';
+                else
+                    spanIdx = MatVisRender.rgbStretchSpanIndices(model);
+                    rangeSliders{d}.RGBStretchSpan   = [spanIdx(1), spanIdx(end)];
+                    rangeSliders{d}.RGBStretchColors = MatVisRender.stretchSliceColors(model, numel(spanIdx));
+                    rangeSliders{d}.RGBIndicatorMode = 'stretch';
+                end
+            else
+                rangeSliders{d}.RGBIndicatorMode = 'none';
+            end
+        end
     end
 
     function onRGBStretchRangeChanged(v)
