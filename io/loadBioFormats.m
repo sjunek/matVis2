@@ -58,7 +58,9 @@ end
 
 phys = struct('Y', physY, 'X', physX, 'Z', physZ, 'T', physT, ...
     'Yunit', unitY, 'Xunit', unitX, 'Zunit', unitZ, 'Tunit', unitT);
-[data, meta] = finalizeOmePlanes(data5, phys, chNames);
+instrument = getInstrumentInfo(omeMeta, SizeC);
+instrument.ChannelNames = chNames;
+[data, meta] = finalizeOmePlanes(data5, phys, chNames, instrument);
 end
 
 % =============================================================================
@@ -76,6 +78,104 @@ try
     val = obj.value().doubleValue();
     unit = normalizeOmeUnit(char(obj.unit().getSymbol()));
 catch
+end
+end
+
+% =============================================================================
+function s = getOmeStringOr(fn)
+% Call a metadata-store getter that returns a Java String (or an enum with a
+% toString()), returning '' on a null/missing/errored result.
+s = '';
+try
+    v = fn();
+    if ~isempty(v)
+        s = char(v.toString());
+    end
+catch
+end
+end
+
+% =============================================================================
+function v = getOmeNumberOr(fn)
+% Call a metadata-store getter that returns a boxed Java number (e.g.
+% Double), returning NaN on a null/missing/errored result.
+v = NaN;
+try
+    obj = fn();
+    if ~isempty(obj)
+        v = obj.doubleValue();
+    end
+catch
+end
+end
+
+% =============================================================================
+function idx = resolveRefIndex(refId, count, idFn)
+% Find which of `count` items (0-based) has an ID matching refId, via
+% idFn(i) -> that item's ID string. Falls back to 0 (the first item) when
+% refId is empty/unmatched -- e.g. no reference in the file, a lookup
+% error, or a single-instrument/objective file with mismatched IDs.
+idx = 0;
+if isempty(refId), return; end
+for i = 0:count-1
+    if strcmp(idFn(i), refId)
+        idx = i;
+        return;
+    end
+end
+end
+
+% =============================================================================
+function instrument = getInstrumentInfo(omeMeta, SizeC)
+% Read Instrument/Microscope/Objective, AcquisitionDate, and per-channel
+% excitation/emission/acquisition-mode from the Bio-Formats metadata store.
+% Every getter is optional in OME-XML, so each is independently guarded --
+% a file missing (e.g.) Objective info still yields Microscope/date/channel
+% fields where present.
+instrument = struct( ...
+    'MicroscopeManufacturer', '', 'MicroscopeModel', '', ...
+    'ObjectiveManufacturer', '', 'ObjectiveModel', '', ...
+    'ObjectiveNA', NaN, 'ObjectiveImmersion', '', 'ObjectiveMagnification', NaN, ...
+    'AcquisitionDate', '', ...
+    'ChannelExWavelength', nan(1, SizeC), 'ChannelEmWavelength', nan(1, SizeC), ...
+    'ChannelExWavelengthUnit', {repmat({''}, 1, SizeC)}, ...
+    'ChannelEmWavelengthUnit', {repmat({''}, 1, SizeC)}, ...
+    'ChannelAcquisitionMode', {repmat({''}, 1, SizeC)});
+
+try
+    if omeMeta.getInstrumentCount() > 0
+        % A file can define more than one Instrument (e.g. a shared scope
+        % config listing every objective turret position) -- resolve the one
+        % this image (index 0, the only one matVis reads) actually
+        % references, falling back to instrument 0 when there's no
+        % reference or no match.
+        instIdx = resolveRefIndex(getOmeStringOr(@() omeMeta.getImageInstrumentRef(0)), ...
+            omeMeta.getInstrumentCount(), @(i) getOmeStringOr(@() omeMeta.getInstrumentID(i)));
+
+        instrument.MicroscopeManufacturer = getOmeStringOr(@() omeMeta.getMicroscopeManufacturer(instIdx));
+        instrument.MicroscopeModel        = getOmeStringOr(@() omeMeta.getMicroscopeModel(instIdx));
+        if omeMeta.getObjectiveCount(instIdx) > 0
+            objIdx = resolveRefIndex(getOmeStringOr(@() omeMeta.getObjectiveSettingsID(0)), ...
+                omeMeta.getObjectiveCount(instIdx), @(i) getOmeStringOr(@() omeMeta.getObjectiveID(instIdx, i)));
+
+            instrument.ObjectiveManufacturer  = getOmeStringOr(@() omeMeta.getObjectiveManufacturer(instIdx, objIdx));
+            instrument.ObjectiveModel         = getOmeStringOr(@() omeMeta.getObjectiveModel(instIdx, objIdx));
+            instrument.ObjectiveNA            = getOmeNumberOr(@() omeMeta.getObjectiveLensNA(instIdx, objIdx));
+            instrument.ObjectiveImmersion     = getOmeStringOr(@() omeMeta.getObjectiveImmersion(instIdx, objIdx));
+            instrument.ObjectiveMagnification = getOmeNumberOr(@() omeMeta.getObjectiveNominalMagnification(instIdx, objIdx));
+        end
+    end
+catch
+end
+
+instrument.AcquisitionDate = getOmeStringOr(@() omeMeta.getImageAcquisitionDate(0));
+
+for c = 1:SizeC
+    [instrument.ChannelExWavelength(c), instrument.ChannelExWavelengthUnit{c}] = ...
+        getOmeQuantity(@() omeMeta.getChannelExcitationWavelength(0, c - 1));
+    [instrument.ChannelEmWavelength(c), instrument.ChannelEmWavelengthUnit{c}] = ...
+        getOmeQuantity(@() omeMeta.getChannelEmissionWavelength(0, c - 1));
+    instrument.ChannelAcquisitionMode{c} = getOmeStringOr(@() omeMeta.getChannelAcquisitionMode(0, c - 1));
 end
 end
 

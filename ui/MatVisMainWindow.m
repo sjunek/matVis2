@@ -569,10 +569,10 @@ addlistener(model, 'ActiveDatasetChanged', @(~,~) onModelActiveDatasetChanged())
 
 mvTiming_.labels{end+1} = 'contrast panel created'; mvTiming_.times(end+1) = toc(mvT0_);
 %% Bottom controls
-bottomGrid = uigridlayout(grid, [1, 8]);
+bottomGrid = uigridlayout(grid, [1, 9]);
 bottomGrid.Layout.Row    = 4;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', '1x', '1x', '1x'};
+bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', '1x', '1x', '1x', '1x'};
 bottomGrid.RowHeight     = {'1x'};
 bottomGrid.Padding       = [0 0 0 0];
 
@@ -603,13 +603,18 @@ btnOverlay = uibutton(bottomGrid, 'state', 'Text', 'Overlay', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) setOverlay(src.Value));
 btnOverlay.Layout.Column = 6;
 
+btnToggleMetadata = uibutton(bottomGrid, 'state', 'Text', 'Info', 'Value', false, ...
+    'Tooltip', 'Show/hide acquisition metadata (microscope, objective, channels, scale)', ...
+    'ValueChangedFcn', @(src, ~) toggleMetadataWindow(src.Value));
+btnToggleMetadata.Layout.Column = 7;
+
 btnSaveConfig = uibutton(bottomGrid, 'Text', 'Save Config', ...
     'ButtonPushedFcn', @(~,~) onSaveConfig());
-btnSaveConfig.Layout.Column = 7;
+btnSaveConfig.Layout.Column = 8;
 
 btnLoadConfig = uibutton(bottomGrid, 'Text', 'Load Config', ...
     'ButtonPushedFcn', @(~,~) onLoadConfig());
-btnLoadConfig.Layout.Column = 8;
+btnLoadConfig.Layout.Column = 9;
 
 setappdata(fig, 'OverlayVisible', true);
 
@@ -633,6 +638,12 @@ profCbs.onActivate    = @deactivateRoiTools;      % engaging a profile tool free
 profMgr = [];
 profMgrDefaultPos = [];
 
+%% Metadata window — also created lazily on first use
+metadataCbs = struct();
+metadataCbs.onHide = @() set(btnToggleMetadata, 'Value', false);
+metadataWin = [];
+metadataWinDefaultPos = [];
+
 addlistener(model, 'RoiChanged',     @(~,~) doRender());
 addlistener(model, 'ProfileChanged', @(~,~) doRender());
 
@@ -649,6 +660,7 @@ mw.zoomWin      = zoomWins{1};
 mw.plotWin      = plotWins{1};
 mw.getRoiMgr    = @getRoiMgr;     % ROI manager is created lazily
 mw.getProfileMgr = @getProfileMgr;% Profile manager is created lazily
+mw.getMetadataWin = @getMetadataWin; % Metadata window is created lazily
 mw.histAx       = histAx;
 mw.rbGlobal     = rbGlobal;
 mw.rbImage      = rbImage;
@@ -2301,6 +2313,30 @@ fprintf('\n');
         end
     end
 
+    % ------------------------------------------------------------------
+    %  Metadata window wiring
+    % ------------------------------------------------------------------
+    function mw2 = getMetadataWin()
+        if isempty(metadataWin) || ~isvalid(metadataWin.fig)
+            metadataWin = MatVisMetadataWin(model, metadataCbs);
+            if ~isempty(metadataWinDefaultPos)
+                metadataWin.fig.Position(1:2) = metadataWinDefaultPos;
+            end
+        end
+        mw2 = metadataWin;
+    end
+
+    function toggleMetadataWindow(isVisible)
+        if isVisible
+            mw2 = getMetadataWin();
+            mw2.Refresh();
+            mw2.fig.Visible = 'on';
+            figure(mw2.fig);
+        elseif ~isempty(metadataWin) && isvalid(metadataWin.fig)
+            metadataWin.fig.Visible = 'off';
+        end
+    end
+
     function applyRoiPosition(pos, zoomVal)
         % Jump navigation state to an ROI's stored position/zoom and sync sliders.
         if numel(pos) == nDims
@@ -2413,27 +2449,33 @@ fprintf('\n');
         dimSelector.Update();   % refresh aspect/win-scale button captions
         applyAspectRatio();     % window-scale is applied only on explicit click
 
-        % Window positions (support per-dataset keys and legacy single keys)
+        % Window positions (support per-dataset keys and legacy single keys).
+        % Saved positions come from a prior session's screen/monitor layout
+        % and are clamped back on-screen (clampFigPosToScreen) so a config
+        % saved on a different display never reopens fully off-screen.
         if isfield(config, 'windowPositions')
             pos = config.windowPositions;
-            if isfield(pos, 'Main'), fig.Position(1:2) = pos.Main(1:2); end
+            if isfield(pos, 'Main')
+                mainP = clampFigPosToScreen([pos.Main(1:2), fig.Position(3:4)]);
+                fig.Position(1:2) = mainP(1:2);
+            end
 
             for ds = 1:nDatasets
                 dsKey = num2str(ds);
                 if isfield(pos, ['Image' dsKey])
-                    imageWins{ds}.fig.Position = pos.(['Image' dsKey]);
+                    imageWins{ds}.fig.Position = clampFigPosToScreen(pos.(['Image' dsKey]));
                 elseif ds == 1 && isfield(pos, 'Image')
-                    imageWins{ds}.fig.Position = pos.Image;
+                    imageWins{ds}.fig.Position = clampFigPosToScreen(pos.Image);
                 end
                 if isfield(pos, ['Zoom' dsKey])
-                    zoomWins{ds}.fig.Position = pos.(['Zoom' dsKey]);
+                    zoomWins{ds}.fig.Position = clampFigPosToScreen(pos.(['Zoom' dsKey]));
                 elseif ds == 1 && isfield(pos, 'Zoom')
-                    zoomWins{ds}.fig.Position = pos.Zoom;
+                    zoomWins{ds}.fig.Position = clampFigPosToScreen(pos.Zoom);
                 end
                 if isfield(pos, ['Plot' dsKey])
-                    plotWins{ds}.fig.Position = pos.(['Plot' dsKey]);
+                    plotWins{ds}.fig.Position = clampFigPosToScreen(pos.(['Plot' dsKey]));
                 elseif ds == 1 && isfield(pos, 'Plot')
-                    plotWins{ds}.fig.Position = pos.Plot;
+                    plotWins{ds}.fig.Position = clampFigPosToScreen(pos.Plot);
                 end
             end
         end
@@ -2476,8 +2518,16 @@ fprintf('\n');
         if isfile(configPath)
             onLoadConfig();
         else
-            screenSize = get(0, 'ScreenSize');
-            screenH    = screenSize(4);
+            % Anchor to the monitor the user is actually working on (the one
+            % under the mouse pointer), not always the OS-designated primary
+            % display -- get(0,'ScreenSize') is primary-only and, on a
+            % multi-monitor setup where MATLAB lives on a secondary/tertiary
+            % display, would otherwise place every fresh layout on a monitor
+            % the user isn't looking at.
+            targetMon  = targetMonitorBounds();
+            monL       = targetMon(1);
+            monB       = targetMon(2);
+            screenH    = targetMon(4);
             gap        = 10;
 
             % uifigure.Position is the inner (client) area; the title bar
@@ -2490,12 +2540,18 @@ fprintf('\n');
             % never depend on how tall the main GUI is.
             % outer top = inner top + titleBarH = screenH - safeMargin  →
             % inner top = screenH - safeMargin - titleBarH
-            winInnerTop = screenH - safeMargin - titleBarH;
+            winInnerTop = monB + screenH - safeMargin - titleBarH;
 
-            % Main GUI: place its top at the same reference level.
+            % Main GUI: place its top at the same reference level. A dataset
+            % with more navigation dimensions (e.g. an OME/Bio-Formats file
+            % with both a Z-stack and multiple channels, each getting its own
+            % slider row) makes this window taller; clamp so its bottom row
+            % (Save/Load Config, window toggles) can never end up below the
+            % target monitor's bottom edge even when the window no longer
+            % fits top-to-bottom.
             mainPos    = fig.Position;
-            mainPos(1) = 50;
-            mainPos(2) = winInnerTop - mainPos(4);   % inner bottom
+            mainPos(1) = monL + 50;
+            mainPos(2) = max(monB, winInnerTop - mainPos(4));   % inner bottom
             fig.Position = mainPos;
             % Use mainPos as-is — no drawnow re-read, which can let the OS
             % reposition the figure to an unexpected location before we read it.
@@ -2534,16 +2590,26 @@ fprintf('\n');
                 end
             end
 
-            % ROI Manager (created lazily): remember its default position
-            roiMgrDefaultPos = [leftX, 60];
+            % ROI Manager (created lazily): remember its default position.
+            % Offsets are relative to the target monitor's bottom edge (monB),
+            % not absolute screen Y -- a monitor whose bottom isn't at y=0
+            % (e.g. one offset above/below the primary in a multi-monitor
+            % arrangement) would otherwise place these off that monitor entirely.
+            roiMgrDefaultPos = [leftX, monB + 60];
             if ~isempty(roiMgr) && isvalid(roiMgr.fig)
                 roiMgr.fig.Position(1:2) = roiMgrDefaultPos;
             end
 
             % Profile Manager (created lazily): offset from the ROI manager
-            profMgrDefaultPos = [leftX + 60, 40];
+            profMgrDefaultPos = [leftX + 60, monB + 40];
             if ~isempty(profMgr) && isvalid(profMgr.fig)
                 profMgr.fig.Position(1:2) = profMgrDefaultPos;
+            end
+
+            % Metadata window (created lazily): offset from the Profile Manager
+            metadataWinDefaultPos = [leftX + 120, monB + 20];
+            if ~isempty(metadataWin) && isvalid(metadataWin.fig)
+                metadataWin.fig.Position(1:2) = metadataWinDefaultPos;
             end
         end
 
@@ -2553,6 +2619,57 @@ fprintf('\n');
             if btnToggleZoom.Value,  zoomWins{ds}.fig.Visible  = 'on'; end
             if btnTogglePlot.Value,  plotWins{ds}.fig.Visible  = 'on'; end
         end
+    end
+
+    function pos = clampFigPosToScreen(pos)
+        % Nudge a [x y w h] figure Position back on-screen ONLY if it isn't
+        % usably visible (>= minVisible px in both axes) on ANY currently
+        % connected monitor. get(0,'ScreenSize') covers just the primary
+        % monitor, so clamping against it unconditionally used to drag every
+        % window intentionally placed on a secondary/tertiary display back
+        % onto the primary one on every restore -- a regression for
+        % multi-monitor setups. A window already usable on some monitor
+        % (including a non-primary one) is left exactly where it was.
+        minVisible = 100;
+        mp = get(0, 'MonitorPositions');   % Nx4: [left bottom width height], y-up
+        for i = 1:size(mp, 1)
+            monL = mp(i,1); monB = mp(i,2);
+            monR = monL + mp(i,3);  monT = monB + mp(i,4);
+            visW = min(pos(1) + pos(3), monR) - max(pos(1), monL);
+            visH = min(pos(2) + pos(4), monT) - max(pos(2), monB);
+            if visW >= minVisible && visH >= minVisible
+                return;   % already usably visible on this monitor
+            end
+        end
+
+        % Not usably visible on any monitor (e.g. a config saved on a
+        % different machine/monitor arrangement) -- fall back to the monitor
+        % under the mouse pointer.
+        mon        = targetMonitorBounds();
+        titleBarH  = 32;   % see onWindowShown
+        safeMargin = 8;
+        pos(1) = min(max(pos(1), mon(1)), mon(1) + mon(3) - minVisible);
+        pos(2) = min(pos(2), mon(2) + mon(4) - safeMargin - titleBarH - pos(4));
+        pos(2) = max(pos(2), mon(2) + safeMargin - pos(4) + minVisible);
+    end
+
+    function mon = targetMonitorBounds()
+        % [left bottom width height] (MATLAB y-up convention, see
+        % MonitorPositions) of the monitor currently under the mouse pointer
+        % -- i.e. wherever the user is actually working -- falling back to
+        % the primary monitor if the pointer isn't within any monitor's
+        % bounds (shouldn't normally happen).
+        mp = get(0, 'MonitorPositions');
+        p  = get(0, 'PointerLocation');
+        for i = 1:size(mp, 1)
+            monL = mp(i,1); monB = mp(i,2);
+            monR = monL + mp(i,3);  monT = monB + mp(i,4);
+            if p(1) >= monL && p(1) < monR && p(2) >= monB && p(2) < monT
+                mon = mp(i,:);
+                return;
+            end
+        end
+        mon = get(0, 'ScreenSize');
     end
 
     % ---- Aspect ratio & window scaling -------------------------------------

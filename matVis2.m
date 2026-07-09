@@ -89,7 +89,7 @@ if fileMode
 
     nvPairs = mergeDefaultNV( ...
         {'dimNames', fm.dimNames, 'dimUnits', fm.dimUnits, 'dimScale', fm.dimScale, ...
-         'datasetNames', fm.datasetNames}, restArgs);
+         'datasetNames', fm.datasetNames, 'fileMetadata', fm.fileMetadata}, restArgs);
 else
     % Split leading numeric arrays from name-value pairs
     nLeading = 0;
@@ -118,6 +118,7 @@ model = MatVisModel(args.data, args.datasetNames);
 if ~isempty(args.dimNames);  model.DimNames  = args.dimNames;  end
 if ~isempty(args.dimUnits);  model.DimUnits  = args.dimUnits;  end
 if ~isempty(args.dimScale);  model.DimScale  = args.dimScale;  end
+if ~isempty(args.fileMetadata); model.FileMetadata = args.fileMetadata; end
 if ~isempty(args.alphaMap);  model.SetAlphaMaps(args.alphaMap); end
 model.applyStartPar(args.startPar);
 fprintf('[matVis2] MatVisModel:     %.3f s\n', toc(t2_));

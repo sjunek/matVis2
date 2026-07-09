@@ -5,17 +5,20 @@ function [data, meta] = loadFiles(filepath)
 %   data = loadFiles()           opens a file-selection dialog.
 %   [data, meta] = loadFiles(filepath)  also returns dimension metadata.
 %
-%   When Bio-Formats is set up (see ensureBioFormats), any of the ~150
-%   formats it supports (OME-TIFF, .czi, .lsm, .nd2, .lif, ...) can be
-%   read, with full dimension/physical-scale/channel metadata. Without it,
-%   .mat, .tif/.tiff (incl. multi-page and OME-TIFF via a built-in regex
-%   parser), .jpg, .png, and .bmp still work through a built-in fallback;
-%   any other format then errors asking for Bio-Formats to be set up.
+%   ScanImage-acquired TIFFs (detected automatically) are read via the
+%   ScanImageTiffReader package (see ensureScanImageTiffReader), surfacing
+%   framesPerSlice as its own dimension alongside channel/Z/T. When
+%   Bio-Formats is set up (see ensureBioFormats), any of the ~150 formats
+%   it supports (OME-TIFF, .czi, .lsm, .nd2, .lif, ...) can be read, with
+%   full dimension/physical-scale/channel metadata. Without either, .mat,
+%   .tif/.tiff (incl. multi-page and OME-TIFF via a built-in regex parser),
+%   .jpg, .png, and .bmp still work through a built-in fallback; any other
+%   format then errors asking for Bio-Formats to be set up.
 %
-%   meta is a struct with fields dimNames/dimScale/dimUnits/channelNames,
-%   matching parseArgs's dimNames/dimScale/dimUnits name-value pairs. For
-%   plain files with no dimension/calibration metadata these are all empty
-%   cells, meaning "use defaults".
+%   meta is a struct with fields dimNames/dimScale/dimUnits/channelNames/
+%   instrument, matching parseArgs's dimNames/dimScale/dimUnits name-value
+%   pairs. For plain files with no dimension/calibration metadata these are
+%   all empty (cells, or [] for instrument), meaning "use defaults".
 
 nativeExts = {'.tif', '.tiff', '.jpg', '.jpeg', '.png', '.bmp'};
 
@@ -42,6 +45,25 @@ if strcmp(ext, '.mat')
     data = loadMat(filepath);
     meta = emptyMeta();
     return;
+end
+
+% ScanImage TIFFs get their own authoritative reader (surfaces
+% framesPerSlice as its own dimension) ahead of Bio-Formats' generic,
+% lossier ScanImage support. isScanImageTiff is a cheap Software/
+% ImageDescription signature check, so this never prompts about the reader
+% for files that don't need it.
+if ismember(ext, {'.tif', '.tiff'}) && isScanImageTiff(filepath)
+    if ensureScanImageTiffReader()
+        try
+            [data, meta] = loadScanImageTiff(filepath);
+            return;
+        catch e
+            warning('loadFiles:scanimageReadFailed', ...
+                'ScanImageTiffReader failed to read "%s" (%s); falling back to a generic TIFF reader.', ...
+                filepath, e.message);
+        end
+    end
+    % else: ensureScanImageTiffReader() already warned; fall through below.
 end
 
 bfAvailable = ensureBioFormats();
@@ -83,7 +105,7 @@ end
 
 function meta = emptyMeta()
 meta = struct('dimNames', {{}}, 'dimScale', {{}}, 'dimUnits', {{}}, ...
-    'channelNames', {{}});
+    'channelNames', {{}}, 'instrument', []);
 end
 
 function data = loadMat(filepath)
@@ -211,5 +233,16 @@ phys = struct( ...
     'Y', om.PhysicalSizeY, 'X', om.PhysicalSizeX, 'Z', om.PhysicalSizeZ, 'T', om.TimeIncrement, ...
     'Yunit', om.PhysicalSizeYUnit, 'Xunit', om.PhysicalSizeXUnit, ...
     'Zunit', om.PhysicalSizeZUnit, 'Tunit', om.TimeIncrementUnit);
-[data, meta] = finalizeOmePlanes(data5, phys, om.ChannelNames);
+instrument = struct( ...
+    'MicroscopeManufacturer', om.MicroscopeManufacturer, 'MicroscopeModel', om.MicroscopeModel, ...
+    'ObjectiveManufacturer', om.ObjectiveManufacturer, 'ObjectiveModel', om.ObjectiveModel, ...
+    'ObjectiveNA', om.ObjectiveNA, 'ObjectiveImmersion', om.ObjectiveImmersion, ...
+    'ObjectiveMagnification', om.ObjectiveMagnification, ...
+    'AcquisitionDate', om.AcquisitionDate, ...
+    'ChannelNames', {om.ChannelNames}, ...
+    'ChannelExWavelength', om.ChannelExWavelength, 'ChannelEmWavelength', om.ChannelEmWavelength, ...
+    'ChannelExWavelengthUnit', {om.ChannelExWavelengthUnit}, ...
+    'ChannelEmWavelengthUnit', {om.ChannelEmWavelengthUnit}, ...
+    'ChannelAcquisitionMode', {om.ChannelAcquisitionMode});
+[data, meta] = finalizeOmePlanes(data5, phys, om.ChannelNames, instrument);
 end

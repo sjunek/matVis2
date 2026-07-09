@@ -14,6 +14,10 @@ function args = parseArgs(data, varargin)
 %     dimUnits      cell of strings, length == ndims(data)
 %     dimScale      cell of numeric vectors, length == ndims(data)
 %     datasetNames  cell of strings, length == number of datasets
+%     fileMetadata  cell of structs (or []), length == number of datasets;
+%                   per-dataset acquisition metadata (microscope/objective/
+%                   channel wavelengths/date) as produced by loadFiles/
+%                   importMultiFile, for display in MatVisMetadataWin
 %     matNames      cell of strings
 %     alphaMap      numeric array same size as data (applied to every
 %                   dataset), or cell array with one map per dataset;
@@ -33,6 +37,7 @@ p.addParameter('dimNames',      {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('dimUnits',      {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('dimScale',      {}, @(x) iscell(x) && all(cellfun(@isnumeric, x)));
 p.addParameter('datasetNames',  {}, @(x) iscellstr(x) || isstring(x));
+p.addParameter('fileMetadata',  {}, @(x) iscell(x));
 p.addParameter('matNames',      {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('alphaMap',      {}, @(x) isnumeric(x) || ...
     (iscell(x) && all(cellfun(@isnumeric, x(:)))));
@@ -70,6 +75,7 @@ if isstring(r.datasetNames)
     r.datasetNames = cellstr(r.datasetNames);
 end
 r.datasetNames = padCellStr(r.datasetNames, K, @(i) sprintf('Dataset %d', i));
+r.fileMetadata = padCell(r.fileMetadata, K, @(i) []);
 
 r.startPar = cellPairsToStruct(r.startPar);
 
@@ -147,6 +153,20 @@ for i = 1:n
         end
     else
         out{i} = 1:sz(i);
+    end
+end
+end
+
+function out = padCell(c, n, defaultFn)
+% Ensure c is a row cell with exactly n entries, filling any missing
+% trailing entries via defaultFn(index). Unlike padCellStr, values are
+% passed through as-is (not coerced to char).
+out = cell(1, n);
+for i = 1:n
+    if i <= numel(c)
+        out{i} = c{i};
+    else
+        out{i} = defaultFn(i);
     end
 end
 end

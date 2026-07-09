@@ -107,12 +107,16 @@ if strcmp(decision, 'concatenate')
     dsMeta.dimScale = [baseScale, {1:nFiles}];
     dsMeta.dimUnits = [baseUnits, {''}];
     dsMeta.datasetNames = {'Concatenated'};
+    % Acquisition metadata (microscope/objective/channels/date) doesn't
+    % combine across files -- carry the first file's, matching baseMeta.
+    dsMeta.fileMetadata = {baseMeta.instrument};
 else
     datasets = data;
     dsMeta.dimNames = baseNames;
     dsMeta.dimScale = baseScale;
     dsMeta.dimUnits = baseUnits;
     dsMeta.datasetNames = cellfun(@defaultName, filepaths, 'UniformOutput', false);
+    dsMeta.fileMetadata = cellfun(@(m) m.instrument, fmeta, 'UniformOutput', false);
 end
 end
 

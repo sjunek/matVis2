@@ -16,3 +16,7 @@ imagej-plugin/target/
 
 # --- Bio-Formats jar (53 MB; auto-downloaded on demand by io/ensureBioFormats.m) ---
 io/bfmatlab/*.jar
+
+# --- ScanImageTiffReader MEX binaries (Windows-only; auto-downloaded on demand
+#     by io/ensureScanImageTiffReader.m) ---
+io/scanImageTiffReader/+ScanImageTiffReader/private/*.mexw64

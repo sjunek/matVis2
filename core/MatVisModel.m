@@ -18,6 +18,10 @@ classdef MatVisModel < handle
     properties
         Datasets            % 1×K cell array of numeric N-D arrays
         DatasetNames        % 1×K cell array of strings
+        FileMetadata        % 1×K cell array — per-dataset acquisition metadata
+                            %   struct from loadFiles/importMultiFile (Microscope*/
+                            %   Objective*/AcquisitionDate/Channel*), or [] when
+                            %   the dataset wasn't loaded from a file with any
         ActiveDataset       % scalar index (1-based) — selects histogram display
         ContrastLocked      % logical — true=locked(linear scaling), false=independent
         DatasetContrastMins % 1×K double — Manual mode lower bound per dataset
@@ -187,6 +191,7 @@ classdef MatVisModel < handle
                     'UniformOutput', false);
             end
             obj.DatasetNames = datasetNames(:)';
+            obj.FileMetadata = repmat({[]}, 1, K);
 
             % Per-dataset Manual contrast initialised to full range
             obj.DatasetContrastMins = allMins;
