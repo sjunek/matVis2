@@ -122,8 +122,20 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath)
         aspectRatio      = model.AspectRatio;
         winScalePct      = model.WinScalePct;
 
+        % Fingerprint of the monitor layout this session's window positions
+        % were computed under. get(0,'MonitorPositions') is not portable
+        % across MATLAB releases on the same machine -- older releases can
+        % under-detect monitors or report a display's resolution differently
+        % under Windows per-monitor-DPI-awareness than newer ones do (all on
+        % the very same hardware). The config file is shared by hostname, not
+        % MATLAB version, so a layout saved under one release can land on
+        % completely wrong coordinates when restored under another. Saving
+        % this lets onLoadConfig detect that mismatch and fall back to a
+        % fresh layout instead of misapplying stale, incompatible coordinates.
+        monitorPositions = get(0, 'MonitorPositions');
+
         save(configPath, ...
-            'windowVisibility', 'windowPositions', ...
+            'windowVisibility', 'windowPositions', 'monitorPositions', ...
             'colormapIdx', 'contrastMode', 'gamma', 'contrastMin', 'contrastMax', ...
             'numDatasets', 'activeDataset', 'contrastLocked', ...
             'datasetContrastMins', 'datasetContrastMaxs', 'datasetGammas', ...
@@ -144,12 +156,15 @@ function configPath = GetConfigPath_()
     hostname = strtrim(hostname);
     if isempty(hostname), hostname = 'Unknown'; end
 
-    matVisFile = which('matVis');
-    if isempty(matVisFile)
-        matVisDir = pwd;
-    else
-        matVisDir = fileparts(matVisFile);
-    end
+    % Anchor to THIS checkout's repo root, not wherever which('matVis')
+    % happens to resolve -- this machine has multiple sibling matVis/matVis2
+    % checkouts on the MATLAB path (see matVis2.m's stale-path guard), and
+    % 'matVis' is also the pre-rename name of this project's own entry point,
+    % so which('matVis') can easily resolve to a different sibling repo
+    % entirely, silently redirecting the saved config to the wrong folder.
+    % mfilename('fullpath') is this very file (<repo>/io/matVisConfig.m),
+    % so its grandparent directory is unambiguously <repo>.
+    matVisDir = fileparts(fileparts(mfilename('fullpath')));
 
     configPath = fullfile(matVisDir, sprintf('matVisConfig_%s.mat', hostname));
 end

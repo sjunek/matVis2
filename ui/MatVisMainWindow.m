@@ -7,8 +7,14 @@
 
 thisDir = fileparts(mfilename('fullpath'));
 rootDir = fileparts(thisDir);
-% addpath rehashes the toolbox cache — only do it when needed
-if isempty(which('MatVisRender')) || isempty(which('matVisConfig'))
+% addpath rehashes the toolbox cache — only do it when needed. Checking mere
+% *existence* (isempty(which(...))) isn't enough: this machine has multiple
+% sibling matVis/matVis2 checkouts on the path, so a stale copy of
+% matVisConfig from a DIFFERENT checkout can already resolve and silently
+% pass the isempty check while pointing at the wrong repo (and, via
+% GetConfigPath, the wrong saved-config file). Compare by identity instead.
+if isempty(which('MatVisRender')) || ...
+        ~strcmpi(which('matVisConfig'), fullfile(rootDir, 'io', 'matVisConfig.m'))
     addpath(fullfile(rootDir, 'core'));
     addpath(fullfile(rootDir, 'ui'));
     addpath(fullfile(rootDir, 'io'));
@@ -2453,7 +2459,20 @@ fprintf('\n');
         % Saved positions come from a prior session's screen/monitor layout
         % and are clamped back on-screen (clampFigPosToScreen) so a config
         % saved on a different display never reopens fully off-screen.
-        if isfield(config, 'windowPositions')
+        %
+        % get(0,'MonitorPositions') is not portable across MATLAB releases on
+        % the same machine (older releases can under-detect monitors or
+        % report a display's resolution differently under Windows
+        % per-monitor-DPI-awareness than newer ones, even on identical
+        % hardware), and the config file is shared by hostname, not MATLAB
+        % version. Applying saved absolute pixel coordinates computed under a
+        % different monitor layout can land windows in nonsensical places, so
+        % only trust them when the current session's monitor layout matches
+        % the one they were saved under; otherwise fall back to a fresh
+        % layout for this session's actual monitors.
+        monitorsMatch = isfield(config, 'monitorPositions') && ...
+            isequal(config.monitorPositions, get(0, 'MonitorPositions'));
+        if isfield(config, 'windowPositions') && monitorsMatch
             pos = config.windowPositions;
             if isfield(pos, 'Main')
                 mainP = clampFigPosToScreen([pos.Main(1:2), fig.Position(3:4)]);
@@ -2478,6 +2497,12 @@ fprintf('\n');
                     plotWins{ds}.fig.Position = clampFigPosToScreen(pos.Plot);
                 end
             end
+        elseif isfield(config, 'windowPositions')
+            fprintf(['[matVis2] Saved window positions were recorded under a different ' ...
+                'monitor layout (e.g. a different MATLAB release''s display detection, ' ...
+                'or a monitor added/removed/rearranged since); using a fresh layout for ' ...
+                'this session''s displays instead.\n']);
+            applyFreshLayout();
         end
 
         % Window visibility
@@ -2518,99 +2543,7 @@ fprintf('\n');
         if isfile(configPath)
             onLoadConfig();
         else
-            % Anchor to the monitor the user is actually working on (the one
-            % under the mouse pointer), not always the OS-designated primary
-            % display -- get(0,'ScreenSize') is primary-only and, on a
-            % multi-monitor setup where MATLAB lives on a secondary/tertiary
-            % display, would otherwise place every fresh layout on a monitor
-            % the user isn't looking at.
-            targetMon  = targetMonitorBounds();
-            monL       = targetMon(1);
-            monB       = targetMon(2);
-            screenH    = targetMon(4);
-            gap        = 10;
-
-            % uifigure.Position is the inner (client) area; the title bar
-            % sits ABOVE Position and adds ~32 px to the outer height.
-            % We account for this so windows stay on screen and don't overlap.
-            titleBarH = 32;   % typical Windows 11 title bar (OuterPosition unsupported)
-            safeMargin = 8;   % gap between title bar top and screen edge
-
-            % Sub-window inner tops are set from screenH directly so they
-            % never depend on how tall the main GUI is.
-            % outer top = inner top + titleBarH = screenH - safeMargin  →
-            % inner top = screenH - safeMargin - titleBarH
-            winInnerTop = monB + screenH - safeMargin - titleBarH;
-
-            % Main GUI: place its top at the same reference level. A dataset
-            % with more navigation dimensions (e.g. an OME/Bio-Formats file
-            % with both a Z-stack and multiple channels, each getting its own
-            % slider row) makes this window taller; clamp so its bottom row
-            % (Save/Load Config, window toggles) can never end up below the
-            % target monitor's bottom edge even when the window no longer
-            % fits top-to-bottom.
-            mainPos    = fig.Position;
-            mainPos(1) = monL + 50;
-            mainPos(2) = max(monB, winInnerTop - mainPos(4));   % inner bottom
-            fig.Position = mainPos;
-            % Use mainPos as-is — no drawnow re-read, which can let the OS
-            % reposition the figure to an unexpected location before we read it.
-            leftX = mainPos(1) + mainPos(3) + gap;
-
-            if nDatasets == 1
-                % ── Single dataset ──────────────────────────────────────────
-                % Image and zoom: identical squares side by side.
-                % Plot: below both, width = image+gap+zoom.
-                sqSz = 460;
-                pltH = 280;
-                pltW = sqSz + gap + sqSz;
-                topY = winInnerTop - sqSz;   % inner bottom of image/zoom
-
-                imageWins{1}.fig.Position = [leftX,          topY, sqSz, sqSz];
-                zoomWins{1}.fig.Position  = [leftX+sqSz+gap, topY, sqSz, sqSz];
-
-                % Plot outer top must clear image inner bottom (topY):
-                %   plot outer top = plot inner top + titleBarH
-                %                 = (topY - gap - titleBarH - pltH + pltH) + titleBarH
-                %                 = topY - gap   ← gap pixels below image inner bottom ✓
-                plotWins{1}.fig.Position  = [leftX, topY - gap - titleBarH - pltH, pltW, pltH];
-            else
-                % ── Multiple datasets ────────────────────────────────────────
-                % Each row: image (square) | zoom (square) | plot (2:1), same height.
-                rowH = 360;
-                pltW = rowH * 2;
-
-                for ds = 1:nDatasets
-                    % Row outer top = winInnerTop + titleBarH for ds=1,
-                    % then shifted down by (rowH + titleBarH + gap) per dataset.
-                    rowInnerBot = winInnerTop - rowH - (ds-1) * (rowH + titleBarH + gap);
-                    imageWins{ds}.fig.Position = [leftX,                    rowInnerBot, rowH, rowH];
-                    zoomWins{ds}.fig.Position  = [leftX+rowH+gap,           rowInnerBot, rowH, rowH];
-                    plotWins{ds}.fig.Position  = [leftX+rowH+gap+rowH+gap,  rowInnerBot, pltW, rowH];
-                end
-            end
-
-            % ROI Manager (created lazily): remember its default position.
-            % Offsets are relative to the target monitor's bottom edge (monB),
-            % not absolute screen Y -- a monitor whose bottom isn't at y=0
-            % (e.g. one offset above/below the primary in a multi-monitor
-            % arrangement) would otherwise place these off that monitor entirely.
-            roiMgrDefaultPos = [leftX, monB + 60];
-            if ~isempty(roiMgr) && isvalid(roiMgr.fig)
-                roiMgr.fig.Position(1:2) = roiMgrDefaultPos;
-            end
-
-            % Profile Manager (created lazily): offset from the ROI manager
-            profMgrDefaultPos = [leftX + 60, monB + 40];
-            if ~isempty(profMgr) && isvalid(profMgr.fig)
-                profMgr.fig.Position(1:2) = profMgrDefaultPos;
-            end
-
-            % Metadata window (created lazily): offset from the Profile Manager
-            metadataWinDefaultPos = [leftX + 120, monB + 20];
-            if ~isempty(metadataWin) && isvalid(metadataWin.fig)
-                metadataWin.fig.Position(1:2) = metadataWinDefaultPos;
-            end
+            applyFreshLayout();
         end
 
         fig.Visible = 'on';
@@ -2618,6 +2551,108 @@ fprintf('\n');
             if btnToggleImage.Value, imageWins{ds}.fig.Visible = 'on'; end
             if btnToggleZoom.Value,  zoomWins{ds}.fig.Visible  = 'on'; end
             if btnTogglePlot.Value,  plotWins{ds}.fig.Visible  = 'on'; end
+        end
+    end
+
+    function applyFreshLayout()
+        % Tile Main/Image/Zoom/Plot (and remember ROI/Profile/Metadata
+        % default positions) from scratch for this session's actual
+        % monitors -- used both when no saved config exists yet, and when a
+        % saved config's window positions don't apply (see onLoadConfig:
+        % monitor layout mismatch across MATLAB releases/monitor changes).
+        %
+        % Anchor to the monitor the user is actually working on (the one
+        % under the mouse pointer), not always the OS-designated primary
+        % display -- get(0,'ScreenSize') is primary-only and, on a
+        % multi-monitor setup where MATLAB lives on a secondary/tertiary
+        % display, would otherwise place every fresh layout on a monitor
+        % the user isn't looking at.
+        targetMon  = targetMonitorBounds();
+        monL       = targetMon(1);
+        monB       = targetMon(2);
+        screenH    = targetMon(4);
+        gap        = 10;
+
+        % uifigure.Position is the inner (client) area; the title bar
+        % sits ABOVE Position and adds ~32 px to the outer height.
+        % We account for this so windows stay on screen and don't overlap.
+        titleBarH = 32;   % typical Windows 11 title bar (OuterPosition unsupported)
+        safeMargin = 8;   % gap between title bar top and screen edge
+
+        % Sub-window inner tops are set from screenH directly so they
+        % never depend on how tall the main GUI is.
+        % outer top = inner top + titleBarH = screenH - safeMargin  →
+        % inner top = screenH - safeMargin - titleBarH
+        winInnerTop = monB + screenH - safeMargin - titleBarH;
+
+        % Main GUI: place its top at the same reference level. A dataset
+        % with more navigation dimensions (e.g. an OME/Bio-Formats file
+        % with both a Z-stack and multiple channels, each getting its own
+        % slider row) makes this window taller; clamp so its bottom row
+        % (Save/Load Config, window toggles) can never end up below the
+        % target monitor's bottom edge even when the window no longer
+        % fits top-to-bottom.
+        mainPos    = fig.Position;
+        mainPos(1) = monL + 50;
+        mainPos(2) = max(monB, winInnerTop - mainPos(4));   % inner bottom
+        fig.Position = mainPos;
+        % Use mainPos as-is — no drawnow re-read, which can let the OS
+        % reposition the figure to an unexpected location before we read it.
+        leftX = mainPos(1) + mainPos(3) + gap;
+
+        if nDatasets == 1
+            % ── Single dataset ──────────────────────────────────────────
+            % Image and zoom: identical squares side by side.
+            % Plot: below both, width = image+gap+zoom.
+            sqSz = 460;
+            pltH = 280;
+            pltW = sqSz + gap + sqSz;
+            topY = winInnerTop - sqSz;   % inner bottom of image/zoom
+
+            imageWins{1}.fig.Position = [leftX,          topY, sqSz, sqSz];
+            zoomWins{1}.fig.Position  = [leftX+sqSz+gap, topY, sqSz, sqSz];
+
+            % Plot outer top must clear image inner bottom (topY):
+            %   plot outer top = plot inner top + titleBarH
+            %                 = (topY - gap - titleBarH - pltH + pltH) + titleBarH
+            %                 = topY - gap   ← gap pixels below image inner bottom ✓
+            plotWins{1}.fig.Position  = [leftX, topY - gap - titleBarH - pltH, pltW, pltH];
+        else
+            % ── Multiple datasets ────────────────────────────────────────
+            % Each row: image (square) | zoom (square) | plot (2:1), same height.
+            rowH = 360;
+            pltW = rowH * 2;
+
+            for ds = 1:nDatasets
+                % Row outer top = winInnerTop + titleBarH for ds=1,
+                % then shifted down by (rowH + titleBarH + gap) per dataset.
+                rowInnerBot = winInnerTop - rowH - (ds-1) * (rowH + titleBarH + gap);
+                imageWins{ds}.fig.Position = [leftX,                    rowInnerBot, rowH, rowH];
+                zoomWins{ds}.fig.Position  = [leftX+rowH+gap,           rowInnerBot, rowH, rowH];
+                plotWins{ds}.fig.Position  = [leftX+rowH+gap+rowH+gap,  rowInnerBot, pltW, rowH];
+            end
+        end
+
+        % ROI Manager (created lazily): remember its default position.
+        % Offsets are relative to the target monitor's bottom edge (monB),
+        % not absolute screen Y -- a monitor whose bottom isn't at y=0
+        % (e.g. one offset above/below the primary in a multi-monitor
+        % arrangement) would otherwise place these off that monitor entirely.
+        roiMgrDefaultPos = [leftX, monB + 60];
+        if ~isempty(roiMgr) && isvalid(roiMgr.fig)
+            roiMgr.fig.Position(1:2) = roiMgrDefaultPos;
+        end
+
+        % Profile Manager (created lazily): offset from the ROI manager
+        profMgrDefaultPos = [leftX + 60, monB + 40];
+        if ~isempty(profMgr) && isvalid(profMgr.fig)
+            profMgr.fig.Position(1:2) = profMgrDefaultPos;
+        end
+
+        % Metadata window (created lazily): offset from the Profile Manager
+        metadataWinDefaultPos = [leftX + 120, monB + 20];
+        if ~isempty(metadataWin) && isvalid(metadataWin.fig)
+            metadataWin.fig.Position(1:2) = metadataWinDefaultPos;
         end
     end
 

@@ -30,7 +30,8 @@ ioDir   = fullfile(baseDir, 'io');
 % source is missing or the wrong copy currently resolves.
 needPath = ~strcmpi(which('MatVisModel'),      fullfile(coreDir, 'MatVisModel.m'))      || ...
            ~strcmpi(which('MatVisMainWindow'), fullfile(uiDir,   'MatVisMainWindow.m')) || ...
-           ~strcmpi(which('parseArgs'),        fullfile(ioDir,   'parseArgs.m'));
+           ~strcmpi(which('parseArgs'),        fullfile(ioDir,   'parseArgs.m'))        || ...
+           ~strcmpi(which('matVisConfig'),     fullfile(ioDir,   'matVisConfig.m'));
 if needPath
     addpath(coreDir);
     addpath(uiDir);
