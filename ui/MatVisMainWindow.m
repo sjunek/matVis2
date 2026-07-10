@@ -2212,7 +2212,22 @@ fprintf('\n');
     end
 
     function tf = isMouseInHistogram()
+        tf = false;
         try
+            % Pixel-based guard first: a UIAxes' CurrentPoint keeps
+            % extrapolating through the axes' own data<->pixel map even when
+            % the mouse is nowhere near it on screen, so an XLim/YLim check
+            % alone can false-positive for cursor positions elsewhere in the
+            % window (e.g. over a RangeSlider track) and silently swallow
+            % that widget's hover-cursor update (see the identical guard in
+            % RangeSlider.getHoverCursor_).
+            figPt = fig.CurrentPoint;
+            axPos = getpixelposition(histAx, true);
+            xRel  = figPt(1) - axPos(1);
+            yRel  = figPt(2) - axPos(2);
+            if xRel < 0 || xRel > axPos(3) || yRel < 0 || yRel > axPos(4)
+                return;
+            end
             cp = histAx.CurrentPoint(1, 1:2);
             xl = histAx.XLim; yl = histAx.YLim;
             tf = cp(1) >= xl(1) && cp(1) <= xl(2) && cp(2) >= yl(1) && cp(2) <= yl(2);
