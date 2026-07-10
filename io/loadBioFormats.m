@@ -58,7 +58,7 @@ end
 
 phys = struct('Y', physY, 'X', physX, 'Z', physZ, 'T', physT, ...
     'Yunit', unitY, 'Xunit', unitX, 'Zunit', unitZ, 'Tunit', unitT);
-instrument = getInstrumentInfo(omeMeta, SizeC);
+instrument = getInstrumentInfo(r, omeMeta, SizeC, filepath);
 instrument.ChannelNames = chNames;
 [data, meta] = finalizeOmePlanes(data5, phys, chNames, instrument);
 end
@@ -110,6 +110,21 @@ end
 end
 
 % =============================================================================
+function s = getGlobalMetadataOr(r, key, default)
+% Look up a key in the reader's raw/original per-format metadata table (the
+% vendor's own field names, pre-OME-translation), returning default if the
+% key is absent or the lookup errors.
+s = default;
+try
+    v = r.getGlobalMetadata().get(key);
+    if ~isempty(v)
+        s = char(string(v));
+    end
+catch
+end
+end
+
+% =============================================================================
 function idx = resolveRefIndex(refId, count, idFn)
 % Find which of `count` items (0-based) has an ID matching refId, via
 % idFn(i) -> that item's ID string. Falls back to 0 (the first item) when
@@ -126,16 +141,30 @@ end
 end
 
 % =============================================================================
-function instrument = getInstrumentInfo(omeMeta, SizeC)
+function instrument = getInstrumentInfo(r, omeMeta, SizeC, filepath)
 % Read Instrument/Microscope/Objective, AcquisitionDate, and per-channel
 % excitation/emission/acquisition-mode from the Bio-Formats metadata store.
 % Every getter is optional in OME-XML, so each is independently guarded --
 % a file missing (e.g.) Objective info still yields Microscope/date/channel
 % fields where present.
+%
+% Some format readers (e.g. Zeiss CZI) don't translate every field of their
+% vendor metadata into the OME MetadataStore -- the microscope's model name
+% is one such gap (verified against a real .czi: getMicroscopeModel() comes
+% back empty even though the CZI's own metadata has it under
+% "Information|Instrument|Microscope|System"). r.getGlobalMetadata() exposes
+% that raw per-format key/value table as a fallback for such gaps.
+%
+% Manufacturer strings are often absent from the file entirely rather than
+% just untranslated (verified against the same .czi: neither the Microscope
+% nor Objective element carries a manufacturer string anywhere in its raw
+% metadata) -- guessManufacturerFromExtension() then infers it from the file
+% format itself for known single-vendor formats (.czi -> Zeiss, etc.).
 instrument = struct( ...
-    'MicroscopeManufacturer', '', 'MicroscopeModel', '', ...
+    'MicroscopeManufacturer', '', 'MicroscopeModel', '', 'MicroscopeType', '', ...
     'ObjectiveManufacturer', '', 'ObjectiveModel', '', ...
     'ObjectiveNA', NaN, 'ObjectiveImmersion', '', 'ObjectiveMagnification', NaN, ...
+    'ObjectiveRefractiveIndex', NaN, ...
     'AcquisitionDate', '', ...
     'ChannelExWavelength', nan(1, SizeC), 'ChannelEmWavelength', nan(1, SizeC), ...
     'ChannelExWavelengthUnit', {repmat({''}, 1, SizeC)}, ...
@@ -154,6 +183,7 @@ try
 
         instrument.MicroscopeManufacturer = getOmeStringOr(@() omeMeta.getMicroscopeManufacturer(instIdx));
         instrument.MicroscopeModel        = getOmeStringOr(@() omeMeta.getMicroscopeModel(instIdx));
+        instrument.MicroscopeType         = getOmeStringOr(@() omeMeta.getMicroscopeType(instIdx));
         if omeMeta.getObjectiveCount(instIdx) > 0
             objIdx = resolveRefIndex(getOmeStringOr(@() omeMeta.getObjectiveSettingsID(0)), ...
                 omeMeta.getObjectiveCount(instIdx), @(i) getOmeStringOr(@() omeMeta.getObjectiveID(instIdx, i)));
@@ -167,6 +197,19 @@ try
     end
 catch
 end
+if isempty(instrument.MicroscopeModel)
+    instrument.MicroscopeModel = getGlobalMetadataOr(r, 'Information|Instrument|Microscope|System', '');
+end
+vendorGuess = guessManufacturerFromExtension(filepath);
+if isempty(instrument.MicroscopeManufacturer)
+    instrument.MicroscopeManufacturer = vendorGuess;
+end
+if isempty(instrument.ObjectiveManufacturer)
+    instrument.ObjectiveManufacturer = vendorGuess;
+end
+% RefractiveIndex lives on this Image's <ObjectiveSettings>, not on the
+% <Objective> itself -- it's the medium actually used, not a lens spec.
+instrument.ObjectiveRefractiveIndex = getOmeNumberOr(@() omeMeta.getObjectiveSettingsRefractiveIndex(0));
 
 instrument.AcquisitionDate = getOmeStringOr(@() omeMeta.getImageAcquisitionDate(0));
 

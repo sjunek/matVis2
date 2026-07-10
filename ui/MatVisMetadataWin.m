@@ -99,15 +99,16 @@ if isempty(instr)
     return;
 end
 
-rows(end+1, :) = {'Microscope', naIfEmpty(joinNonEmpty({instr.MicroscopeManufacturer, instr.MicroscopeModel}, ' '))};
+rows(end+1, :) = {'Microscope manufacturer', naIfEmpty(instr.MicroscopeManufacturer)};
+rows(end+1, :) = {'Microscope model', naIfEmpty(instr.MicroscopeModel)};
+rows(end+1, :) = {'Microscope type', naIfEmpty(instr.MicroscopeType)};
 
-objParts = {};
-manModel = joinNonEmpty({instr.ObjectiveManufacturer, instr.ObjectiveModel}, ' ');
-if ~isempty(manModel), objParts{end+1} = manModel; end
-if isfinite(instr.ObjectiveMagnification), objParts{end+1} = sprintf('%gx', instr.ObjectiveMagnification); end
-if isfinite(instr.ObjectiveNA), objParts{end+1} = sprintf('NA %.2f', instr.ObjectiveNA); end
-if ~isempty(instr.ObjectiveImmersion), objParts{end+1} = instr.ObjectiveImmersion; end
-rows(end+1, :) = {'Objective', naIfEmpty(strjoin(objParts, ', '))};
+rows(end+1, :) = {'Objective manufacturer', naIfEmpty(instr.ObjectiveManufacturer)};
+rows(end+1, :) = {'Objective model', naIfEmpty(instr.ObjectiveModel)};
+rows(end+1, :) = {'Objective magnification', naIfNan(instr.ObjectiveMagnification, '%gx')};
+rows(end+1, :) = {'Objective NA', naIfNan(instr.ObjectiveNA, '%.2f')};
+rows(end+1, :) = {'Objective immersion', naIfEmpty(instr.ObjectiveImmersion)};
+rows(end+1, :) = {'Objective refractive index', naIfNan(instr.ObjectiveRefractiveIndex, '%.3f')};
 
 rows(end+1, :) = {'Acquisition date', naIfEmpty(instr.AcquisitionDate)};
 
@@ -132,14 +133,17 @@ end
 end
 
 % =============================================================================
-function s = joinNonEmpty(parts, sep)
-parts = parts(~cellfun(@isempty, parts));
-s = strjoin(parts, sep);
+function s = naIfEmpty(s)
+if isempty(s), s = 'n/a'; end
 end
 
 % =============================================================================
-function s = naIfEmpty(s)
-if isempty(s), s = 'n/a'; end
+function s = naIfNan(v, fmt)
+if isfinite(v)
+    s = sprintf(fmt, v);
+else
+    s = 'n/a';
+end
 end
 
 % =============================================================================

@@ -30,10 +30,15 @@ function meta = parseOmeXml(xmlStr)
 %                       <Microscope> (anywhere in the document, not scoped to
 %                       the first <Image>: <Instrument> is a document-level
 %                       sibling of <Image> in the OME schema)
+%   MicroscopeType            char ('' if absent)
 %   ObjectiveManufacturer/Model  char ('' if absent)
 %   ObjectiveNA               double (NaN if absent) — LensNA
 %   ObjectiveImmersion        char ('' if absent)
 %   ObjectiveMagnification    double (NaN if absent) — NominalMagnification
+%   ObjectiveRefractiveIndex  double (NaN if absent) — this Image's
+%                       <ObjectiveSettings RefractiveIndex="...">, the
+%                       actual-use-case RI (e.g. immersion medium), distinct
+%                       from the Objective element itself
 %   ChannelExWavelength/ChannelEmWavelength  1×SizeC double (NaN where absent)
 %   ChannelExWavelengthUnit/ChannelEmWavelengthUnit  1×SizeC cell of char
 %   ChannelAcquisitionMode    1×SizeC cell of char ('' where absent)
@@ -48,9 +53,10 @@ meta = struct( ...
     'TimeIncrement', NaN, 'TimeIncrementUnit', '', ...
     'ChannelNames', {{}}, 'Planes', [], 'hasMultipleSeries', false, ...
     'AcquisitionDate', '', ...
-    'MicroscopeManufacturer', '', 'MicroscopeModel', '', ...
+    'MicroscopeManufacturer', '', 'MicroscopeModel', '', 'MicroscopeType', '', ...
     'ObjectiveManufacturer', '', 'ObjectiveModel', '', ...
     'ObjectiveNA', NaN, 'ObjectiveImmersion', '', 'ObjectiveMagnification', NaN, ...
+    'ObjectiveRefractiveIndex', NaN, ...
     'ChannelExWavelength', [], 'ChannelEmWavelength', [], ...
     'ChannelExWavelengthUnit', {{}}, 'ChannelEmWavelengthUnit', {{}}, ...
     'ChannelAcquisitionMode', {{}});
@@ -124,6 +130,7 @@ if ~isempty(instrBlocks)
     if ~isempty(microscopeTag)
         meta.MicroscopeManufacturer = getAttrOr(microscopeTag, 'Manufacturer', '');
         meta.MicroscopeModel        = getAttrOr(microscopeTag, 'Model', '');
+        meta.MicroscopeType         = getAttrOr(microscopeTag, 'Type', '');
     end
 
     objTags = regexp(instrBlock, '<Objective\>[^>]*/?>', 'match');
@@ -144,6 +151,9 @@ if ~isempty(instrBlocks)
         meta.ObjectiveNA             = getNumAttrOr(objectiveTag, 'LensNA', NaN);
         meta.ObjectiveImmersion      = getAttrOr(objectiveTag, 'Immersion', '');
         meta.ObjectiveMagnification  = getNumAttrOr(objectiveTag, 'NominalMagnification', NaN);
+        % RefractiveIndex lives on <ObjectiveSettings> (per-Image), not on
+        % <Objective> itself -- it's the medium actually used, not a lens spec.
+        meta.ObjectiveRefractiveIndex = getNumAttrOr(objSettingsTag, 'RefractiveIndex', NaN);
     end
 end
 
