@@ -1507,6 +1507,7 @@ fprintf('\n');
 
     function onPlotPosChange(dimIdx, newPos)
         model.CurrPos(dimIdx) = max(1, min(model.Size(dimIdx), round(newPos)));
+        rangeSliders{dimIdx}.Value = model.CurrPos(dimIdx);
         doRender();
     end
 
@@ -1515,6 +1516,8 @@ fprintf('\n');
         hi = min(model.Size(dimIdx), round(hi));
         if lo < hi
             model.ZoomRange(dimIdx, :) = [lo, hi];
+            rangeSliders{dimIdx}.ZoomMin = lo;
+            rangeSliders{dimIdx}.ZoomMax = hi;
             doRender();
         end
     end

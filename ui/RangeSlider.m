@@ -69,12 +69,12 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         LabelComp_     matlab.ui.control.Label
         EditPos_       matlab.ui.control.NumericEditField
         TrackAx_       matlab.ui.control.UIAxes
-        BgPatch_
-        ZoomPatch_
-        PosPatch_
-        RGBPatchR_      % triad mode: 1-frame marker at the "prev" frame (red)
-        RGBPatchB_      % triad mode: 1-frame marker at the "next" frame (blue)
-        RGBStretchImg_  % stretch mode: rainbow bar spanning the folded-in frames
+        BgPatch_       matlab.graphics.primitive.Patch
+        ZoomPatch_     matlab.graphics.primitive.Patch
+        PosPatch_      matlab.graphics.primitive.Patch
+        RGBPatchR_     matlab.graphics.primitive.Patch  % triad mode: 1-frame marker at the "prev" frame (red)
+        RGBPatchB_     matlab.graphics.primitive.Patch  % triad mode: 1-frame marker at the "next" frame (blue)
+        RGBStretchImg_ matlab.graphics.primitive.Image  % stretch mode: rainbow bar spanning the folded-in frames
         BtnPlayFull_   matlab.ui.control.StateButton
         BtnPlayZoom_   matlab.ui.control.StateButton
         BtnPlayShift_  matlab.ui.control.StateButton
@@ -343,7 +343,8 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             % update() runs after EVERY public property change (e.g. each
             % playback frame).  Each widget write is a roundtrip to the web
             % renderer, so only properties that actually changed are pushed.
-            if isempty(obj.LabelComp_) || ~isvalid(obj.LabelComp_)
+            if isempty(obj.LabelComp_) || ~isvalid(obj.LabelComp_) || ...
+                    isempty(obj.TrackAx_) || ~isvalid(obj.TrackAx_)
                 return;
             end
 
@@ -459,6 +460,11 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         function setIfChanged_(~, h, prop, val)
             % Write a widget property only when the value differs.
             % (Patch XData reads back as a column vector, hence the (:).)
+            % Guard against a stale/unset handle: components can be deleted
+            % out from under a queued update() call (e.g. window closed
+            % while a callback is in flight), and a plain [] would otherwise
+            % fail this dot-index with an opaque "not supported" error.
+            if isempty(h) || ~isvalid(h), return; end
             cur = h.(prop);
             if isnumeric(cur) && isnumeric(val)
                 if isequaln(cur(:), val(:)), return; end

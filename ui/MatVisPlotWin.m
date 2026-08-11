@@ -93,9 +93,9 @@ for ii = 1:nDims
     ax.Title.String = model.DimNames{ii};
 
     if model.PlotLock(ii)
-        ax.XLim = model.ZoomRange(ii, :);
+        ax.XLim = safeXLim(model.ZoomRange(ii, :));
     else
-        ax.XLim = [1, model.Size(ii)];
+        ax.XLim = safeXLim([1, model.Size(ii)]);
     end
 
     ln = line(ax, NaN, NaN, 'LineWidth', 1.2, 'HitTest', 'off');
@@ -308,9 +308,9 @@ pw.SetFixY        = @setFixY;
 
             if ~fixXScale
                 if model.PlotLock(jj)
-                    xl = model.ZoomRange(jj, :);
+                    xl = safeXLim(model.ZoomRange(jj, :));
                 else
-                    xl = [1, model.Size(jj)];
+                    xl = safeXLim([1, model.Size(jj)]);
                 end
                 if ~isequal(axHandles{jj}.XLim, xl)
                     axHandles{jj}.XLim = xl;
@@ -344,6 +344,16 @@ pw.SetFixY        = @setFixY;
         u = model.dimUnit(jj);
         if ~isempty(u)
             s = sprintf('%s [%s]', s, u);
+        end
+    end
+
+    % -----------------------------------------------------------------
+    function xl = safeXLim(xl)
+        % XLim requires a strictly increasing 2-vector; a singleton
+        % dimension (Size==1, or a ZoomRange collapsed to one sample)
+        % yields lo==hi, so widen it around that value.
+        if xl(2) <= xl(1)
+            xl = [xl(1) - 0.5, xl(1) + 0.5];
         end
     end
 
@@ -555,6 +565,20 @@ pw.SetFixY        = @setFixY;
 
         xl    = axHandles{dimIdx}.XLim;
         dataX = max(xl(1), min(xl(2), dataX));
+
+        % Middle click: jump to clicked position and start dragging it
+        if strcmp(fig.SelectionType, 'extend')
+            newPos = max(1, min(model.Size(dimIdx), round(dataX)));
+            dragActive  = true;
+            dragDimIdx  = dimIdx;
+            dragStartX  = dataX;
+            dragCurrX   = dataX;
+            lastDragPos = newPos;
+            dragMode    = 'position';
+            posChangeFcn(dimIdx, newPos);
+            fig.Pointer = 'left';
+            return;
+        end
 
         dragActive  = true;
         dragDimIdx  = dimIdx;
