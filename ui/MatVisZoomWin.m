@@ -734,15 +734,11 @@ zw.SetAspectRatio    = @applyAspectRatio;
         cx_D = xrZ(1) + cx_L - 1;
         cy_D = yrZ(1) + cy_L - 1;
 
-        xHalf = diff(xrZ) / 2 * factor;
-        yHalf = diff(yrZ) / 2 * factor;
-
-        xMin = max(1, round(cx_D - xHalf));
-        xMax = min(model.Size(xd), round(cx_D + xHalf));
-        yMin = max(1, round(cy_D - yHalf));
-        yMax = min(model.Size(yd_dim), round(cy_D + yHalf));
-        if xMax > xMin && yMax > yMin && ~isempty(zoomFromMouseFcn)
-            zoomFromMouseFcn(xd, [xMin, xMax], yd_dim, [yMin, yMax]);
+        [xr, yr] = MatVisRender.zoomStepAtCursor(xrZ, yrZ, ...
+            model.Size(xd), model.Size(yd_dim), factor, cx_D, cy_D);
+        if ~isempty(zoomFromMouseFcn) && ...
+                (~isequal(xr, xrZ) || ~isequal(yr, yrZ))
+            zoomFromMouseFcn(xd, xr, yd_dim, yr);
         end
     end
 

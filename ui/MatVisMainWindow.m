@@ -575,52 +575,72 @@ addlistener(model, 'ActiveDatasetChanged', @(~,~) onModelActiveDatasetChanged())
 
 mvTiming_.labels{end+1} = 'contrast panel created'; mvTiming_.times(end+1) = toc(mvT0_);
 %% Bottom controls
-bottomGrid = uigridlayout(grid, [1, 9]);
+% Two rows of five: the buttons are much wider (the longer labels no longer
+% have to be abbreviated to fit) and low enough that both rows together stay
+% inside the same rowH_bottom the single row used, so the window height is
+% unchanged.  2*btnH + RowSpacing + 2*Padding must equal rowH_bottom.
+btnH = round(0.4 * rowH_bottom);
+
+bottomGrid = uigridlayout(grid, [2, 5]);
 bottomGrid.Layout.Row    = 4;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', '1x', '1x', '1x', '1x'};
-bottomGrid.RowHeight     = {'1x'};
-bottomGrid.Padding       = [0 0 0 0];
+bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x'};
+bottomGrid.RowHeight     = {btnH, btnH};
+bottomGrid.RowSpacing    = rowH_bottom - 2*btnH - 4;
+bottomGrid.Padding       = [0 2 0 2];
+
+btnFS = 9;      % the default 12 pt would be clipped at this button height
 
 btnToggleImage = uibutton(bottomGrid, 'state', 'Text', 'Image', 'Value', true, ...
+    'FontSize', btnFS, ...
     'ValueChangedFcn', @(src, ~) toggleAllWindows(imageWins, src.Value));
-btnToggleImage.Layout.Column = 1;
+btnToggleImage.Layout.Row = 1;  btnToggleImage.Layout.Column = 1;
 
 btnToggleZoom = uibutton(bottomGrid, 'state', 'Text', 'Zoom', 'Value', true, ...
+    'FontSize', btnFS, ...
     'ValueChangedFcn', @(src, ~) toggleAllWindows(zoomWins, src.Value));
-btnToggleZoom.Layout.Column = 2;
+btnToggleZoom.Layout.Row = 1;  btnToggleZoom.Layout.Column = 2;
 
 btnTogglePlot = uibutton(bottomGrid, 'state', 'Text', 'Plot', 'Value', true, ...
+    'FontSize', btnFS, ...
     'ValueChangedFcn', @(src, ~) toggleAllWindows(plotWins, src.Value));
-btnTogglePlot.Layout.Column = 3;
+btnTogglePlot.Layout.Row = 1;  btnTogglePlot.Layout.Column = 3;
 
 btnToggleRoi = uibutton(bottomGrid, 'state', 'Text', 'ROI', 'Value', false, ...
-    'Tooltip', 'Show/hide the ROI Manager', ...
+    'FontSize', btnFS, 'Tooltip', 'Show/hide the ROI Manager', ...
     'ValueChangedFcn', @(src, ~) toggleRoiWindow(src.Value));
-btnToggleRoi.Layout.Column = 4;
+btnToggleRoi.Layout.Row = 1;  btnToggleRoi.Layout.Column = 4;
 
-btnToggleProfile = uibutton(bottomGrid, 'state', 'Text', 'Prof', 'Value', false, ...
-    'Tooltip', 'Show/hide the Profile Manager', ...
+btnToggleProfile = uibutton(bottomGrid, 'state', 'Text', 'Profiles', 'Value', false, ...
+    'FontSize', btnFS, 'Tooltip', 'Show/hide the Profile Manager', ...
     'ValueChangedFcn', @(src, ~) toggleProfileWindow(src.Value));
-btnToggleProfile.Layout.Column = 5;
+btnToggleProfile.Layout.Row = 1;  btnToggleProfile.Layout.Column = 5;
 
 btnOverlay = uibutton(bottomGrid, 'state', 'Text', 'Overlay', 'Value', true, ...
-    'Tooltip', 'Show/hide crop rectangle and position lines', ...
+    'FontSize', btnFS, 'Tooltip', 'Show/hide crop rectangle and position lines', ...
     'ValueChangedFcn', @(src, ~) setOverlay(src.Value));
-btnOverlay.Layout.Column = 6;
+btnOverlay.Layout.Row = 2;  btnOverlay.Layout.Column = 1;
 
 btnToggleMetadata = uibutton(bottomGrid, 'state', 'Text', 'Info', 'Value', false, ...
+    'FontSize', btnFS, ...
     'Tooltip', 'Show/hide acquisition metadata (microscope, objective, channels, scale)', ...
     'ValueChangedFcn', @(src, ~) toggleMetadataWindow(src.Value));
-btnToggleMetadata.Layout.Column = 7;
+btnToggleMetadata.Layout.Row = 2;  btnToggleMetadata.Layout.Column = 2;
 
-btnSaveConfig = uibutton(bottomGrid, 'Text', 'Save Config', ...
+btnToggleXSec = uibutton(bottomGrid, 'state', 'Text', 'XSec', 'Value', false, ...
+    'FontSize', btnFS, ...
+    'Tooltip', sprintf(['Show/hide the cross-section window: up to four planes\n' ...
+        'of this dataset (three 2-D cross sections + a 3-D max projection).']), ...
+    'ValueChangedFcn', @(src, ~) toggleXSecWindows(src.Value));
+btnToggleXSec.Layout.Row = 2;  btnToggleXSec.Layout.Column = 3;
+
+btnSaveConfig = uibutton(bottomGrid, 'Text', 'Save Config', 'FontSize', btnFS, ...
     'ButtonPushedFcn', @(~,~) onSaveConfig());
-btnSaveConfig.Layout.Column = 8;
+btnSaveConfig.Layout.Row = 2;  btnSaveConfig.Layout.Column = 4;
 
-btnLoadConfig = uibutton(bottomGrid, 'Text', 'Load Config', ...
+btnLoadConfig = uibutton(bottomGrid, 'Text', 'Load Config', 'FontSize', btnFS, ...
     'ButtonPushedFcn', @(~,~) onLoadConfig());
-btnLoadConfig.Layout.Column = 9;
+btnLoadConfig.Layout.Row = 2;  btnLoadConfig.Layout.Column = 5;
 
 setappdata(fig, 'OverlayVisible', true);
 
@@ -650,6 +670,15 @@ metadataCbs.onHide = @() set(btnToggleMetadata, 'Value', false);
 metadataWin = [];
 metadataWinDefaultPos = [];
 
+%% Cross-section windows (one per dataset) — created lazily on first use
+xsecCbs = struct();
+xsecCbs.positionFromMouse = @onPositionFromMouse;
+xsecCbs.zoomFromMouse     = @onZoomFromMouse;
+xsecCbs.onHide            = @() set(btnToggleXSec, 'Value', false);
+xsecWins        = cell(1, nDatasets);
+xsecDefaultPos  = [];
+xsecSavedPos    = cell(1, nDatasets);   % from a loaded config, applied on creation
+
 addlistener(model, 'RoiChanged',     @(~,~) doRender());
 addlistener(model, 'ProfileChanged', @(~,~) doRender());
 
@@ -664,6 +693,7 @@ mw.plotWins     = plotWins;
 mw.imageWin     = imageWins{1};   % legacy single-window fields
 mw.zoomWin      = zoomWins{1};
 mw.plotWin      = plotWins{1};
+mw.getXSecWin   = @getXSecWin;    % cross-section windows are created lazily
 mw.getRoiMgr    = @getRoiMgr;     % ROI manager is created lazily
 mw.getProfileMgr = @getProfileMgr;% Profile manager is created lazily
 mw.getMetadataWin = @getMetadataWin; % Metadata window is created lazily
@@ -749,6 +779,12 @@ fprintf('\n');
             try; if isvalid(imageWins{ds}.fig), delete(imageWins{ds}.fig); end; catch; end
             try; if isvalid(zoomWins{ds}.fig),  delete(zoomWins{ds}.fig);  end; catch; end
             try; if isvalid(plotWins{ds}.fig),  delete(plotWins{ds}.fig);  end; catch; end
+            try
+                if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                    delete(xsecWins{ds}.fig);
+                end
+            catch
+            end
         end
         try; if ~isempty(roiMgr) && isvalid(roiMgr.fig), delete(roiMgr.fig); end; catch; end
         try; if ~isempty(hist2DFig) && isvalid(hist2DFig), delete(hist2DFig); end; catch; end
@@ -760,6 +796,13 @@ fprintf('\n');
             try; if isvalid(imageWins{ds}.fig), figure(imageWins{ds}.fig); end; catch; end
             try; if isvalid(zoomWins{ds}.fig),  figure(zoomWins{ds}.fig);  end; catch; end
             try; if isvalid(plotWins{ds}.fig),  figure(plotWins{ds}.fig);  end; catch; end
+            try
+                if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig) && ...
+                        strcmp(xsecWins{ds}.fig.Visible, 'on')
+                    figure(xsecWins{ds}.fig);
+                end
+            catch
+            end
         end
         figure(fig);
     end
@@ -865,6 +908,13 @@ fprintf('\n');
 
             imageWins{ds}.Update(rgb_full, zoomRect, posX, posY);
             zoomWins{ds}.Update(rgb_zoom, posXLocal, posYLocal);
+
+            % Cross sections share this dataset's contrast bounds and gamma
+            % so every window maps data values to colours identically. The
+            % window itself skips panels whose content hasn't changed.
+            if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                xsecWins{ds}.Update(cmin_ds, cmax_ds, gamma_ds);
+            end
 
             if withAlpha
                 aMapDs = model.AlphaMaps{ds};
@@ -1837,7 +1887,20 @@ fprintf('\n');
         drawnow limitrate;
     end
 
-    function onZoomFromMouse(xDim, xRange, yDim, yRange)
+    function onZoomFromMouse(xDim, xRange, yDim, yRange, keepSize)
+        % keepSize: true when the caller is moving a zoom region of a fixed
+        % size (dragging the zoom rectangle, panning a cross-section panel).
+        % Otherwise the region is grown until it fills the zoom window, so a
+        % zoom does not leave that window showing a strip with empty space
+        % beside it.
+        if nargin < 5, keepSize = false; end
+        if ~keepSize && xDim == model.XDim && yDim == model.YDim
+            zw = zoomWins{model.ActiveDataset};
+            if ~isempty(zw) && isvalid(zw.fig) && strcmp(zw.fig.Visible, 'on')
+                [xRange, yRange] = MatVisRender.fitZoomToAxes(zw.ax, ...
+                    xRange, yRange, model.Size(xDim), model.Size(yDim));
+            end
+        end
         model.ZoomRange(xDim, :)   = xRange;
         model.ZoomRange(yDim, :)   = yRange;
         rangeSliders{xDim}.ZoomMin = xRange(1);
@@ -2280,6 +2343,9 @@ fprintf('\n');
         for ds = 1:nDatasets
             imageWins{ds}.SetOverlayVisible(tf);
             zoomWins{ds}.SetOverlayVisible(tf);
+            if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                xsecWins{ds}.SetOverlayVisible(tf);
+            end
         end
     end
 
@@ -2385,6 +2451,46 @@ fprintf('\n');
         end
     end
 
+    % ------------------------------------------------------------------
+    %  Cross-section window wiring
+    % ------------------------------------------------------------------
+    function xs = getXSecWin(ds)
+        % Lazy creation — a cross-section window costs a uifigure with four
+        % axes, so it is built only when the user first asks for it.
+        if isempty(xsecWins{ds}) || ~isvalid(xsecWins{ds}.fig)
+            xsecWins{ds} = MatVisXSecWin(model, xsecCbs, ds);
+            if nDatasets > 1
+                xsecWins{ds}.fig.Name = sprintf('Cross sections - %s', ...
+                    model.DatasetNames{ds});
+            end
+            if ~isempty(xsecSavedPos{ds})
+                xsecWins{ds}.fig.Position = clampFigPosToScreen(xsecSavedPos{ds});
+            elseif ~isempty(xsecDefaultPos)
+                xsecWins{ds}.fig.Position(1:2) = ...
+                    xsecDefaultPos + (ds-1) * [24, -24];
+            end
+            xsecWins{ds}.SetOverlayVisible(getappdata(fig, 'OverlayVisible'));
+        end
+        xs = xsecWins{ds};
+    end
+
+    function toggleXSecWindows(isVisible)
+        for ds = 1:nDatasets
+            if isVisible
+                xs = getXSecWin(ds);
+                xs.fig.Visible = 'on';
+            elseif ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                xsecWins{ds}.fig.Visible = 'off';
+            end
+        end
+        if isVisible
+            doRender();     % fills the freshly shown panels
+            for ds = 1:nDatasets
+                figure(xsecWins{ds}.fig);
+            end
+        end
+    end
+
     function applyRoiPosition(pos, zoomVal)
         % Jump navigation state to an ROI's stored position/zoom and sync sliders.
         if numel(pos) == nDims
@@ -2409,7 +2515,15 @@ fprintf('\n');
         imgFigs  = cellfun(@(w) w.fig, imageWins, 'UniformOutput', false);
         zoomFigs = cellfun(@(w) w.fig, zoomWins,  'UniformOutput', false);
         plotFigs = cellfun(@(w) w.fig, plotWins,  'UniformOutput', false);
-        matVisConfig('SaveConfig', model, fig, imgFigs, zoomFigs, plotFigs, configPath);
+        % Cross-section windows are lazy: pass [] for the ones never opened.
+        xsecFigs = cell(1, nDatasets);
+        for ds = 1:nDatasets
+            if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                xsecFigs{ds} = xsecWins{ds}.fig;
+            end
+        end
+        matVisConfig('SaveConfig', model, fig, imgFigs, zoomFigs, plotFigs, ...
+                     configPath, xsecFigs);
         fprintf('Configuration saved to: %s\n', configPath);
     end
 
@@ -2538,6 +2652,14 @@ fprintf('\n');
                 elseif ds == 1 && isfield(pos, 'Plot')
                     plotWins{ds}.fig.Position = clampFigPosToScreen(pos.Plot);
                 end
+                % Cross-section windows may not exist yet — remember the
+                % saved geometry and apply it when one is created.
+                if isfield(pos, ['XSec' dsKey])
+                    xsecSavedPos{ds} = pos.(['XSec' dsKey]);
+                    if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                        xsecWins{ds}.fig.Position = clampFigPosToScreen(xsecSavedPos{ds});
+                    end
+                end
             end
         elseif isfield(config, 'windowPositions')
             fprintf(['[matVis2] Saved window positions were recorded under a different ' ...
@@ -2555,22 +2677,35 @@ fprintf('\n');
                 setOverlay(vis.Overlay);
             end
 
-            anyImg = false; anyZoom = false; anyPlot = false;
+            anyImg = false; anyZoom = false; anyPlot = false; anyXSec = false;
             for ds = 1:nDatasets
                 dsKey = num2str(ds);
                 imgVis = getVisBool(vis, ['Image' dsKey], ds, 'Image', true);
                 zomVis = getVisBool(vis, ['Zoom'  dsKey], ds, 'Zoom',  true);
                 pltVis = getVisBool(vis, ['Plot'  dsKey], ds, 'Plot',  true);
+                xseVis = getVisBool(vis, ['XSec'  dsKey], ds, 'XSec',  false);
                 if imgVis, imageWins{ds}.fig.Visible = 'on'; else, imageWins{ds}.fig.Visible = 'off'; end
                 if zomVis, zoomWins{ds}.fig.Visible  = 'on'; else, zoomWins{ds}.fig.Visible  = 'off'; end
                 if pltVis, plotWins{ds}.fig.Visible  = 'on'; else, plotWins{ds}.fig.Visible  = 'off'; end
+                if xseVis
+                    % Only now is it worth paying for the window. (Assign the
+                    % result first: `getXSecWin(ds).fig.Visible = ...` would
+                    % be parsed as an assignment to a *variable* of that name,
+                    % which silently shadows the nested function.)
+                    xsWin = getXSecWin(ds);
+                    xsWin.fig.Visible = 'on';
+                elseif ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                    xsecWins{ds}.fig.Visible = 'off';
+                end
                 anyImg  = anyImg  || imgVis;
                 anyZoom = anyZoom || zomVis;
                 anyPlot = anyPlot || pltVis;
+                anyXSec = anyXSec || xseVis;
             end
             btnToggleImage.Value = anyImg;
             btnToggleZoom.Value  = anyZoom;
             btnTogglePlot.Value  = anyPlot;
+            btnToggleXSec.Value  = anyXSec;
         end
 
         fprintf('Configuration loaded from: %s\n', configPath);
@@ -2593,6 +2728,10 @@ fprintf('\n');
             if btnToggleImage.Value, imageWins{ds}.fig.Visible = 'on'; end
             if btnToggleZoom.Value,  zoomWins{ds}.fig.Visible  = 'on'; end
             if btnTogglePlot.Value,  plotWins{ds}.fig.Visible  = 'on'; end
+            if btnToggleXSec.Value
+                xsWin = getXSecWin(ds);
+                xsWin.fig.Visible = 'on';
+            end
         end
     end
 
@@ -2695,6 +2834,15 @@ fprintf('\n');
         metadataWinDefaultPos = [leftX + 120, monB + 20];
         if ~isempty(metadataWin) && isvalid(metadataWin.fig)
             metadataWin.fig.Position(1:2) = metadataWinDefaultPos;
+        end
+
+        % Cross-section windows (created lazily): stacked at the left of the
+        % target monitor, each dataset's window slightly offset.
+        xsecDefaultPos = [monL + 30, monB + 30];
+        for ds = 1:nDatasets
+            if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
+                xsecWins{ds}.fig.Position(1:2) = xsecDefaultPos + (ds-1) * [24, -24];
+            end
         end
     end
 

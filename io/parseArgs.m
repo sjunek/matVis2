@@ -120,7 +120,7 @@ if isstring(c)
 end
 out = cell(1, n);
 for i = 1:n
-    if i <= numel(c)
+    if i <= numel(c) && ~isempty(c{i})
         out{i} = char(c{i});
     else
         out{i} = defaultFn(i);

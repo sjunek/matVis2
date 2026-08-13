@@ -106,6 +106,99 @@ classdef MatVisRender
             raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd, doStretch);
         end
 
+        % ------------------------------------------------------------------
+        %  Arbitrary-plane / volume extraction (cross-section window)
+        %
+        %  The methods above are hard-wired to the model's own XDim/YDim
+        %  display plane.  The ones below take the display dimensions as
+        %  arguments so several planes of the same dataset can be shown side
+        %  by side.  Projection and RGB colour coding are applied exactly as
+        %  in the main image window whenever their dimension is not one of
+        %  the two requested display dims; axis flips are applied only for
+        %  the model's own plane, since they describe that display.
+        % ------------------------------------------------------------------
+        function raw = getRawSliceForDims(model, data, xDim, yDim, xIdx, yIdx)
+            % getRawSliceForDims  2-D slice spanned by an arbitrary dim pair.
+            %   xIdx / yIdx : index vectors along xDim / yDim (e.g. lo:hi)
+            % Returns rows = yDim, cols = xDim (H×W×N in RGB modes).
+            idx = num2cell(model.CurrPos);
+            idx{xDim} = xIdx;
+            idx{yDim} = yIdx;
+            [doProj, pd] = MatVisRender.projStateFor_(model, xDim, yDim);
+            [doRGB,  rd] = MatVisRender.rgbStateFor_(model, xDim, yDim, doProj, pd);
+            doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
+            if doProj
+                if model.ProjZoomLock
+                    idx{pd} = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
+                else
+                    idx{pd} = 1 : model.Size(pd);
+                end
+            end
+            if doStretch
+                idx{rd} = MatVisRender.stretchRangeIdx_(model, rd);
+            elseif doRGB
+                idx{rd} = MatVisRender.rgbTriadIdx_(model, rd);
+            end
+            doFlip = (xDim == model.XDim && yDim == model.YDim);
+            raw = double(data(idx{:}));
+            raw = MatVisRender.finalizeSliceDims_(raw, model, xDim, yDim, ...
+                doProj, pd, doRGB, rd, doStretch, doFlip);
+        end
+
+        function vol = getRawVolumeForDims(model, data, dims3, idxCells)
+            % getRawVolumeForDims  3-D sub-volume spanned by three dimensions.
+            %   dims3    : 1×3 dimension indices
+            %   idxCells : 1×3 cell of index vectors (may be strided for
+            %              downsampling); all other dims are taken at CurrPos.
+            % The result is permuted into dims3 order, so vol(i,j,k) is the
+            % value at index idxCells{1}(i) / idxCells{2}(j) / idxCells{3}(k).
+            idx = num2cell(model.CurrPos);
+            for k = 1:3
+                idx{dims3(k)} = idxCells{k};
+            end
+            raw   = data(idx{:});
+            nd    = numel(model.Size);
+            order = [dims3(:)', setdiff(1:nd, dims3)];
+            raw   = permute(raw, order);
+            vol   = double(reshape(raw, numel(idxCells{1}), ...
+                                        numel(idxCells{2}), numel(idxCells{3})));
+        end
+
+        function tf = rgbActiveForDims(model, xDim, yDim)
+            % True when RGB colour coding applies to the given display plane.
+            [doProj, pd] = MatVisRender.projStateFor_(model, xDim, yDim);
+            tf = MatVisRender.rgbStateFor_(model, xDim, yDim, doProj, pd);
+        end
+
+        function tf = stretchActiveForDims(model, xDim, yDim)
+            % True when a whole-dimension RGB stretch applies to that plane.
+            tf = MatVisRender.rgbActiveForDims(model, xDim, yDim) && ...
+                 ~strcmp(model.RGBStretchMode, 'none');
+        end
+
+        function sp = spacingForDims(model, dims)
+            % spacingForDims  Real-world size of one index step along each of
+            % DIMS, or [] when the dims don't carry comparable scale.
+            %
+            % "Comparable" means every dim has a non-trivial DimScale AND all
+            % share the same unit string: stretching an x/t panel by the
+            % numeric frame interval (µm against s) is meaningless, so such a
+            % pair falls back to square pixels.
+            sp = [];
+            n  = numel(dims);
+            s  = zeros(1, n);
+            u0 = model.dimUnit(dims(1));
+            for k = 1:n
+                d = dims(k);
+                if ~model.hasRealScale(d), return; end
+                if ~strcmp(model.dimUnit(d), u0), return; end
+                v = abs(model.pixelSize(d));
+                if ~isfinite(v) || v <= 0, return; end
+                s(k) = v;
+            end
+            sp = s / min(s);
+        end
+
         function profile1D = renderProfileFromData(model, data, dimIdx)
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = model.ZoomRange(dimIdx, 1) : model.ZoomRange(dimIdx, 2);
@@ -638,6 +731,78 @@ classdef MatVisRender
         %  mouse interaction) untouched.  When no scale is supplied the
         %  labels reduce to the plain pixel indices.
         % ------------------------------------------------------------------
+        % ------------------------------------------------------------------
+        %  Zoom geometry
+        %
+        %  An image axes with a fixed data aspect ratio letterboxes: the plot
+        %  box shrinks until the data range fits, leaving empty space on one
+        %  pair of sides.  fitZoomToAxes grows the range into that space, so
+        %  zooming in fills the axes instead of leaving a strip in an empty
+        %  panel.  pixelsPerDataUnit reports the screen scale that results,
+        %  which is what turns a mouse drag in pixels into a shift in data
+        %  indices.
+        % ------------------------------------------------------------------
+        function [xr, yr] = zoomStepAtCursor(xr, yr, xN, yN, factor, cx, cy)
+            % One wheel step on a zoom range: scale both ranges by FACTOR
+            % (> 1 = zoom out) about the data point (CX, CY).
+            %
+            % The width is scaled first and the range is then shifted to fit
+            % inside the dimension.  Clipping the two ends instead — which is
+            % what this used to do — swallows most of the step near an end of
+            % a dimension, so zooming out stalls, its step depends on where
+            % the cursor sits, and with the cursor close enough to an end the
+            % clipped range comes out *narrower* than before: a zoom-out that
+            % zooms in.
+            xr = MatVisRender.zoomStep_(xr, xN, factor, cx);
+            yr = MatVisRender.zoomStep_(yr, yN, factor, cy);
+        end
+
+        function [pxX, pxY] = pixelsPerDataUnit(ax)
+            % Screen pixels per data unit along x and y, for the limits the
+            % axes currently holds.  Zero when it cannot be determined.
+            pxX = 0;  pxY = 0;
+            [wp, hp] = MatVisRender.axesDataAreaPixels(ax);
+            if wp <= 0 || hp <= 0, return; end
+            sx = abs(diff(ax.XLim));
+            sy = abs(diff(ax.YLim));
+            if sx <= 0 || sy <= 0, return; end
+            if strcmp(ax.DataAspectRatioMode, 'manual')
+                % The plot box is the largest one of the required shape that
+                % still fits, so one common scale k applies to both axes.
+                r = ax.DataAspectRatio;
+                k = min(wp / (sx / r(1)), hp / (sy / r(2)));
+                pxX = k / r(1);
+                pxY = k / r(2);
+            else
+                pxX = wp / sx;      % axes stretches, no letterbox
+                pxY = hp / sy;
+            end
+        end
+
+        function [xr, yr] = fitZoomToAxes(ax, xr, yr, xN, yN)
+            % Grow XR/YR (index ranges, [lo hi]) until their proportions
+            % match those of AX, so the zoom fills it.  Only ever grows, and
+            % never beyond [1 xN] / [1 yN], so the requested region stays
+            % visible; a stretched axes needs no correction at all.
+            if isempty(ax) || ~isvalid(ax), return; end
+            if ~strcmp(ax.DataAspectRatioMode, 'manual'), return; end
+            [wp, hp] = MatVisRender.axesDataAreaPixels(ax);
+            if wp <= 0 || hp <= 0, return; end
+            r  = ax.DataAspectRatio;
+            wx = xr(2) - xr(1) + 1;
+            wy = yr(2) - yr(1) + 1;
+            if wx <= 0 || wy <= 0, return; end
+            % On screen the range spans [wx/r(1), wy/r(2)] times a common
+            % scale; it fills the axes when that has the axes' proportions.
+            needY = wx * (r(2)/r(1)) * (hp/wp);
+            needX = wy * (r(1)/r(2)) * (wp/hp);
+            if needY > wy + 0.5
+                yr = MatVisRender.growRange_(yr, needY, yN);
+            elseif needX > wx + 0.5
+                xr = MatVisRender.growRange_(xr, needX, xN);
+            end
+        end
+
         function applyAxisScale(ax, model, xDim, xOffset, yDim, yOffset)
             if isempty(ax) || ~isvalid(ax), return; end
             [xt, xl] = MatVisRender.axisTicks_(model, xDim, xOffset, ax.XLim);
@@ -682,6 +847,48 @@ classdef MatVisRender
     end
 
     methods (Static, Access = private)
+        function [wp, hp] = axesDataAreaPixels(ax)
+            % Pixel size of the area the axes has for data, before the aspect
+            % ratio shrinks the plot box inside it.  The units are read, not
+            % switched: converting them back and forth on every mouse event
+            % would drift the axes position.
+            wp = 0;  hp = 0;
+            if isempty(ax) || ~isvalid(ax), return; end
+            try
+                ip = ax.InnerPosition;
+                switch ax.Units
+                    case 'pixels'
+                        wp = ip(3);  hp = ip(4);
+                    case 'normalized'
+                        pp = getpixelposition(ax.Parent, true);
+                        wp = ip(3) * pp(3);  hp = ip(4) * pp(4);
+                end
+            catch
+            end
+        end
+
+        function r = zoomStep_(r, n, factor, c)
+            % Scale one range about C, keeping C at the same relative place
+            % in it, so the point under the cursor does not move.
+            lo   = r(1);
+            w    = r(2) - lo + 1;
+            if w <= 0 || n < 1, return; end
+            frac = max(0, min(1, (c - lo) / max(w - 1, 1)));
+            wNew = max(min(2, n), min(n, round(w * factor)));
+            lo   = round(c - frac * (wNew - 1));
+            lo   = max(1, min(lo, n - wNew + 1));
+            r    = [lo, lo + wNew - 1];
+        end
+
+        function r = growRange_(r, wNew, n)
+            wNew = min(round(wNew), n);
+            w    = r(2) - r(1) + 1;
+            if wNew <= w, return; end
+            lo = round(r(1) - (wNew - w) / 2);      % grow to both sides
+            lo = max(1, min(lo, n - wNew + 1));
+            r  = [lo, lo + wNew - 1];
+        end
+
         function [pixTicks, labels] = axisTicks_(model, dim, offset, lim)
             % Nice real-world ticks for the pixel axis with limits LIM.
             real0 = model.indexToReal(dim, lim(1) + offset);
@@ -755,30 +962,45 @@ classdef MatVisRender
         end
 
         function [doProj, pd] = projState_(model)
+            [doProj, pd] = MatVisRender.projStateFor_(model, model.XDim, model.YDim);
+        end
+
+        function [doProj, pd] = projStateFor_(model, xDim, yDim)
             pd = model.ProjDim;
             doProj = ~strcmp(model.ProjFun, 'none') && pd > 0 && ...
-                     pd ~= model.XDim && pd ~= model.YDim;
+                     pd ~= xDim && pd ~= yDim;
         end
 
         function [doRGB, rd] = rgbState_(model, doProj, pd)
+            [doRGB, rd] = MatVisRender.rgbStateFor_(model, model.XDim, model.YDim, doProj, pd);
+        end
+
+        function [doRGB, rd] = rgbStateFor_(model, xDim, yDim, doProj, pd)
             % RGB is active when RGBDim > 0; it is suppressed if it would
             % collide with the display axes or an active projection on the
             % same dimension (projection wins).
             rd = model.RGBDim;
             doRGB = rd > 0 && ...
-                    rd ~= model.XDim && rd ~= model.YDim && ...
+                    rd ~= xDim && rd ~= yDim && ...
                     ~(doProj && rd == pd);
         end
 
         function raw = finalizeSlice_(data, model, doProj, pd, doRGB, rd, doStretch)
+            if nargin < 7, doStretch = false; end
+            raw = MatVisRender.finalizeSliceDims_(data, model, model.XDim, model.YDim, ...
+                doProj, pd, doRGB, rd, doStretch, true);
+        end
+
+        function raw = finalizeSliceDims_(data, model, xDim, yDim, doProj, pd, doRGB, rd, doStretch, doFlip)
             % Reduce extracted data to a 2-D slice or, in RGB mode, an
             % H×W×nCh array, then apply axis flips.
             %   triad RGB  : nCh = 3 ([prev,curr,next] -> R/G/B)
             %   stretch RGB: nCh = number of slices along rd (coloured later)
-            if nargin < 7, doStretch = false; end
+            if nargin < 9,  doStretch = false; end
+            if nargin < 10, doFlip    = true;  end
             if ~doRGB
                 raw = MatVisRender.finalize2D(data, doProj, model.ProjFun, ...
-                    pd, model.XDim, model.YDim);
+                    pd, xDim, yDim);
             else
                 nd  = ndims(data);
                 if doStretch
@@ -791,15 +1013,17 @@ classdef MatVisRender
                     idxc = repmat({':'}, 1, nd);
                     idxc{rd} = c;
                     chans{c} = MatVisRender.finalize2D(data(idxc{:}), doProj, ...
-                        model.ProjFun, pd, model.XDim, model.YDim);
+                        model.ProjFun, pd, xDim, yDim);
                 end
                 raw = zeros(size(chans{1}, 1), size(chans{1}, 2), nCh);
                 for c = 1:nCh
                     raw(:, :, c) = chans{c};
                 end
             end
-            if model.FlipX, raw = fliplr(raw); end
-            if model.FlipY, raw = flipud(raw); end
+            if doFlip
+                if model.FlipX, raw = fliplr(raw); end
+                if model.FlipY, raw = flipud(raw); end
+            end
         end
 
         function idx = stretchRangeIdx_(model, rd)

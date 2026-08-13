@@ -699,7 +699,8 @@ iw.SetAspectRatio    = @applyAspectRatio;
                     newX2 = min(xSz, newX1 + zw);
                     newY2 = min(ySz, newY1 + zh);
                     if newX2 > newX1 && newY2 > newY1
-                        zoomFromMouseFcn(xd, [newX1, newX2], yd, [newY1, newY2]);
+                        % keepSize: moving the rectangle must not resize it
+                        zoomFromMouseFcn(xd, [newX1, newX2], yd, [newY1, newY2], true);
                     end
                 end
 
@@ -744,15 +745,13 @@ iw.SetAspectRatio    = @applyAspectRatio;
         xr  = model.ZoomRange(xd, :);
         yr  = model.ZoomRange(yd, :);
 
-        xHalf = diff(xr) / 2 * factor;
-        yHalf = diff(yr) / 2 * factor;
-
-        xMin = max(1, round(cx - xHalf));
-        xMax = min(model.Size(xd), round(cx + xHalf));
-        yMin = max(1, round(cy - yHalf));
-        yMax = min(model.Size(yd), round(cy + yHalf));
-        if xMax > xMin && yMax > yMin && ~isempty(zoomFromMouseFcn)
-            zoomFromMouseFcn(xd, [xMin, xMax], yd, [yMin, yMax]);
+        % The image axes shows the whole plane, so the cursor is already in
+        % data coordinates.
+        [xrNew, yrNew] = MatVisRender.zoomStepAtCursor(xr, yr, ...
+            model.Size(xd), model.Size(yd), factor, cx, cy);
+        if ~isempty(zoomFromMouseFcn) && ...
+                (~isequal(xrNew, xr) || ~isequal(yrNew, yr))
+            zoomFromMouseFcn(xd, xrNew, yd, yrNew);
         end
     end
 

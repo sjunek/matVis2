@@ -108,6 +108,19 @@ else
 
     datasets  = varargin(1:nLeading);
     nvPairs   = varargin(nLeading+1:end);
+
+    % Default dataset names to the caller's workspace variable names (e.g.
+    % matVis2(myStack) titles windows "myStack" instead of "Dataset 1").
+    % Arguments passed as expressions/ans have no name and fall back to
+    % parseArgs' 'Dataset %d' default; an explicit 'datasetNames' NV pair
+    % always wins.
+    defaultNames = cell(1, nLeading);
+    for k = 1:nLeading
+        defaultNames{k} = inputname(k);
+    end
+    if any(~cellfun(@isempty, defaultNames))
+        nvPairs = mergeDefaultNV({'datasetNames', defaultNames}, nvPairs);
+    end
 end
 
 t1_ = tic;
