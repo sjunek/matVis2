@@ -48,7 +48,11 @@ rowH_dimSel     = 32;
 % contrastGrid: 9 rows {24,8,24,6,22,104,25,6,25} = 244 content + 8 spacings = 252
 % (+31 when an alpha channel adds rows 10/11: 6px spacer + 25px controls)
 rowH_contrast   = 252 + 31 * withAlpha;
-rowH_bottom     = 40;
+rowH_bottom     = 56;   % two rows of buttons, see "Bottom controls"
+% Height the bottom row is charged in the figure-height arithmetic.  The row
+% heights leave ~20 px unused at the bottom of the window, so the button
+% block can grow into that without making the window taller.
+rowH_bottomBudget = 40;
 rowH_plotBtns   = 32;   % height of the plot-tools button row inside posPanel
 rowH_playSpeed  = 26;   % height of the play-speed control row inside posPanel
 rowH_spacing    = 10;
@@ -61,7 +65,7 @@ imagePanelH    = 3*rowH_dimSel + 4 + 2*4 + panelTitleH;   % three rows (dims/pro
 contrastPanelH = rowH_contrast + 2*panelPadV + panelTitleH;
 bottomH        = rowH_bottom;
 
-figHeight = posPanelH + imagePanelH + contrastPanelH + bottomH + 3*rowH_spacing + 200;
+figHeight = posPanelH + imagePanelH + contrastPanelH + rowH_bottomBudget + 3*rowH_spacing + 200;
 fig.Position(3:4) = [figWidth, figHeight];
 
 nRows = 4;
@@ -576,10 +580,10 @@ addlistener(model, 'ActiveDatasetChanged', @(~,~) onModelActiveDatasetChanged())
 mvTiming_.labels{end+1} = 'contrast panel created'; mvTiming_.times(end+1) = toc(mvT0_);
 %% Bottom controls
 % Two rows of five: the buttons are much wider (the longer labels no longer
-% have to be abbreviated to fit) and low enough that both rows together stay
-% inside the same rowH_bottom the single row used, so the window height is
-% unchanged.  2*btnH + RowSpacing + 2*Padding must equal rowH_bottom.
-btnH = round(0.4 * rowH_bottom);
+% have to be abbreviated to fit) and low enough that both rows fit in the
+% space the single row had plus the slack the layout already left unused, so
+% the window height is unchanged.  2*btnH + RowSpacing + 2*Padding = rowH_bottom.
+btnH = 24;
 
 bottomGrid = uigridlayout(grid, [2, 5]);
 bottomGrid.Layout.Row    = 4;
@@ -589,7 +593,7 @@ bottomGrid.RowHeight     = {btnH, btnH};
 bottomGrid.RowSpacing    = rowH_bottom - 2*btnH - 4;
 bottomGrid.Padding       = [0 2 0 2];
 
-btnFS = 9;      % the default 12 pt would be clipped at this button height
+btnFS = 10;     % the default 12 pt would be clipped at this button height
 
 btnToggleImage = uibutton(bottomGrid, 'state', 'Text', 'Image', 'Value', true, ...
     'FontSize', btnFS, ...
@@ -1023,7 +1027,7 @@ fprintf('\n');
         % Panel + figure heights. The stretch-bar row is reserved inside the
         % existing image-panel height, so this does not depend on stretch state.
         imgPanelH = 3*rowH_dimSel + 4 + 2*4 + actualTitleH;
-        figH      = posPanelH + imgPanelH + contrastPanelH + bottomH ...
+        figH      = posPanelH + imgPanelH + contrastPanelH + rowH_bottomBudget ...
                   + 3*rowH_spacing + 12 + actualChromeH;
         grid.RowHeight    = {posPanelH, imgPanelH, contrastPanelH, bottomH};
         fig.Position(3:4) = [figWidth, figH];

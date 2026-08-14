@@ -46,11 +46,14 @@ function xw = MatVisXSecWin(model, cbs, dsIdx)
 %   Right-click                  : reset this panel's zoom
 %   Double-click                 : copy / export / save this panel's image
 %   Scroll wheel                 : zoom in/out around the cursor
-% 3-D panels: left-drag rotates, middle-drag pans (ctrl + left-drag pans as
-% well — that one is viewer3d's own), the wheel zooms towards the cursor.
-% viewer3d handles the wheel itself (the event never reaches the figure) and
-% zooms the centre of the view; onCameraMoved pulls the result over to the
-% cursor afterwards.
+% 3-D panels with the Image Processing Toolbox are a viewer3d, which keeps
+% every mouse event inside its own canvas — none of them reach this figure,
+% so its gestures are the ones it defines: left-drag rotates, CTRL +
+% LEFT-DRAG PANS, wheel and middle-drag zoom.  There is no MATLAB property
+% to move the pan onto the middle button.  Its wheel zoom works on the
+% centre of the view; onCameraMoved re-centres the result on the cursor.
+% The toolbox-free fallback axes is driven from here instead and follows the
+% 2-D bindings: left-drag rotates, middle-drag pans, wheel zooms.
 
 if nargin < 2 || isempty(cbs),   cbs = struct();               end
 if nargin < 3 || isempty(dsIdx), dsIdx = model.ActiveDataset;  end
@@ -78,7 +81,6 @@ cMax_ = model.AllDataMaxs(dsIdx);
 gam_  = model.Gamma;
 lastMainXY = [model.XDim, model.YDim];
 volshowBroken = false;               % set once volshow/viewer3d has failed
-viewerWheelSeen = false;             % a wheel event reached us over a viewer
 
 dsTag = '';
 if model.NumDatasets > 1, dsTag = ['_ds' num2str(dsIdx)]; end
@@ -197,8 +199,11 @@ for pk_ = 1:NPANEL
 
     P(pk_).dropMode = uidropdown(ctrl, 'Items', {'2D', '3D', 'Off'}, ...
         'ItemsData', {'2d', '3d', 'off'}, 'Value', P(pk_).mode, 'FontSize', 9, ...
-        'Tooltip', ['2-D cross section, 3-D maximum-intensity projection, ' ...
-                    'or off (a whole empty row/column collapses away)'], ...
+        'Tooltip', sprintf(['2-D cross section, 3-D maximum-intensity ' ...
+                    'projection, or off\n(a whole empty row/column ' ...
+                    'collapses away).\n\n2-D: middle-drag pans, wheel ' ...
+                    'zooms, right-click resets.\n3-D: left-drag rotates, ' ...
+                    'ctrl + left-drag pans, wheel zooms.']), ...
         'ValueChangedFcn', @(src, ~) onModeChanged(pk_, src.Value));
     P(pk_).dropMode.Layout.Column = 1;
 
@@ -1041,20 +1046,22 @@ xw.Refresh           = @forceRefresh;
         if k == 0 || strcmp(P(k).mode, 'off'), return; end
 
         if strcmp(P(k).mode, '3d')
-            if strcmp(src.SelectionType, 'extend')      % middle-drag: pan
-                dragPanel = k;
-                dragMode  = 'pan3';
-                dragStart = ptFig();
-                fig.Pointer = 'hand';
-            elseif ~isempty(P(k).ax3) && isvalid(P(k).ax3) && ...
-                   strcmp(src.SelectionType, 'normal')
-                % viewer3d rotates itself; only the fallback axes needs a
-                % manual orbit.
-                [az, el]  = view(P(k).ax3);
-                orbitView = [az, el];
-                dragPanel = k;
-                dragMode  = 'orbit';
-                dragStart = ptFig();
+            % Only the toolbox-free fallback axes can be driven from here; a
+            % viewer3d keeps every mouse event to itself (applyViewerInter-
+            % actions), so over one of those this never even fires.
+            if isempty(P(k).ax3) || ~isvalid(P(k).ax3), return; end
+            switch src.SelectionType
+                case 'extend'                            % middle-drag: pan
+                    dragPanel = k;
+                    dragMode  = 'pan3';
+                    dragStart = ptFig();
+                    fig.Pointer = 'hand';
+                case 'normal'
+                    [az, el]  = view(P(k).ax3);
+                    orbitView = [az, el];
+                    dragPanel = k;
+                    dragMode  = 'orbit';
+                    dragStart = ptFig();
             end
             return;
         end
@@ -1197,17 +1204,9 @@ xw.Refresh           = @forceRefresh;
         k = panelAt();
         if k == 0 || strcmp(P(k).mode, 'off'), return; end
         if strcmp(P(k).mode, '3d')
-            if ~isempty(P(k).viewer) && isvalid(P(k).viewer)
-                if ~viewerWheelSeen
-                    % This event proves figure scroll events do arrive over
-                    % the viewer, so the wheel (and with it the middle
-                    % button) can be taken off it.  This one notch is still
-                    % the viewer's own centre zoom.
-                    takeWheelFromViewer();
-                    return;
-                end
-                zoomViewerAtCursor(k, wheelFactor(evt));
-            elseif ~isempty(P(k).ax3) && isvalid(P(k).ax3)
+            % A viewer3d never lets the wheel through to us; only the
+            % toolbox-free fallback axes is zoomed from here.
+            if ~isempty(P(k).ax3) && isvalid(P(k).ax3)
                 zoomAxes3AtCursor(P(k).ax3, wheelFactor(evt));
             end
             return;
@@ -1262,58 +1261,22 @@ xw.Refresh           = @forceRefresh;
 
     % ------------------------------------------------- 3-D camera control
     function applyViewerInteractions(v)
-        % viewer3d's "zoom" interaction owns both the wheel and the middle
-        % button (its middle-drag is a drag-zoom, which is why the middle
-        % button cannot pan while it is on).  Taking it away outright is not
-        % safe: the wheel event is handled inside the viewer's own canvas and
-        % may never reach a figure-level WindowScrollWheelFcn, which would
-        % leave the panel with no zoom at all.
+        % All mouse input over a viewer3d belongs to the viewer.  It is an
+        % HTML component that handles pointer and wheel events inside its own
+        % canvas, so they never reach the figure: MATLAB's figure only turns
+        % a middle click into SelectionType 'extend' for events on its own
+        % drawing surface, which the viewer is not.  Nothing here can bind a
+        % gesture over a 3-D panel.
         %
-        % So it starts enabled and is dropped the moment a wheel event does
-        % arrive here — proof that we can serve the wheel ourselves.  From
-        % then on: wheel = zoom at the cursor (zoomViewerAtCursor), middle =
-        % pan.  If that never happens the viewer keeps the wheel, its zoom is
-        % re-centred on the cursor afterwards by onCameraMoved, and panning
-        % is ctrl + left-drag.
+        % What the viewer itself offers (fixed in its client code, with no
+        % MATLAB property to remap it): left-drag rotates, ctrl + left-drag
+        % pans, the wheel and middle-drag zoom.  Its wheel zoom works on the
+        % centre of the view; onCameraMoved re-centres the result on the
+        % cursor afterwards, which is the one part we can still influence.
         try
-            if viewerWheelSeen
-                v.Interactions = ["rotate", "pan"];
-            else
-                v.Interactions = "all";
-            end
+            v.Interactions = "all";
         catch
         end
-    end
-
-    function takeWheelFromViewer()
-        viewerWheelSeen = true;
-        for q = 1:NPANEL
-            if ~isempty(P(q).viewer) && isvalid(P(q).viewer)
-                applyViewerInteractions(P(q).viewer);
-            end
-        end
-    end
-
-    function zoomViewerAtCursor(k, s)
-        % s > 1 = zoom out.  Orthographic projection: magnification is
-        % CameraZoom, and the depth of the point under the cursor does not
-        % matter, only its offset from the view axis.
-        v = P(k).viewer;
-        [ok, T, C, ~, right, up_, halfW, halfH] = viewerFrame(v);
-        if ~ok, return; end
-        [ox, oy, inside] = viewerCursorOffset(v);
-        if ~inside, ox = 0;  oy = 0; end
-        Q  = T + right * (ox * halfW) + up_ * (oy * halfH);
-        dT = (1 - s) * (Q - T);
-        camBusy = true;
-        try
-            v.CameraZoom     = clamp_(double(v.CameraZoom) / s, 1e-3, 1e4);
-            v.CameraTarget   = T + dT;
-            v.CameraPosition = C + dT;
-        catch
-        end
-        camBusy = false;
-        P(k).camPrev = readCam_(v);
     end
 
     function onCameraMoved(k)
@@ -1327,7 +1290,6 @@ xw.Refresh           = @forceRefresh;
         cur  = readCam_(v);
         prev = P(k).camPrev;
         P(k).camPrev = cur;
-        if viewerWheelSeen, return; end     % the wheel is ours, already centred
         if isempty(cur) || isempty(prev), return; end
         if isequal(cur.zoom, prev.zoom) || ~isequal(cur.target, prev.target)
             return;
