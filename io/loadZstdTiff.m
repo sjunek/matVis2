@@ -296,7 +296,7 @@ instrument = struct( ...
     'ChannelExWavelengthUnit', {repmat({''}, 1, g.spp)}, ...
     'ChannelEmWavelengthUnit', {repmat({''}, 1, g.spp)}, ...
     'ChannelAcquisitionMode', {repmat({''}, 1, g.spp)}, ...
-    'TiffTags', {tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes)});
+    'TiffTags', {tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes, s)});
 
 meta = struct( ...
     'dimNames',     {dimNames(keep)}, ...
@@ -307,7 +307,7 @@ meta = struct( ...
 end
 
 % =============================================================================
-function rows = tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes)
+function rows = tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes, scales)
 % Every piece of metadata the file actually carries, as Property/Value rows.
 if hdr.isBigTiff
     flavour = 'BigTIFF';
@@ -334,12 +334,16 @@ end
 rows(end+1, :) = {'Segment layout', segmentLayout(ifds(1), g)};
 
 rows(end+1, :) = {'Resolution unit', resolutionUnitName(resUnit)};
-rows(end+1, :) = {'X resolution', resolutionText(xRes, resUnit)};
-rows(end+1, :) = {'Y resolution', resolutionText(yRes, resUnit)};
-if resUnit == 1 && ~isempty(xRes) && ~isempty(yRes) && isfinite(xRes) && isfinite(yRes) ...
-        && xRes ~= yRes
+if scales.lateralAndZ
+    % Tag 283 was read as the plane spacing, not a lateral pitch -- label
+    % both rows for what they were actually used as.
+    rows(end+1, :) = {'X/Y resolution', resolutionText(xRes, resUnit)};
+    rows(end+1, :) = {'Z resolution', resolutionText(yRes, resUnit)};
     rows(end+1, :) = {'Resolution reading', ...
         'tag 282 = lateral (Y and X) pixel size, tag 283 = Z step'};
+else
+    rows(end+1, :) = {'X resolution', resolutionText(xRes, resUnit)};
+    rows(end+1, :) = {'Y resolution', resolutionText(yRes, resUnit)};
 end
 
 % Free-text tags, only when the file carries them.
@@ -367,10 +371,13 @@ function s = resolutionScales(xRes, yRes, resUnit)
 % lateral pitch for both Y and X, and tag 283 becomes the plane spacing.
 % Equal tags are taken per-axis as usual, so a genuinely anisotropic image
 % still round-trips.
+% s.lateralAndZ records which reading was applied, so the metadata rows can
+% label the two tags the way they were actually used.
 [s.scaleX, s.unitX] = pixelSize(xRes, resUnit);
 [s.scaleY, s.unitY] = pixelSize(yRes, resUnit);
 s.scaleZ = 1;
 s.unitZ = '';
+s.lateralAndZ = false;
 
 if resUnit ~= 1 || isempty(xRes) || isempty(yRes) || ~isfinite(xRes) || ~isfinite(yRes)
     if resUnit == 1 && isempty(yRes)
@@ -381,6 +388,7 @@ end
 if xRes ~= yRes
     [s.scaleY, s.unitY] = pixelSize(xRes, resUnit);
     [s.scaleZ, s.unitZ] = pixelSize(yRes, resUnit);
+    s.lateralAndZ = true;
 end
 end
 

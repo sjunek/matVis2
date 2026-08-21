@@ -148,11 +148,15 @@ classdef loadZstdTiffTest < matlab.unittest.TestCase
             testCase.verifyEqual(meta.dimScale{2}, 0.4106, 'AbsTol', 1e-9); % X
             testCase.verifyEqual(meta.dimScale{3}, 5, 'AbsTol', 1e-9);      % Z
 
+            % The rows are labelled for how the two tags were actually used,
+            % so tag 283 must not show up as a Y resolution.
             rows = meta.instrument.TiffTags;
-            xRow = rows(strcmp(rows(:, 1), 'X resolution'), 2);
-            testCase.verifyEqual(xRow{1}, '0.4106 um/px');
-            yRow = rows(strcmp(rows(:, 1), 'Y resolution'), 2);
-            testCase.verifyEqual(yRow{1}, '5 um/px');
+            xyRow = rows(strcmp(rows(:, 1), 'X/Y resolution'), 2);
+            testCase.verifyEqual(xyRow{1}, '0.4106 um/px');
+            zRow = rows(strcmp(rows(:, 1), 'Z resolution'), 2);
+            testCase.verifyEqual(zRow{1}, '5 um/px');
+            testCase.verifyFalse(any(strcmp(rows(:, 1), 'X resolution')));
+            testCase.verifyFalse(any(strcmp(rows(:, 1), 'Y resolution')));
             unitRow = rows(strcmp(rows(:, 1), 'Resolution unit'), 2);
             testCase.verifyEqual(unitRow{1}, 'none (values read as um/px)');
             testCase.verifyTrue(any(strcmp(rows(:, 1), 'Resolution reading')));
@@ -171,7 +175,10 @@ classdef loadZstdTiffTest < matlab.unittest.TestCase
             testCase.verifyEqual(meta.dimScale{2}, 0.325, 'AbsTol', 1e-9);
             testCase.verifyEqual(meta.dimScale{3}, 1);
 
+            % Per-axis reading, so the rows keep the per-axis labels.
             rows = meta.instrument.TiffTags;
+            testCase.verifyTrue(any(strcmp(rows(:, 1), 'X resolution')));
+            testCase.verifyTrue(any(strcmp(rows(:, 1), 'Y resolution')));
             testCase.verifyFalse(any(strcmp(rows(:, 1), 'Resolution reading')));
         end
 
