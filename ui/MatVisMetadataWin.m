@@ -130,6 +130,12 @@ for c = 1:nCh
     end
     rows(end+1, :) = {label, naIfEmpty(strjoin(chParts, ', '))}; %#ok<AGROW>
 end
+
+% Readers for formats with no acquisition metadata of their own can attach
+% the raw container tags they did find (see loadZstdTiff) as extra rows.
+if isfield(instr, 'TiffTags') && ~isempty(instr.TiffTags)
+    rows = [rows; instr.TiffTags];
+end
 end
 
 % =============================================================================

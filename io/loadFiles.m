@@ -10,7 +10,9 @@ function [data, meta] = loadFiles(filepath)
 %   framesPerSlice as its own dimension alongside channel/Z/T. When
 %   Bio-Formats is set up (see ensureBioFormats), any of the ~150 formats
 %   it supports (OME-TIFF, .czi, .lsm, .nd2, .lif, ...) can be read, with
-%   full dimension/physical-scale/channel metadata. Without either, .mat,
+%   full dimension/physical-scale/channel metadata. Zstandard-compressed
+%   TIFFs (compression tag 50000), which neither MATLAB nor Bio-Formats can
+%   read, are handled by loadZstdTiff. Without either, .mat,
 %   .tif/.tiff (incl. multi-page and OME-TIFF via a built-in regex parser),
 %   .jpg, .png, and .bmp still work through a built-in fallback; any other
 %   format then errors asking for Bio-Formats to be set up.
@@ -64,6 +66,18 @@ if ismember(ext, {'.tif', '.tiff'}) && isScanImageTiff(filepath)
         end
     end
     % else: ensureScanImageTiffReader() already warned; fall through below.
+end
+
+% Zstandard-compressed TIFFs (compression tag 50000) are read by neither
+% MATLAB's TIFF library ("The compression scheme 50000 is not currently
+% supported when reading TIFF files.") nor Bio-Formats 8.5 -- ome-codecs'
+% ZstdCodec sizes its output buffer from the Zstandard frame's optional
+% content-size field, which these writers omit, and dies with
+% NegativeArraySizeException. So they get their own reader, which takes the
+% decompressed size from the strip/tile geometry instead.
+if ismember(ext, {'.tif', '.tiff'}) && isZstdTiff(filepath)
+    [data, meta] = loadZstdTiff(filepath);
+    return;
 end
 
 bfAvailable = ensureBioFormats();
