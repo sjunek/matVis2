@@ -520,6 +520,92 @@ classdef MatVisRender
                  ~strcmp(model.RGBStretchMode, 'none');
         end
 
+        function tf = rgbTriadActive(model)
+            % True when RGB colour coding maps three consecutive slices to
+            % R/G/B (RGB on, no whole-dimension stretch selected).
+            tf = MatVisRender.rgbActive(model) && ...
+                 strcmp(model.RGBStretchMode, 'none');
+        end
+
+        function idx = rgbChannelIndices(model)
+            % Source indices along model.RGBDim behind the pages of the
+            % current RGB stack: the [prev,curr,next] triad, or the whole
+            % stretch span when a stretch mode is active.  Used by the
+            % 'Channel' contrast mode to look up each page's data range.
+            if strcmp(model.RGBStretchMode, 'none')
+                idx = MatVisRender.rgbTriadIdx_(model, model.RGBDim);
+            else
+                idx = MatVisRender.stretchRangeIdx_(model, model.RGBDim);
+            end
+        end
+
+        function out = normalizeChannels(stack, chanRange)
+            % Per-page contrast equalization of an H×W×N RGB stack: page k is
+            % mapped from chanRange(k,:) onto [0,1] and clamped there.  This
+            % is the pre-normalization behind the original matVis "Channel"
+            % mode, which equalized the range of the channel images before
+            % the contrast window was applied.  An empty chanRange or a row
+            % count that doesn't match the stack leaves the data untouched.
+            out = double(stack);
+            if isempty(chanRange), return; end
+            n = size(out, 3);
+            if size(chanRange, 1) ~= n, return; end
+            lo   = reshape(chanRange(:, 1), 1, 1, n);
+            span = reshape(chanRange(:, 2) - chanRange(:, 1), 1, 1, n);
+            span(span == 0) = 1;
+            out = max(0, min(1, (out - lo) ./ span));
+        end
+
+        function cr = channelRangeFromStack(stack, pLow, pHigh)
+            % N×2 [lo hi] per page of an H×W×N stack — the range of the
+            % images currently on display ('ChannelImage' mode).  With
+            % percentile cutoffs given (pLow > 0 or pHigh < 1) the quantiles
+            % are used instead of the extrema.
+            n  = size(stack, 3);
+            cr = zeros(n, 2);
+            usePerc = nargin >= 3 && ~isempty(pLow) && (pLow > 0 || pHigh < 1);
+            for k = 1:n
+                p = double(stack(:, :, k));
+                p = p(isfinite(p));
+                if isempty(p)
+                    cr(k, :) = [0, 1];
+                elseif usePerc
+                    cr(k, :) = quantile(p, [pLow, pHigh]);
+                else
+                    cr(k, :) = [min(p), max(p)];
+                end
+            end
+        end
+
+        function cr = channelRangeFromData(data, rd, pLow, pHigh)
+            % size(data,rd)×2 [lo hi]: the range of every index along
+            % dimension rd over the full extent of all other dimensions
+            % ('Channel' mode).  Unlike channelRangeFromStack this does not
+            % depend on the current position, so the channel equalization
+            % stays fixed while navigating the remaining dimensions.
+            % One slab is copied at a time (never the whole array), and
+            % integer data is reduced natively to avoid a double copy.
+            nd = ndims(data);
+            n  = size(data, rd);
+            cr = zeros(n, 2);
+            usePerc = nargin >= 4 && ~isempty(pLow) && (pLow > 0 || pHigh < 1);
+            sub = repmat({':'}, 1, nd);
+            for k = 1:n
+                sub{rd} = k;
+                slab = data(sub{:});
+                if isfloat(slab)
+                    slab = slab(isfinite(slab));
+                end
+                if isempty(slab)
+                    cr(k, :) = [0, 1];
+                elseif usePerc
+                    cr(k, :) = quantile(double(slab(:)), [pLow, pHigh]);
+                else
+                    cr(k, :) = [double(min(slab(:))), double(max(slab(:)))];
+                end
+            end
+        end
+
         function idx3 = rgbTriadIndices(model)
             % Public accessor: the [prev, curr, next] source-frame indices
             % along model.RGBDim behind the RGB triad (R,G,B) overlay — for

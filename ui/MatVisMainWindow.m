@@ -102,6 +102,7 @@ playCt      = 0;             % tick counter into playTimeBuf
 playTic     = uint64(0);     % tic reference for the active playback run
 lastBoundsAds = [];          % [cmin cmax] of active dataset from last render
 histObjs = [];               % persistent histogram graphics objects (see ensureHistObjects)
+suppressModeRender = false;  % guards the ContrastMode coercion in syncContrastModeButtons
 
 for d = 1:nDims
     nSteps   = model.Size(d);
@@ -328,24 +329,30 @@ rbSubGrid.RowHeight     = {'1x'};
 rbSubGrid.Padding       = [0 0 0 0];
 rbSubGrid.ColumnSpacing = 2;
 
+% Slots 2 and 3 carry a second pair of modes in RGB mode (Channel /
+% Channel Image), and slot 4 is hidden there because the RGB contrast
+% window is always manually adjustable — see syncContrastModeButtons.
 rbGlobal = uibutton(rbSubGrid, 'state', 'Text', 'Global', 'FontSize', 11, ...
-    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged('Global', src));
+    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged(1, src));
 rbGlobal.Layout.Column = 1;
-rbGlobal.Value = strcmp(model.ContrastMode, 'Global');
 
 rbImage = uibutton(rbSubGrid, 'state', 'Text', 'Image', 'FontSize', 11, ...
-    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged('Image', src));
+    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged(2, src));
 rbImage.Layout.Column = 2;
-rbImage.Value = strcmp(model.ContrastMode, 'Image');
 
 rbZoom = uibutton(rbSubGrid, 'state', 'Text', 'Zoom', 'FontSize', 11, ...
-    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged('Zoom', src));
+    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged(3, src));
 rbZoom.Layout.Column = 3;
-rbZoom.Value = strcmp(model.ContrastMode, 'Zoom');
 
 rbManual = uibutton(rbSubGrid, 'state', 'Text', 'Manual', 'FontSize', 11, ...
-    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged('Manual', src));
+    'ValueChangedFcn', @(src, ~) onContrastModeButtonChanged(4, src));
 rbManual.Layout.Column = 4;
+
+% Initial highlighting for the non-RGB labels; the first render reconciles
+% both label sets with the actual mode via syncContrastModeButtons.
+rbGlobal.Value = strcmp(model.ContrastMode, 'Global');
+rbImage.Value  = strcmp(model.ContrastMode, 'Image');
+rbZoom.Value   = strcmp(model.ContrastMode, 'Zoom');
 rbManual.Value = strcmp(model.ContrastMode, 'Manual');
 
 % Row 3: Dataset selector + contrast lock  (row 2 = 8px spacer)
@@ -845,16 +852,20 @@ fprintf('\n');
         % raw slices below are H×W×N stacks composed via renderStretchImage.
         stretchOn = MatVisRender.stretchActive(model);
 
+        % In RGB mode each page of the stack is first equalized onto [0,1]
+        % over the range picked by the contrast mode (Global / Channel /
+        % Channel Image), so the contrast window below is a fraction of that
+        % range rather than a data value.  See rgbChannelRanges.
+        rgbOn = MatVisRender.rgbActive(model);
+
         rf_ads = [];
         rz_ads = [];
+        rfRaw_ads   = [];
+        chanRng_ads = [];
         for ds = 1:nDatasets
             dsData   = model.Datasets{ds};
             raw_full = MatVisRender.getRawFullSliceFromData(model, dsData);
             raw_zoom = MatVisRender.getRawSliceFromData(model, dsData);
-            if ds == model.ActiveDataset
-                rf_ads = raw_full;   % reuse below — avoids slicing twice
-                rz_ads = raw_zoom;
-            end
 
             model.SetImageData(raw_full, ds);
             model.SetZoomData(raw_zoom,  ds);
@@ -864,11 +875,28 @@ fprintf('\n');
             cmax_arr(ds) = cmax_ds;
             gamma_ds     = getGammaForDataset(ds);
 
+            if rgbOn
+                chanRange = rgbChannelRanges(ds, raw_full);
+                src_full  = MatVisRender.normalizeChannels(raw_full, chanRange);
+                src_zoom  = MatVisRender.normalizeChannels(raw_zoom, chanRange);
+            else
+                chanRange = [];
+                src_full  = raw_full;
+                src_zoom  = raw_zoom;
+            end
+
+            if ds == model.ActiveDataset
+                rf_ads      = src_full;   % reuse below — avoids slicing twice
+                rz_ads      = src_zoom;
+                rfRaw_ads   = raw_full;   % data units, for the alpha 2-D hist
+                chanRng_ads = chanRange;
+            end
+
             if stretchOn
                 % Whole RGB dimension colour-coded into one image; contrast/
                 % gamma/filter are handled inside renderStretchImage.
-                rgb_full = MatVisRender.renderStretchImage(model, raw_full, cmin_ds, cmax_ds, gamma_ds);
-                rgb_zoom = MatVisRender.renderStretchImage(model, raw_zoom, cmin_ds, cmax_ds, gamma_ds);
+                rgb_full = MatVisRender.renderStretchImage(model, src_full, cmin_ds, cmax_ds, gamma_ds);
+                rgb_zoom = MatVisRender.renderStretchImage(model, src_zoom, cmin_ds, cmax_ds, gamma_ds);
                 if withAlpha
                     aMap  = model.AlphaMaps{ds};
                     aLo   = model.AlphaContrastMins(ds);
@@ -882,8 +910,8 @@ fprintf('\n');
                 % Spatial filter is applied to the displayed image only; contrast
                 % bounds above are computed from the unfiltered data (as in the
                 % original matVis, which kept currImVal before filtering).
-                disp_full = MatVisRender.filterImage(raw_full, model.FilterType, model.FilterPar);
-                disp_zoom = MatVisRender.filterImage(raw_zoom, model.FilterType, model.FilterPar);
+                disp_full = MatVisRender.filterImage(src_full, model.FilterType, model.FilterPar);
+                disp_zoom = MatVisRender.filterImage(src_zoom, model.FilterType, model.FilterPar);
 
                 norm_full = MatVisRender.normalizeData(disp_full, cmin_ds, cmax_ds);
                 norm_zoom = MatVisRender.normalizeData(disp_zoom, cmin_ds, cmax_ds);
@@ -917,7 +945,7 @@ fprintf('\n');
             % so every window maps data values to colours identically. The
             % window itself skips panels whose content hasn't changed.
             if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
-                xsecWins{ds}.Update(cmin_ds, cmax_ds, gamma_ds);
+                xsecWins{ds}.Update(cmin_ds, cmax_ds, gamma_ds, chanRange);
             end
 
             if withAlpha
@@ -1005,11 +1033,16 @@ fprintf('\n');
             updateContrastDisplay(cmin_arr(ads), cmax_arr(ads));
 
             if withAlpha && ~isempty(btn2DHist) && btn2DHist.Value
-                update2DHist(rf_ads, cmin_arr(ads), cmax_arr(ads));
+                % The 2-D histogram axes stay in data units, so in RGB mode
+                % the window is mapped back through the reference channel.
+                [d0, d1] = rgbWindowInDataUnits(cmin_arr(ads), cmax_arr(ads), chanRng_ads);
+                update2DHist(rfRaw_ads, d0, d1);
             end
         end
 
-        % Reconcile RGB-stretch controls + stretch-bar visibility with state.
+        % Reconcile the contrast-mode buttons and the RGB-stretch controls +
+        % stretch-bar visibility with the current state.
+        syncContrastModeButtons();
         syncStretchUI();
 
         % Keep the Profile Manager's 1-D/straightened view in sync with the
@@ -1203,6 +1236,15 @@ fprintf('\n');
         dmin = model.AllDataMins(ds);
         dmax = model.AllDataMaxs(ds);
 
+        if MatVisRender.rgbActive(model)
+            % Every RGB mode uses one manually adjustable window, expressed
+            % as a fraction of the (per-channel equalized) range — the mode
+            % itself only picks that equalization (see rgbChannelRanges).
+            cmin = model.RGBContrastRange(1);
+            cmax = model.RGBContrastRange(2);
+            return;
+        end
+
         if strcmp(mode, 'Manual')
             if model.ContrastLocked
                 if ds == model.ActiveDataset
@@ -1275,6 +1317,77 @@ fprintf('\n');
         end
     end
 
+    function [pLow, pHigh] = percentileCutoffs()
+        pLow  = max(0, min(1, edtPercLow.Value));
+        pHigh = max(0, min(1, edtPercHigh.Value));
+        if ~(pLow < pHigh), pLow = 0; pHigh = 1; end
+    end
+
+    function cr = rgbChannelRanges(ds, raw_full)
+        % N×2 data-unit [lo hi] per page of the current RGB stack: the range
+        % each channel is equalized to [0,1] over before the contrast window
+        % is applied.  Global leaves the channels on a common scale, Channel
+        % uses each channel's range over the whole dataset, and Channel Image
+        % uses the range of the images currently on display.
+        nCh = size(raw_full, 3);
+        [pLow, pHigh] = percentileCutoffs();
+
+        switch model.ContrastMode
+            case 'Channel'
+                rd     = model.RGBDim;
+                ckey   = sprintf('RGBChanRangeKey_%d', ds);
+                cval   = sprintf('RGBChanRange_%d', ds);
+                keyNow = [rd, pLow, pHigh];
+                tbl    = getappdata(fig, cval);
+                if isempty(tbl) || ~isequal(getappdata(fig, ckey), keyNow)
+                    % One pass over the dataset, cached until the RGB
+                    % dimension or the percentile cutoffs change.
+                    tbl = MatVisRender.channelRangeFromData( ...
+                        model.Datasets{ds}, rd, pLow, pHigh);
+                    setappdata(fig, ckey, keyNow);
+                    setappdata(fig, cval, tbl);
+                end
+                idx = MatVisRender.rgbChannelIndices(model);
+                if numel(idx) ~= nCh
+                    idx = idx(1 : min(numel(idx), nCh));
+                end
+                cr = tbl(idx, :);
+
+            case 'ChannelImage'
+                cr = MatVisRender.channelRangeFromStack(raw_full, pLow, pHigh);
+
+            otherwise   % Global (and any non-RGB mode that slipped through)
+                if pLow > 0 || pHigh < 1
+                    [g0, g1] = applyGlobalPercentile(ds, pLow, pHigh);
+                else
+                    g0 = model.AllDataMins(ds);
+                    g1 = model.AllDataMaxs(ds);
+                end
+                cr = repmat([g0, g1], nCh, 1);
+        end
+
+        if size(cr, 1) < nCh          % fewer rows than pages: pad with the last
+            cr = [cr; repmat(cr(end, :), nCh - size(cr, 1), 1)];
+        end
+        flat = ~(cr(:, 2) > cr(:, 1));
+        cr(flat, 2) = cr(flat, 1) + 1;
+    end
+
+    function [d0, d1] = rgbWindowInDataUnits(cmin, cmax, chanRange)
+        % Map a normalized RGB contrast window back to data units through the
+        % reference channel (the middle page — green for a triad), for the
+        % displays that stay in data units.
+        if isempty(chanRange)
+            d0 = cmin; d1 = cmax;
+            return;
+        end
+        ref  = max(1, ceil(size(chanRange, 1) / 2));
+        lo   = chanRange(ref, 1);
+        span = chanRange(ref, 2) - lo;
+        d0   = lo + cmin * span;
+        d1   = lo + cmax * span;
+    end
+
     function [cmin, cmax] = getCachedBounds()
         % Contrast bounds of the active dataset as of the last render.
         % Used by mouse handlers (hover/click hit-tests) so they don't have
@@ -1328,6 +1441,14 @@ fprintf('\n');
         histObjs.fillG = fill(histAx, NaN, NaN, [0.82 0.82 0.82], 'FaceAlpha', 0.90, fillArgs{:});
         histObjs.fillI = fill(histAx, NaN, NaN, [0.50 0.50 0.50], 'FaceAlpha', 0.90, fillArgs{:});
         histObjs.fillZ = fill(histAx, NaN, NaN, [0.08 0.08 0.08], 'FaceAlpha', 0.92, fillArgs{:});
+        % Per-channel histograms for the RGB triad modes, in channel colours
+        % (as in the original matVis).  Only one of the two sets is visible.
+        chCols = [0.85 0.15 0.15; 0.10 0.65 0.15; 0.20 0.30 0.90];
+        histObjs.fillCh = gobjects(1, 3);
+        for kCh_ = 1:3
+            histObjs.fillCh(kCh_) = fill(histAx, NaN, NaN, chCols(kCh_, :), ...
+                'FaceAlpha', 0.45, fillArgs{:});
+        end
         histObjs.cbImg = image(histAx, 'XData', [0 1], 'YData', [0 1], ...
             'CData', zeros(2, 256, 3), 'HitTest', 'off', 'PickableParts', 'none');
         histObjs.lineMin = line(histAx, [NaN NaN], [NaN NaN], ...
@@ -1351,6 +1472,12 @@ fprintf('\n');
         if isempty(rawFull) || ~isnumeric(rawFull), return; end
         ensureHistObjects();
 
+        % In RGB mode rawFull/rawZoom arrive per-channel equalized on [0,1],
+        % so the axis switches to those units (see applyHistAxisUnits).
+        rgbHist   = MatVisRender.rgbActive(model);
+        triadHist = MatVisRender.rgbTriadActive(model) && size(rawFull, 3) == 3;
+        applyHistAxisUnits(rgbHist);
+
         histXMin = edtHistMin.Value;
         histXMax = edtHistMax.Value;
         nBins    = 100;
@@ -1359,21 +1486,27 @@ fprintf('\n');
         centers  = binEdges(1:end-1) + bw/2;
 
         % Cache key includes active dataset index.  Note: pass native-type
-        % data directly — double() would copy the whole dataset.
-        ads      = model.ActiveDataset;
-        cacheKey = [ads, histXMin, histXMax];
-        if ~isequal(getappdata(fig,'GlobalHistKey'), cacheKey)
-            countsG = histcounts(model.Data(:), binEdges);
-            setappdata(fig, 'GlobalHistKey',    cacheKey);
-            setappdata(fig, 'GlobalHistCounts', countsG);
+        % data directly — double() would copy the whole dataset.  The
+        % whole-dataset histogram is meaningless once the channels have been
+        % equalized, so it is skipped in RGB mode.
+        ads = model.ActiveDataset;
+        if rgbHist
+            normG = [];
         else
-            countsG = getappdata(fig, 'GlobalHistCounts');
+            cacheKey = [ads, histXMin, histXMax];
+            if ~isequal(getappdata(fig,'GlobalHistKey'), cacheKey)
+                countsG = histcounts(model.Data(:), binEdges);
+                setappdata(fig, 'GlobalHistKey',    cacheKey);
+                setappdata(fig, 'GlobalHistCounts', countsG);
+            else
+                countsG = getappdata(fig, 'GlobalHistCounts');
+            end
+            normG = countsG / max([max(countsG), 1]);
         end
 
         countsI = histcounts(rawFull(:), binEdges);
         countsZ = histcounts(rawZoom(:), binEdges);
 
-        normG = countsG / max([max(countsG), 1]);
         normI = countsI / max([max(countsI), 1]);
         normZ = countsZ / max([max(countsZ), 1]);
 
@@ -1383,9 +1516,21 @@ fprintf('\n');
         yBase    = 0;
         if strcmp(yScale, 'log'), yBase = logFloor; end
 
-        setHistFill(histObjs.fillG, centers, bw, normG, yBase);
-        setHistFill(histObjs.fillI, centers, bw, normI, yBase);
-        setHistFill(histObjs.fillZ, centers, bw, normZ, yBase);
+        if triadHist
+            % One histogram per colour channel; the grey image/zoom pair
+            % would just obscure them.
+            set([histObjs.fillG, histObjs.fillI, histObjs.fillZ], 'Visible', 'off');
+            for kH_ = 1:3
+                cCh   = histcounts(rawFull(:, :, kH_), binEdges);
+                setHistFill(histObjs.fillCh(kH_), centers, bw, ...
+                    cCh / max([max(cCh), 1]), yBase);
+            end
+        else
+            set(histObjs.fillCh, 'Visible', 'off');
+            setHistFill(histObjs.fillG, centers, bw, normG, yBase);
+            setHistFill(histObjs.fillI, centers, bw, normI, yBase);
+            setHistFill(histObjs.fillZ, centers, bw, normZ, yBase);
+        end
 
         yMax     = 1.0;
         yLineBot = max(yBase, eps);
@@ -1406,7 +1551,12 @@ fprintf('\n');
 
         cbH     = yMax * 0.15;
         nColors = 256;
-        cmap_   = MatVisRender.getColormap(model.ColormapIdx, nColors);
+        if rgbHist
+            cbCmapIdx = 1;              % RGB display bypasses the colormap
+        else
+            cbCmapIdx = model.ColormapIdx;
+        end
+        cmap_   = MatVisRender.getColormap(cbCmapIdx, nColors);
         pixX    = linspace(histXMin, histXMax, nColors);
         pixNorm = max(0, min(1, (pixX - cmin) ./ max(cmax - cmin, eps)));
         tGam    = pixNorm .^ gamma;
@@ -1436,6 +1586,33 @@ fprintf('\n');
         end
     end
 
+    function applyHistAxisUnits(rgbOn)
+        % The histogram axis reads data units normally and [0,1] in RGB mode
+        % (where the channels have been equalized).  Only switch when the
+        % regime actually changes, so a manually narrowed view survives.
+        want = logical(rgbOn);
+        if isequal(getappdata(fig, 'HistUnitsRGB'), want), return; end
+        setappdata(fig, 'HistUnitsRGB', want);
+        if want
+            setNumField(edtHistMin, [0, 1], 0);
+            setNumField(edtHistMax, [0, 1], 1);
+        else
+            updateHistLimitsForActiveDataset();
+        end
+    end
+
+    function setNumField(h, lims, val)
+        % Set Limits and Value on a numeric edit field in either order
+        % safely: a Value outside the new Limits would otherwise error.
+        val = max(lims(1), min(lims(2), val));
+        cur = h.Limits;
+        if val < cur(1) || val > cur(2)
+            h.Limits = [-Inf, Inf];   % widen first, else the write is rejected
+        end
+        if h.Value ~= val,           h.Value  = val;  end
+        if ~isequal(h.Limits, lims), h.Limits = lims; end
+    end
+
     function setHistFill(h, centers, bw, counts, baseline)
         if all(counts == 0)
             set(h, 'Visible', 'off');
@@ -1455,16 +1632,35 @@ fprintf('\n');
         % Only write widget properties that actually changed — every write
         % on a uifigure widget is a roundtrip to the web renderer.
         ads     = model.ActiveDataset;
+
+        if MatVisRender.rgbActive(model)
+            % Normalized window, always adjustable; the percentile cutoffs
+            % shape the per-channel equalization instead of the window.
+            setNumField(edtContrastMin, [0, 1], cmin);
+            setNumField(edtContrastMax, [0, 1], cmax);
+            setIfChanged(edtGamma, 'Value', getGammaForDataset(ads));
+            setEnableIfChanged(edtContrastMin, true);
+            setEnableIfChanged(edtContrastMax, true);
+            setEnableIfChanged(edtPercLow,     true);
+            setEnableIfChanged(edtPercHigh,    true);
+            if withAlpha
+                setIfChanged(edtAlphaMin,   'Value', model.AlphaContrastMins(ads));
+                setIfChanged(edtAlphaMax,   'Value', model.AlphaContrastMaxs(ads));
+                setIfChanged(edtAlphaGamma, 'Value', model.AlphaGamma);
+            end
+            return;
+        end
+
         dmin    = model.AllDataMins(ads);
         dmax    = model.AllDataMaxs(ads);
         padded  = max((dmax - dmin) * 0.5, 1);
         safeMin = min(cmin, dmin) - padded;
         safeMax = max(cmax, dmax) + padded;
-        setIfChanged(edtContrastMin, 'Limits', [safeMin, safeMax]);
-        setIfChanged(edtContrastMax, 'Limits', [safeMin, safeMax]);
-        setIfChanged(edtContrastMin, 'Value',  cmin);
-        setIfChanged(edtContrastMax, 'Value',  cmax);
-        setIfChanged(edtGamma,       'Value',  getGammaForDataset(ads));
+        % setNumField, not setIfChanged: coming back from RGB mode the field
+        % still holds a [0,1] window that the data-unit limits may exclude.
+        setNumField(edtContrastMin, [safeMin, safeMax], cmin);
+        setNumField(edtContrastMax, [safeMin, safeMax], cmax);
+        setIfChanged(edtGamma,      'Value', getGammaForDataset(ads));
 
         isManual = strcmp(model.ContrastMode, 'Manual');
         setEnableIfChanged(edtContrastMin, isManual);
@@ -1520,17 +1716,27 @@ fprintf('\n');
 
     function updateHistLimitsForActiveDataset()
         ads  = model.ActiveDataset;
+
+        if MatVisRender.rgbActive(model)
+            % RGB mode keeps the histogram and the contrast window on the
+            % normalized [0,1] axis, whichever dataset is active.
+            setNumField(edtHistMin, [0, 1], 0);
+            setNumField(edtHistMax, [0, 1], 1);
+            setNumField(edtContrastMin, [0, 1], model.RGBContrastRange(1));
+            setNumField(edtContrastMax, [0, 1], model.RGBContrastRange(2));
+            edtGamma.Value = getGammaForDataset(ads);
+            return;
+        end
+
         dmin = model.AllDataMins(ads);
         dmax = model.AllDataMaxs(ads);
         % Allow wider limits so linearly-scaled values outside data range can display
         padded = (dmax - dmin) * 0.5;
         lo = dmin - padded; hi = dmax + padded;
-        edtHistMin.Limits = [lo, hi];
-        edtHistMax.Limits = [lo, hi];
-        edtHistMin.Value  = dmin;
-        edtHistMax.Value  = dmax;
-        edtContrastMin.Limits = [lo, hi];
-        edtContrastMax.Limits = [lo, hi];
+        setNumField(edtHistMin, [lo, hi], dmin);
+        setNumField(edtHistMax, [lo, hi], dmax);
+        setNumField(edtContrastMin, [lo, hi], edtContrastMin.Value);
+        setNumField(edtContrastMax, [lo, hi], edtContrastMax.Value);
         edtGamma.Value = getGammaForDataset(ads);
     end
 
@@ -1933,32 +2139,109 @@ fprintf('\n');
         end
     end
 
-    function onContrastModeButtonChanged(mode, src)
+    function onContrastModeButtonChanged(slot, src)
         if src.Value
-            rbGlobal.Value = strcmp(mode, 'Global');
-            rbImage.Value  = strcmp(mode, 'Image');
-            rbZoom.Value   = strcmp(mode, 'Zoom');
-            rbManual.Value = strcmp(mode, 'Manual');
-            model.ContrastMode = mode;
+            model.ContrastMode = contrastModeForSlot(slot);
+            updateRadioButtons();
             doRender();
         else
             src.Value = true;
         end
     end
 
+    function name = contrastModeForSlot(slot)
+        % Slots 2/3 mean Image/Zoom normally and Channel/Channel Image in
+        % RGB mode, where per-channel equalization replaces them (as in the
+        % original matVis, which relabelled its 'Image' button 'Channel').
+        rgbOn = MatVisRender.rgbActive(model);
+        switch slot
+            case 1, name = 'Global';
+            case 2, if rgbOn, name = 'Channel';      else, name = 'Image'; end
+            case 3, if rgbOn, name = 'ChannelImage'; else, name = 'Zoom';  end
+            otherwise, name = 'Manual';
+        end
+    end
+
     function onModelContrastModeChanged()
         updateRadioButtons();
+        if suppressModeRender, return; end
         doRender();
     end
 
     function updateRadioButtons()
-        rbGlobal.Value = strcmp(model.ContrastMode, 'Global');
-        rbImage.Value  = strcmp(model.ContrastMode, 'Image');
-        rbZoom.Value   = strcmp(model.ContrastMode, 'Zoom');
-        rbManual.Value = strcmp(model.ContrastMode, 'Manual');
+        mode  = model.ContrastMode;
+        rgbOn = MatVisRender.rgbActive(model);
+        rbGlobal.Value = strcmp(mode, 'Global');
+        rbManual.Value = strcmp(mode, 'Manual');
+        if rgbOn
+            rbImage.Value = strcmp(mode, 'Channel');
+            rbZoom.Value  = strcmp(mode, 'ChannelImage');
+        else
+            rbImage.Value = strcmp(mode, 'Image');
+            rbZoom.Value  = strcmp(mode, 'Zoom');
+        end
+    end
+
+    function syncContrastModeButtons()
+        % Relabel slots 2/3 for the RGB mode set and hide the Manual slot
+        % there (the RGB contrast window is always manually adjustable).
+        % Also drops a mode that doesn't exist on the other side of the
+        % switch, mirroring matVis, which reset to Global when RGB came on.
+        rgbOn = MatVisRender.rgbActive(model);
+        mode  = model.ContrastMode;
+        if rgbOn && ismember(mode, {'Image', 'Zoom', 'Manual'})
+            setContrastModeQuiet('Global');
+        elseif ~rgbOn && ismember(mode, {'Channel', 'ChannelImage'})
+            setContrastModeQuiet('Global');
+        end
+        if rgbOn
+            setIfChanged(rbImage, 'Text', 'Channel');
+            setIfChanged(rbZoom,  'Text', 'Ch. Image');
+            setIfChanged(rbImage, 'Tooltip', ['Channel: equalize the range of ' ...
+                'each channel over all images (fixed while navigating the ' ...
+                'other dimensions) before applying the contrast window.']);
+            setIfChanged(rbZoom,  'Tooltip', ['Channel Image: equalize the ' ...
+                'range of the channel images currently on display before ' ...
+                'applying the contrast window.']);
+            if strcmp(rbManual.Visible, 'on')
+                rbManual.Visible    = 'off';
+                rbSubGrid.ColumnWidth = {'1x', '1x', '1x', 1};
+            end
+        else
+            setIfChanged(rbImage, 'Text', 'Image');
+            setIfChanged(rbZoom,  'Text', 'Zoom');
+            setIfChanged(rbImage, 'Tooltip', '');
+            setIfChanged(rbZoom,  'Tooltip', '');
+            if strcmp(rbManual.Visible, 'off')
+                rbManual.Visible      = 'on';
+                rbSubGrid.ColumnWidth = {'1x', '1x', '1x', '1x'};
+            end
+        end
+        updateRadioButtons();
+    end
+
+    function setContrastModeQuiet(newMode)
+        % Change the mode from inside a render without re-entering doRender.
+        suppressModeRender = true;
+        try
+            model.ContrastMode = newMode;
+        catch err
+            suppressModeRender = false;
+            rethrow(err);
+        end
+        suppressModeRender = false;
     end
 
     function onContrastMinChanged(src)
+        if MatVisRender.rgbActive(model)
+            % Normalized RGB window; reject an inverted entry like Manual does.
+            if src.Value < model.RGBContrastRange(2)
+                model.RGBContrastRange = [src.Value, model.RGBContrastRange(2)];
+                doRender();
+            end
+            src.Value = model.RGBContrastRange(1);
+            return;
+        end
         if strcmp(model.ContrastMode, 'Manual')
             newMin = src.Value;
             if ~model.ContrastLocked
@@ -1975,6 +2258,14 @@ fprintf('\n');
     end
 
     function onContrastMaxChanged(src)
+        if MatVisRender.rgbActive(model)
+            if src.Value > model.RGBContrastRange(1)
+                model.RGBContrastRange = [model.RGBContrastRange(1), src.Value];
+                doRender();
+            end
+            src.Value = model.RGBContrastRange(2);
+            return;
+        end
         if strcmp(model.ContrastMode, 'Manual')
             newMax = src.Value;
             if ~model.ContrastLocked
@@ -2090,7 +2381,9 @@ fprintf('\n');
             xClick   = curPt(1);
             hitZone  = range(histAx.XLim) * 0.05;
             [cmin, cmax] = getCachedBounds();
-            isManual = strcmp(model.ContrastMode, 'Manual');
+            % The RGB window is manually adjustable in every RGB mode.
+            isManual = strcmp(model.ContrastMode, 'Manual') || ...
+                       MatVisRender.rgbActive(model);
 
             dragTarget = '';
             if isManual && abs(xClick - cmin) < hitZone
@@ -2152,19 +2445,37 @@ fprintf('\n');
         if isempty(dragTarget), return; end
         try
             ads      = model.ActiveDataset;
-            dmin_ads = model.AllDataMins(ads);
-            dmax_ads = model.AllDataMaxs(ads);
+            rgbDrag  = MatVisRender.rgbActive(model);
+            if rgbDrag
+                dmin_ads = 0;   % RGB window lives on the normalized axis
+                dmax_ads = 1;
+            else
+                dmin_ads = model.AllDataMins(ads);
+                dmax_ads = model.AllDataMaxs(ads);
+            end
             curPt = histAx.CurrentPoint(1, 1:2);
             xDrag = max(min(curPt(1), dmax_ads), dmin_ads);
             switch dragTarget
                 case 'MinLine'
-                    if strcmp(model.ContrastMode, 'Manual') && xDrag < model.ContrastMax
+                    if rgbDrag
+                        if xDrag < model.RGBContrastRange(2)
+                            model.RGBContrastRange = [xDrag, model.RGBContrastRange(2)];
+                            edtContrastMin.Value   = model.RGBContrastRange(1);
+                            doRender();
+                        end
+                    elseif strcmp(model.ContrastMode, 'Manual') && xDrag < model.ContrastMax
                         model.ContrastMin    = xDrag;
                         edtContrastMin.Value = xDrag;
                         doRender();
                     end
                 case 'MaxLine'
-                    if strcmp(model.ContrastMode, 'Manual') && xDrag > model.ContrastMin
+                    if rgbDrag
+                        if xDrag > model.RGBContrastRange(1)
+                            model.RGBContrastRange = [model.RGBContrastRange(1), xDrag];
+                            edtContrastMax.Value   = model.RGBContrastRange(2);
+                            doRender();
+                        end
+                    elseif strcmp(model.ContrastMode, 'Manual') && xDrag > model.ContrastMin
                         model.ContrastMax    = xDrag;
                         edtContrastMax.Value = xDrag;
                         doRender();
@@ -2316,7 +2627,8 @@ fprintf('\n');
             xl       = histAx.XLim; yl = histAx.YLim;
             hitZone  = range(xl) * 0.05;
             [cmin, cmax] = getCachedBounds();
-            isManual = strcmp(model.ContrastMode, 'Manual');
+            isManual = strcmp(model.ContrastMode, 'Manual') || ...
+                       MatVisRender.rgbActive(model);
 
             if isManual && (abs(curPt(1)-cmin) < hitZone || abs(curPt(1)-cmax) < hitZone)
                 fig.Pointer = 'custom';
@@ -2556,6 +2868,10 @@ fprintf('\n');
         if isfield(config, 'contrastMode')
             model.ContrastMode = config.contrastMode;
             updateRadioButtons();
+        end
+
+        if isfield(config, 'rgbContrastRange') && numel(config.rgbContrastRange) == 2
+            model.RGBContrastRange = config.rgbContrastRange;
         end
 
         if isfield(config, 'contrastLocked')

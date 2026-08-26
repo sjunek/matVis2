@@ -46,6 +46,12 @@ classdef MatVisModel < handle
                         %   positions assigned to the first/last RGB-dim index
         RGBStretchZoomLock % logical — when true, stretch only over the RGB
                         %   dimension's zoom interval (mirrors ProjZoomLock)
+        RGBContrastRange % 1×2 double [lo hi] in [0,1] — contrast window used
+                        %   in every RGB mode.  RGB contrast is expressed as a
+                        %   fraction of the per-channel range because the
+                        %   'Channel'/'ChannelImage' modes equalize the channel
+                        %   ranges first, which leaves absolute data values
+                        %   without a common meaning across channels.
         Gamma           % scalar double in [0.1, 5.0]
         ColormapIdx     % scalar positive integer
         FilterType      % string: 'none','gauss','median','mean','unsharp'
@@ -57,7 +63,10 @@ classdef MatVisModel < handle
         ProjZoomLock    % logical
         ContrastMin     % scalar double — active dataset manual lower bound
         ContrastMax     % scalar double — active dataset manual upper bound
-        ContrastMode    % string: 'Global', 'Image', 'Zoom', 'Manual'
+        ContrastMode    % string: 'Global', 'Image', 'Zoom', 'Manual' and, in
+                        %   RGB mode only, 'Channel' / 'ChannelImage' (per-
+                        %   channel contrast equalization — see MatVisRender.
+                        %   normalizeChannels)
         FlipX           % logical
         FlipY           % logical
 
@@ -239,6 +248,9 @@ classdef MatVisModel < handle
             obj.RGBStretchMode     = 'none';
             obj.RGBStretchRange    = [0.15, 0.85];
             obj.RGBStretchZoomLock = false;
+
+            % RGB contrast window (fraction of the per-channel range).
+            obj.RGBContrastRange   = [0, 1];
 
             % Rendering
             obj.Gamma        = 1.0;
@@ -444,6 +456,19 @@ classdef MatVisModel < handle
             obj.RGBStretchRange = [min(v), max(v)];   % keep blue <= red
         end
 
+        function set.RGBContrastRange(obj, value)
+            validateattributes(value, {'numeric'}, ...
+                {'vector', 'numel', 2, 'finite'}, ...
+                'MatVisModel.set.RGBContrastRange', 'RGBContrastRange');
+            v = max(0, min(1, double(value(:)')));
+            v = [min(v), max(v)];
+            if v(1) >= v(2)                    % keep a non-empty window
+                v(2) = min(1, v(1) + 1e-3);
+                v(1) = min(v(1), v(2) - 1e-3);
+            end
+            obj.RGBContrastRange = v;
+        end
+
         function set.RGBStretchZoomLock(obj, value)
             validateattributes(value, {'logical', 'numeric'}, {'scalar'}, ...
                 'MatVisModel.set.RGBStretchZoomLock', 'RGBStretchZoomLock');
@@ -527,9 +552,11 @@ classdef MatVisModel < handle
             validateattributes(value, {'char', 'string'}, {'scalartext'}, ...
                 'MatVisModel.set.ContrastMode', 'ContrastMode');
             value = char(value);
-            if ~ismember(value, {'Global', 'Image', 'Zoom', 'Manual'})
+            if ~ismember(value, {'Global', 'Image', 'Zoom', 'Manual', ...
+                                 'Channel', 'ChannelImage'})
                 error('MatVisModel:invalidContrastMode', ...
-                    'ContrastMode must be ''Global'', ''Image'', ''Zoom'', or ''Manual''.');
+                    ['ContrastMode must be ''Global'', ''Image'', ''Zoom'', ' ...
+                     '''Manual'', ''Channel'' or ''ChannelImage''.']);
             end
             obj.ContrastMode = value;
             notify(obj, 'ContrastModeChanged');

@@ -79,6 +79,10 @@ overlayOn  = true;
 cMin_ = model.AllDataMins(dsIdx);    % overwritten by every Update() call
 cMax_ = model.AllDataMaxs(dsIdx);
 gam_  = model.Gamma;
+% Per-channel equalization ranges of the current RGB stack (N×2, data units),
+% empty when RGB is off.  When set, cMin_/cMax_ are a normalized window over
+% those ranges rather than data values — see MatVisRender.normalizeChannels.
+chanRng_ = [];
 lastMainXY = [model.XDim, model.YDim];
 volshowBroken = false;               % set once volshow/viewer3d has failed
 
@@ -247,7 +251,7 @@ xw.Refresh           = @forceRefresh;
 % =========================================================================
 %  Rendering
 % =========================================================================
-    function updateAll(cmin, cmax, gamma)
+    function updateAll(cmin, cmax, gamma, chanRange)
         % Render every panel.  Called by the main window's render loop with
         % this dataset's contrast bounds and gamma, so all windows share one
         % mapping from data values to colours.
@@ -255,6 +259,7 @@ xw.Refresh           = @forceRefresh;
         if nargin >= 1 && ~isempty(cmin),  cMin_ = cmin;  end
         if nargin >= 2 && ~isempty(cmax),  cMax_ = cmax;  end
         if nargin >= 3 && ~isempty(gamma), gam_  = gamma; end
+        if nargin >= 4,                    chanRng_ = chanRange; end
         if strcmp(fig.Visible, 'off'), return; end
 
         followMainPlane();
@@ -317,10 +322,23 @@ xw.Refresh           = @forceRefresh;
             data = model.Datasets{dsIdx};
             raw  = MatVisRender.getRawSliceForDims(model, data, xd, yd, xIdx, yIdx);
 
+            % In RGB mode the pages are equalized exactly as in the main
+            % window before the (normalized) contrast window is applied;
+            % panels showing scalar data fall back to data-unit bounds.
+            rgbPanel = ~isempty(chanRng_) && ...
+                       MatVisRender.rgbActiveForDims(model, xd, yd) && ...
+                       size(raw, 3) == size(chanRng_, 1);
+            if rgbPanel
+                raw = MatVisRender.normalizeChannels(raw, chanRng_);
+                cLo = cMin_;  cHi = cMax_;
+            else
+                [cLo, cHi] = scalarBounds_();
+            end
+
             if MatVisRender.stretchActiveForDims(model, xd, yd)
                 % Whole-dimension colour coding handles contrast, gamma and
                 % the spatial filter internally (as in the main window).
-                rgb = MatVisRender.renderStretchImage(model, raw, cMin_, cMax_, gam_);
+                rgb = MatVisRender.renderStretchImage(model, raw, cLo, cHi, gam_);
                 if model.WithAlpha
                     aRaw = MatVisRender.getRawSliceForDims(model, ...
                         model.AlphaMaps{dsIdx}, xd, yd, xIdx, yIdx);
@@ -332,7 +350,7 @@ xw.Refresh           = @forceRefresh;
                 end
             else
                 disp_ = MatVisRender.filterImage(raw, model.FilterType, model.FilterPar);
-                nrm   = MatVisRender.normalizeData(disp_, cMin_, cMax_);
+                nrm   = MatVisRender.normalizeData(disp_, cLo, cHi);
                 if model.WithAlpha
                     aRaw = MatVisRender.getRawSliceForDims(model, ...
                         model.AlphaMaps{dsIdx}, xd, yd, xIdx, yIdx);
@@ -438,8 +456,9 @@ xw.Refresh           = @forceRefresh;
 
         vol = MatVisRender.getRawVolumeForDims(model, model.Datasets{dsIdx}, ...
                                                d3, idxCells);
+        [vLo, vHi] = scalarBounds_();      % volume rendering is always scalar
         nrm = MatVisRender.applyGamma( ...
-                MatVisRender.normalizeData(vol, cMin_, cMax_), gam_);
+                MatVisRender.normalizeData(vol, vLo, vHi), gam_);
         V   = uint8(max(0, min(1, nrm)) * 255);
 
         sp = MatVisRender.spacingForDims(model, d3);
@@ -1480,6 +1499,21 @@ xw.Refresh           = @forceRefresh;
 % =========================================================================
 %  Misc
 % =========================================================================
+    function [lo, hi] = scalarBounds_()
+        % Data-unit contrast bounds for panels that show scalar data while
+        % the main window is in RGB mode (where cMin_/cMax_ are a normalized
+        % window).  The reference is the middle page — green for a triad.
+        if isempty(chanRng_)
+            lo = cMin_;  hi = cMax_;
+            return;
+        end
+        ref  = max(1, ceil(size(chanRng_, 1) / 2));
+        base = chanRng_(ref, 1);
+        span = chanRng_(ref, 2) - base;
+        lo   = base + cMin_ * span;
+        hi   = base + cMax_ * span;
+    end
+
     function sig = sliceSignature(k, ranges)
         % Everything that can change what a panel shows.  Rendering is
         % skipped when this is unchanged, so playback along a dimension the
@@ -1493,7 +1527,7 @@ xw.Refresh           = @forceRefresh;
             alphaSig = [];
         end
         sig = {P(k).mode, d, ranges, model.CurrPos(otherDims), ...
-               [cMin_, cMax_, gam_, model.ColormapIdx], ...
+               [cMin_, cMax_, gam_, model.ColormapIdx], chanRng_, ...
                model.ProjFun, [model.ProjDim, model.ProjZoomLock], ...
                [model.RGBDim, model.RGBStretchZoomLock], model.RGBStretchMode, ...
                model.RGBStretchRange, model.FilterType, model.FilterPar, ...
