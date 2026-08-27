@@ -2040,6 +2040,11 @@ fprintf('\n');
                 rangeSliders{ii}.SetPlayButtonsEnabled(~isPlaying);
             end
         end
+        % Either way this dimension's current timer goes: starting a second
+        % one on top of a running first would leave a tick source that no
+        % button can reach any more, and playback would never stop.
+        stopPlayTimer(dimIdx);
+
         if isPlaying && ~strcmp(playMode, 'none')
             isPlayingAny = true;
             % Reset framerate measurement for this run and apply current speed
@@ -2061,17 +2066,29 @@ fprintf('\n');
             playTimers{dimIdx} = t;
             start(t);
         else
-            t = playTimers{dimIdx};
-            if ~isempty(t) && isvalid(t)
-                stop(t); delete(t);
-            end
-            playTimers{dimIdx} = [];
             isPlayingAny = any(cellfun(@(tt) ~isempty(tt) && isvalid(tt), playTimers));
             % Histogram/contrast fields were skipped during playback — refresh once
             if ~isPlayingAny
                 lblFrameRate.Text = '';   % clear the framerate readout
                 doRender();
             end
+        end
+    end
+
+    function stopPlayTimer(dimIdx)
+        % Deregister first, then stop.  A pause click is normally dispatched
+        % by the drawnow at the end of stepPlay*, i.e. from inside the very
+        % timer callback being cancelled; stepPlay* checks the registry
+        % before touching the model, so clearing it first makes any tick that
+        % still gets through inert.
+        t = playTimers{dimIdx};
+        playTimers{dimIdx} = [];
+        try
+            if ~isempty(t) && isvalid(t)
+                stop(t);
+                delete(t);
+            end
+        catch
         end
     end
 
@@ -2133,6 +2150,7 @@ fprintf('\n');
     end
 
     function stepPlayFull(dimIdx)
+        if isempty(playTimers{dimIdx}), return; end   % paused mid-tick
         lo  = 1; hi = model.Size(dimIdx);
         nxt = model.CurrPos(dimIdx) + playInc;
         if nxt > hi, nxt = lo; end
@@ -2144,6 +2162,7 @@ fprintf('\n');
     end
 
     function stepPlayZoom(dimIdx)
+        if isempty(playTimers{dimIdx}), return; end   % paused mid-tick
         lo  = model.ZoomRange(dimIdx, 1);
         hi  = model.ZoomRange(dimIdx, 2);
         nxt = model.CurrPos(dimIdx) + playInc;
@@ -2156,6 +2175,7 @@ fprintf('\n');
     end
 
     function stepPlayShift(dimIdx)
+        if isempty(playTimers{dimIdx}), return; end   % paused mid-tick
         lo      = 1; hi = model.Size(dimIdx);
         zWidth  = model.ZoomRange(dimIdx, 2) - model.ZoomRange(dimIdx, 1);
         newZMin = model.ZoomRange(dimIdx, 1) + playInc;

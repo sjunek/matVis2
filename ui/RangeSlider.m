@@ -755,55 +755,41 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 
         % ---- Play callbacks -----------------------------------------
 
-        function onPlayFullToggled_(obj, src, ~)
-            if src.Value
-                obj.PlayMode  = 'full';
-                obj.IsPlaying = true;
-                obj.BtnPlayZoom_.Value   = false;
-                obj.BtnPlayZoom_.Enable  = 'off';
-                obj.BtnPlayShift_.Value  = false;
-                obj.BtnPlayShift_.Enable = 'off';
-            else
-                obj.PlayMode  = 'none';
-                obj.IsPlaying = false;
-                obj.BtnPlayZoom_.Enable  = 'on';
-                obj.BtnPlayShift_.Enable = 'on';
-            end
-            notify(obj, 'PlayModeChanged');
-            notify(obj, 'PlayToggled');
+        function onPlayFullToggled_(obj, ~, ~)
+            obj.togglePlay_('full');
         end
 
-        function onPlayZoomToggled_(obj, src, ~)
-            if src.Value
-                obj.PlayMode  = 'zoom';
-                obj.IsPlaying = true;
-                obj.BtnPlayFull_.Value   = false;
-                obj.BtnPlayFull_.Enable  = 'off';
-                obj.BtnPlayShift_.Value  = false;
-                obj.BtnPlayShift_.Enable = 'off';
-            else
-                obj.PlayMode  = 'none';
-                obj.IsPlaying = false;
-                obj.BtnPlayFull_.Enable  = 'on';
-                obj.BtnPlayShift_.Enable = 'on';
-            end
-            notify(obj, 'PlayModeChanged');
-            notify(obj, 'PlayToggled');
+        function onPlayZoomToggled_(obj, ~, ~)
+            obj.togglePlay_('zoom');
         end
 
-        function onPlayShiftToggled_(obj, src, ~)
-            if src.Value
-                obj.PlayMode  = 'shift';
-                obj.IsPlaying = true;
-                obj.BtnPlayFull_.Value   = false;
-                obj.BtnPlayFull_.Enable  = 'off';
-                obj.BtnPlayZoom_.Value   = false;
-                obj.BtnPlayZoom_.Enable  = 'off';
-            else
+        function onPlayShiftToggled_(obj, ~, ~)
+            obj.togglePlay_('shift');
+        end
+
+        function togglePlay_(obj, mode)
+            % Start or stop playback in MODE.  Which of the two it is comes
+            % from this component's own state, never from the button's Value:
+            % playback rewrites the position spinner and the track patches on
+            % every frame, and a Value the web renderer got out of step with
+            % would otherwise make a pause click read as "start" — which
+            % spawns a second timer and leaves playback unstoppable.
+            % update() presses/releases the buttons from PlayMode/IsPlaying;
+            % only Enable has to be set here.
+            modes = {'full', 'zoom', 'shift'};
+            btns  = {obj.BtnPlayFull_, obj.BtnPlayZoom_, obj.BtnPlayShift_};
+            if obj.IsPlaying && strcmp(obj.PlayMode, mode)
                 obj.PlayMode  = 'none';
                 obj.IsPlaying = false;
-                obj.BtnPlayFull_.Enable  = 'on';
-                obj.BtnPlayZoom_.Enable  = 'on';
+                en = {'on', 'on', 'on'};
+            else
+                obj.PlayMode  = mode;
+                obj.IsPlaying = true;
+                en = {'off', 'off', 'off'};
+                en{find(strcmp(modes, mode), 1)} = 'on';
+            end
+            for k = 1:3
+                obj.setIfChanged_(btns{k}, 'Enable', en{k});
             end
             notify(obj, 'PlayModeChanged');
             notify(obj, 'PlayToggled');
