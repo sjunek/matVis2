@@ -1,6 +1,7 @@
 # --- Sample / test data (too large for GitHub; regenerate or fetch locally) ---
 *.tif
 *.tiff
+*.czi
 *.mat
 
 # --- MATLAB autosave / temp ---
@@ -20,3 +21,6 @@ io/bfmatlab/*.jar
 # --- ScanImageTiffReader MEX binaries (Windows-only; auto-downloaded on demand
 #     by io/ensureScanImageTiffReader.m) ---
 io/scanImageTiffReader/+ScanImageTiffReader/private/*.mexw64
+
+# --- Stray installers (not part of the project) ---
+*.msi
