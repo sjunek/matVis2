@@ -468,7 +468,7 @@ edtContrastMin.Layout.Row    = 7;
 edtContrastMin.Layout.Column = 2;
 edtContrastMin.Enable = strcmp(model.ContrastMode, 'Manual');
 
-lblGamma = uilabel(contrastGrid, 'Text', 'y:', 'HorizontalAlignment', 'right', ...
+lblGamma = uilabel(contrastGrid, 'Text', [char(947) ':'], 'HorizontalAlignment', 'right', ...
     'FontSize', 11, 'FontWeight', 'bold');
 lblGamma.Layout.Row    = 7;
 lblGamma.Layout.Column = 4;
@@ -544,7 +544,7 @@ if withAlpha
     btnAlphaBg.Layout.Row    = 11;
     btnAlphaBg.Layout.Column = 3;
 
-    lblAlphaGamma = uilabel(contrastGrid, 'Text', [char(945) ' y:'], ...
+    lblAlphaGamma = uilabel(contrastGrid, 'Text', [char(945) ' ' char(947) ':'], ...
         'HorizontalAlignment', 'right', 'FontSize', 11, 'FontWeight', 'bold', ...
         'Tooltip', 'Gamma value for alpha map');
     lblAlphaGamma.Layout.Row    = 11;
@@ -592,10 +592,13 @@ mvTiming_.labels{end+1} = 'contrast panel created'; mvTiming_.times(end+1) = toc
 % the window height is unchanged.  2*btnH + RowSpacing + 2*Padding = rowH_bottom.
 btnH = 24;
 
-bottomGrid = uigridlayout(grid, [2, 5]);
+% The narrow sixth column holds the Video toggle without stealing enough
+% width from the others to clip their labels, and without a third row (which
+% would change the window height the comment above depends on).
+bottomGrid = uigridlayout(grid, [2, 6]);
 bottomGrid.Layout.Row    = 4;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x'};
+bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', 52};
 bottomGrid.RowHeight     = {btnH, btnH};
 bottomGrid.RowSpacing    = rowH_bottom - 2*btnH - 4;
 bottomGrid.Padding       = [0 2 0 2];
@@ -653,6 +656,14 @@ btnLoadConfig = uibutton(bottomGrid, 'Text', 'Load Config', 'FontSize', btnFS, .
     'ButtonPushedFcn', @(~,~) onLoadConfig());
 btnLoadConfig.Layout.Row = 2;  btnLoadConfig.Layout.Column = 5;
 
+btnToggleVideo = uibutton(bottomGrid, 'state', 'Text', 'Video', 'Value', false, ...
+    'FontSize', btnFS, ...
+    'Tooltip', sprintf(['Show/hide the Video Generator: combine several\n' ...
+        'windows into one movie frame and record a sweep\n' ...
+        'through a dimension.']), ...
+    'ValueChangedFcn', @(src, ~) toggleVideoWindow(src.Value));
+btnToggleVideo.Layout.Row = 1;  btnToggleVideo.Layout.Column = 6;
+
 setappdata(fig, 'OverlayVisible', true);
 
 mvTiming_.labels{end+1} = 'bottom controls created'; mvTiming_.times(end+1) = toc(mvT0_);
@@ -681,6 +692,9 @@ metadataCbs.onHide = @() set(btnToggleMetadata, 'Value', false);
 metadataWin = [];
 metadataWinDefaultPos = [];
 
+%% Video generator — created lazily on first use
+videoWin = [];
+
 %% Cross-section windows (one per dataset) — created lazily on first use
 xsecCbs = struct();
 xsecCbs.positionFromMouse = @onPositionFromMouse;
@@ -708,12 +722,14 @@ mw.getXSecWin   = @getXSecWin;    % cross-section windows are created lazily
 mw.getRoiMgr    = @getRoiMgr;     % ROI manager is created lazily
 mw.getProfileMgr = @getProfileMgr;% Profile manager is created lazily
 mw.getMetadataWin = @getMetadataWin; % Metadata window is created lazily
+mw.getVideoWin  = @getVideoWin;   % Video generator is created lazily
 mw.histAx       = histAx;
 mw.rbGlobal     = rbGlobal;
 mw.rbImage      = rbImage;
 mw.rbZoom       = rbZoom;
 mw.rbManual     = rbManual;
 mw.Render       = renderFcn;
+mw.ComputeDisplay = @computeDisplayFor;  % video composer: same pipeline as the windows
 
 fig.CloseRequestFcn       = @(~,~) onMainWindowClosing();
 fig.WindowButtonDownFcn   = @(~,~) onFigureButtonDown();
@@ -797,6 +813,7 @@ fprintf('\n');
             catch
             end
         end
+        try; if ~isempty(videoWin) && isvalid(videoWin.fig), delete(videoWin.fig); end; catch; end
         try; if ~isempty(roiMgr) && isvalid(roiMgr.fig), delete(roiMgr.fig); end; catch; end
         try; if ~isempty(hist2DFig) && isvalid(hist2DFig), delete(hist2DFig); end; catch; end
         delete(fig);
@@ -835,193 +852,35 @@ fprintf('\n');
         cmin_arr = zeros(1, nDatasets);
         cmax_arr = zeros(1, nDatasets);
 
-        % Selected ROIs in the current display plane → traces in the plots
-        selRois = model.RoiSelection;
-        selRois = selRois(ismember(selRois, model.VisibleRoiIndices()));
-        roiNames = cell(1, numel(selRois));
-        for k = 1:numel(selRois)
-            roiNames{k} = model.RoiList(selRois(k)).name;
-        end
-        roiCols = MatVisRender.roiColors(max(numel(selRois), 1));
-
-        % When a spatial filter is active, plots along the X/Y display dims
-        % overlay the unfiltered and filtered profiles (see profile loop).
-        filtOn = MatVisRender.filterActive(model);
-
-        % Whole-dimension RGB colour coding (MeanStretch / MaxStretch): the
-        % raw slices below are H×W×N stacks composed via renderStretchImage.
-        stretchOn = MatVisRender.stretchActive(model);
-
-        % Channel / Channel Image equalize each page of the RGB stack onto
-        % [0,1] over its own range before the contrast window is applied, so
-        % those modes work in normalized units.  RGB Global leaves the pages
-        % on the common data scale and stays in data units, like every
-        % non-RGB mode.  See rgbChannelRanges / rgbEqualizing.
-        rgbEq = rgbEqualizing();
+        dispFlags = displayFlags();
 
         rf_ads = [];
         rz_ads = [];
         rfRaw_ads   = [];
         chanRng_ads = [];
         for ds = 1:nDatasets
-            dsData   = model.Datasets{ds};
-            raw_full = MatVisRender.getRawFullSliceFromData(model, dsData);
-            raw_zoom = MatVisRender.getRawSliceFromData(model, dsData);
-
-            model.SetImageData(raw_full, ds);
-            model.SetZoomData(raw_zoom,  ds);
-
-            [cmin_ds, cmax_ds] = getBoundsForDataset(ds, raw_full, raw_zoom);
-            cmin_arr(ds) = cmin_ds;
-            cmax_arr(ds) = cmax_ds;
-            gamma_ds     = getGammaForDataset(ds);
-
-            if rgbEq
-                chanRange = rgbChannelRanges(ds, raw_full);
-                src_full  = MatVisRender.normalizeChannels(raw_full, chanRange);
-                src_zoom  = MatVisRender.normalizeChannels(raw_zoom, chanRange);
-            else
-                chanRange = [];
-                src_full  = raw_full;
-                src_zoom  = raw_zoom;
-            end
+            s = computeDatasetDisplay(ds, dispFlags);
+            cmin_arr(ds) = s.cmin;
+            cmax_arr(ds) = s.cmax;
 
             if ds == model.ActiveDataset
-                rf_ads      = src_full;   % reuse below — avoids slicing twice
-                rz_ads      = src_zoom;
-                rfRaw_ads   = raw_full;   % data units, for the alpha 2-D hist
-                chanRng_ads = chanRange;
+                rf_ads      = s.srcFull;   % reuse below — avoids slicing twice
+                rz_ads      = s.srcZoom;
+                rfRaw_ads   = s.rawFull;   % data units, for the alpha 2-D hist
+                chanRng_ads = s.chanRange;
             end
 
-            if stretchOn
-                % Whole RGB dimension colour-coded into one image; contrast/
-                % gamma/filter are handled inside renderStretchImage.
-                rgb_full = MatVisRender.renderStretchImage(model, src_full, cmin_ds, cmax_ds, gamma_ds);
-                rgb_zoom = MatVisRender.renderStretchImage(model, src_zoom, cmin_ds, cmax_ds, gamma_ds);
-                if withAlpha
-                    aMap  = model.AlphaMaps{ds};
-                    aLo   = model.AlphaContrastMins(ds);
-                    aHi   = model.AlphaContrastMaxs(ds);
-                    aFull = stretchAlpha_(MatVisRender.getRawFullSliceFromData(model, aMap), aLo, aHi, model.AlphaGamma);
-                    aZoom = stretchAlpha_(MatVisRender.getRawSliceFromData(model, aMap),     aLo, aHi, model.AlphaGamma);
-                    rgb_full = blendStretchAlpha_(rgb_full, aFull, model.AlphaBgWhite);
-                    rgb_zoom = blendStretchAlpha_(rgb_zoom, aZoom, model.AlphaBgWhite);
-                end
-            else
-                % Spatial filter is applied to the displayed image only; contrast
-                % bounds above are computed from the unfiltered data (as in the
-                % original matVis, which kept currImVal before filtering).
-                disp_full = MatVisRender.filterImage(src_full, model.FilterType, model.FilterPar);
-                disp_zoom = MatVisRender.filterImage(src_zoom, model.FilterType, model.FilterPar);
-
-                norm_full = MatVisRender.normalizeData(disp_full, cmin_ds, cmax_ds);
-                norm_zoom = MatVisRender.normalizeData(disp_zoom, cmin_ds, cmax_ds);
-
-                if withAlpha
-                    % Slice the alpha map exactly like the data (zoom /
-                    % projection / flips), then blend against the background.
-                    aMap  = model.AlphaMaps{ds};
-                    aLo   = model.AlphaContrastMins(ds);
-                    aHi   = model.AlphaContrastMaxs(ds);
-                    aFull = MatVisRender.renderAlphaSlice( ...
-                        MatVisRender.getRawFullSliceFromData(model, aMap), ...
-                        aLo, aHi, model.AlphaGamma);
-                    aZoom = MatVisRender.renderAlphaSlice( ...
-                        MatVisRender.getRawSliceFromData(model, aMap), ...
-                        aLo, aHi, model.AlphaGamma);
-                    rgb_full = MatVisRender.composeImageWithAlpha(norm_full, gamma_ds, ...
-                        model.ColormapIdx, aFull, model.AlphaBgWhite);
-                    rgb_zoom = MatVisRender.composeImageWithAlpha(norm_zoom, gamma_ds, ...
-                        model.ColormapIdx, aZoom, model.AlphaBgWhite);
-                else
-                    rgb_full = MatVisRender.composeImage(norm_full, gamma_ds, model.ColormapIdx);
-                    rgb_zoom = MatVisRender.composeImage(norm_zoom, gamma_ds, model.ColormapIdx);
-                end
-            end
-
-            imageWins{ds}.Update(rgb_full, zoomRect, posX, posY);
-            zoomWins{ds}.Update(rgb_zoom, posXLocal, posYLocal);
+            imageWins{ds}.Update(s.rgbFull, zoomRect, posX, posY);
+            zoomWins{ds}.Update(s.rgbZoom, posXLocal, posYLocal);
 
             % Cross sections share this dataset's contrast bounds and gamma
             % so every window maps data values to colours identically. The
             % window itself skips panels whose content hasn't changed.
             if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
-                xsecWins{ds}.Update(cmin_ds, cmax_ds, gamma_ds, chanRange);
+                xsecWins{ds}.Update(s.cmin, s.cmax, s.gamma, s.chanRange);
             end
 
-            if withAlpha
-                aMapDs = model.AlphaMaps{ds};
-            else
-                aMapDs = [];
-            end
-
-            profiles = cell(1, nDims);
-            for ii = 1:nDims
-                if model.PlotDims(ii)
-                    if filtOn && (ii == xd || ii == yd) && ~withAlpha && isempty(selRois)
-                        % Spatial profile + its filtered counterpart, drawn in
-                        % two colours (matches the original matVis behaviour of
-                        % overlaying filtered/unfiltered along x/y).
-                        [pRaw, pFilt] = MatVisRender.renderFilteredSpatialProfile( ...
-                            model, dsData, ii, model.PlotLock(ii));
-                        profiles{ii} = struct('data', [pRaw, pFilt], ...
-                            'names', {{'unfiltered', 'filtered'}}, ...
-                            'colors', [0 0 0; 0.85 0.33 0.10]);
-                    elseif ~isempty(selRois) && ii ~= xd && ii ~= yd
-                        % ROI traces: mean over each ROI mask along dim ii
-                        % (alpha-weighted mean + mean-alpha trace with alpha)
-                        if model.PlotLock(ii)
-                            nT = model.ZoomRange(ii, 2) - model.ZoomRange(ii, 1) + 1;
-                        else
-                            nT = model.Size(ii);
-                        end
-                        M = NaN(nT, numel(selRois));
-                        A = NaN(nT, numel(selRois));
-                        for k = 1:numel(selRois)
-                            if withAlpha
-                                [p, a] = MatVisRender.renderRoiProfileAlphaFromData(model, ...
-                                    dsData, aMapDs, ii, model.RoiList(selRois(k)), model.PlotLock(ii));
-                                if ~isempty(p), M(:, k) = p; A(:, k) = a; end
-                            else
-                                p = MatVisRender.renderRoiProfileFromData(model, dsData, ...
-                                    ii, model.RoiList(selRois(k)), model.PlotLock(ii));
-                                if ~isempty(p), M(:, k) = p; end
-                            end
-                        end
-                        if withAlpha
-                            profiles{ii} = struct('data', M, ...
-                                'names', {roiNames}, 'colors', roiCols, 'alpha', A);
-                        else
-                            profiles{ii} = struct('data', M, ...
-                                'names', {roiNames}, 'colors', roiCols);
-                        end
-                    elseif withAlpha
-                        % Alpha-weighted trace sum(data.*alpha)/sum(alpha)
-                        % plus the mean-alpha trace (avgMode 0 = single pixel)
-                        if model.PlotLock(ii)
-                            [p, a] = MatVisRender.renderProfileNeighborAlphaFromData( ...
-                                model, dsData, aMapDs, ii, plotAvgMode);
-                        else
-                            [p, a] = MatVisRender.renderFullProfileNeighborAlphaFromData( ...
-                                model, dsData, aMapDs, ii, plotAvgMode);
-                        end
-                        profiles{ii} = struct('data', p, 'alpha', a);
-                    elseif plotAvgMode == 0
-                        if model.PlotLock(ii)
-                            profiles{ii} = MatVisRender.renderProfileFromData(model, dsData, ii);
-                        else
-                            profiles{ii} = MatVisRender.renderFullProfileFromData(model, dsData, ii);
-                        end
-                    else
-                        if model.PlotLock(ii)
-                            profiles{ii} = MatVisRender.renderProfileNeighborFromData(model, dsData, ii, plotAvgMode);
-                        else
-                            profiles{ii} = MatVisRender.renderFullProfileNeighborFromData(model, dsData, ii, plotAvgMode);
-                        end
-                    end
-                end
-            end
-            plotWins{ds}.Update(profiles);
+            plotWins{ds}.Update(s.profiles);
         end
 
         % Histogram and contrast fields: active dataset only.
@@ -1052,6 +911,239 @@ fprintf('\n');
                 strcmp(profMgr.fig.Visible, 'on')
             try; profMgr.Refresh(); catch; end
         end
+    end
+
+    % ------------------------------------------------------------------
+    %  Display pipeline
+    %
+    %  computeDatasetDisplay produces everything the windows show for one
+    %  dataset in the model's current state.  doRender calls it and pushes
+    %  the result into the live windows; the video composer calls it (via
+    %  mw.ComputeDisplay) and draws the same arrays into offscreen panels,
+    %  so a recorded movie cannot drift from what is on screen.
+    %
+    %  Flags that are constant across datasets are computed once by
+    %  displayFlags() and passed in — they are deliberately NOT shared
+    %  nested-scope variables, which a re-entrant render would clobber.
+    % ------------------------------------------------------------------
+    function F = displayFlags()
+        F = struct();
+
+        % When a spatial filter is active, plots along the X/Y display dims
+        % overlay the unfiltered and filtered profiles (see profile loop).
+        F.filtOn = MatVisRender.filterActive(model);
+
+        % Whole-dimension RGB colour coding (MeanStretch / MaxStretch): the
+        % raw slices are H×W×N stacks composed via renderStretchImage.
+        F.stretchOn = MatVisRender.stretchActive(model);
+
+        F.rgbOn = MatVisRender.rgbActive(model);
+
+        % Channel / Channel Image equalize each page of the RGB stack onto
+        % [0,1] over its own range before the contrast window is applied, so
+        % those modes work in normalized units.  RGB Global leaves the pages
+        % on the common data scale and stays in data units, like every
+        % non-RGB mode.  See rgbChannelRanges / rgbEqualizing.
+        F.rgbEq = rgbEqualizing();
+
+        % Selected ROIs in the current display plane → traces in the plots
+        sel = model.RoiSelection;
+        sel = sel(ismember(sel, model.VisibleRoiIndices()));
+        nm  = cell(1, numel(sel));
+        for k = 1:numel(sel)
+            nm{k} = model.RoiList(sel(k)).name;
+        end
+        F.selRois  = sel;
+        F.roiNames = nm;
+        F.roiCols  = MatVisRender.roiColors(max(numel(sel), 1));
+    end
+
+    function s = computeDisplayFor(ds)
+        % Public entry point for the video composer.
+        s = computeDatasetDisplay(ds, displayFlags());
+    end
+
+    function [vFull, vZoom] = memoPair(tag, ds, keyF, keyZ, fcnF, fcnZ)
+        % One cache slot each for the full-extent and the zoom-crop version
+        % of a derived array.  When the zoom covers the whole display plane
+        % both keys come out equal and a single array serves both, halving
+        % the work a projection costs.
+        vFull = model.CachedSlice(sprintf('%sF%d', tag, ds), keyF, fcnF);
+        if isequal(keyZ, keyF)
+            vZoom = vFull;
+        else
+            vZoom = model.CachedSlice(sprintf('%sZ%d', tag, ds), keyZ, fcnZ);
+        end
+    end
+
+    function [aFull, aZoom] = cachedAlphaSlices(ds, planF, planZ)
+        % Raw alpha-map slices, sliced by the same plans as the data.  The
+        % alpha contrast window and gamma are applied by the caller, so they
+        % stay outside the cache.
+        aData = model.AlphaMaps{ds};
+        [aFull, aZoom] = memoPair('alp', ds, planF.key, planZ.key, ...
+            @() MatVisRender.rawSliceFromPlan(aData, model, planF), ...
+            @() MatVisRender.rawSliceFromPlan(aData, model, planZ));
+    end
+
+    function s = computeDatasetDisplay(ds, F)
+        xd = model.XDim;
+        yd = model.YDim;
+
+        % The raw slices, the per-channel equalization and the spatial filter
+        % all go through the model's slice cache.  None of them depend on the
+        % contrast window, gamma or the colormap, so dragging those re-colours
+        % arrays already in hand instead of extracting them again — which for
+        % a projection means re-reading the whole stack.
+        dsData = model.Datasets{ds};
+        planF  = MatVisRender.rawFullSlicePlan(model);
+        planZ  = MatVisRender.rawZoomSlicePlan(model);
+        [raw_full, raw_zoom] = memoPair('raw', ds, planF.key, planZ.key, ...
+            @() MatVisRender.rawSliceFromPlan(dsData, model, planF), ...
+            @() MatVisRender.rawSliceFromPlan(dsData, model, planZ));
+
+        model.SetImageData(raw_full, ds);
+        model.SetZoomData(raw_zoom,  ds);
+
+        [cmin_ds, cmax_ds] = getBoundsForDataset(ds, raw_full, raw_zoom);
+        gamma_ds           = getGammaForDataset(ds);
+
+        if F.rgbEq
+            chanRange = rgbChannelRanges(ds, raw_full);
+        else
+            chanRange = [];
+        end
+        % An empty chanRange leaves the data untouched, so the non-equalizing
+        % modes pass through here too and the cached array simply aliases the
+        % raw slice instead of holding a stale copy from an earlier mode.
+        [src_full, src_zoom] = memoPair('src', ds, ...
+            {planF.key, chanRange}, {planZ.key, chanRange}, ...
+            @() MatVisRender.normalizeChannels(raw_full, chanRange), ...
+            @() MatVisRender.normalizeChannels(raw_zoom, chanRange));
+
+        if F.stretchOn
+            % Whole RGB dimension colour-coded into one image; contrast/
+            % gamma/filter are handled inside renderStretchImage.
+            rgb_full = MatVisRender.renderStretchImage(model, src_full, cmin_ds, cmax_ds, gamma_ds);
+            rgb_zoom = MatVisRender.renderStretchImage(model, src_zoom, cmin_ds, cmax_ds, gamma_ds);
+            if withAlpha
+                aLo   = model.AlphaContrastMins(ds);
+                aHi   = model.AlphaContrastMaxs(ds);
+                [aRawF, aRawZ] = cachedAlphaSlices(ds, planF, planZ);
+                aFull = stretchAlpha_(aRawF, aLo, aHi, model.AlphaGamma);
+                aZoom = stretchAlpha_(aRawZ, aLo, aHi, model.AlphaGamma);
+                rgb_full = blendStretchAlpha_(rgb_full, aFull, model.AlphaBgWhite);
+                rgb_zoom = blendStretchAlpha_(rgb_zoom, aZoom, model.AlphaBgWhite);
+            end
+        else
+            % Spatial filter is applied to the displayed image only; contrast
+            % bounds above are computed from the unfiltered data (as in the
+            % original matVis, which kept currImVal before filtering).
+            filtKey = {model.FilterType, model.FilterPar};
+            [disp_full, disp_zoom] = memoPair('dsp', ds, ...
+                {planF.key, chanRange, filtKey}, {planZ.key, chanRange, filtKey}, ...
+                @() MatVisRender.filterImage(src_full, model.FilterType, model.FilterPar), ...
+                @() MatVisRender.filterImage(src_zoom, model.FilterType, model.FilterPar));
+
+            norm_full = MatVisRender.normalizeData(disp_full, cmin_ds, cmax_ds);
+            norm_zoom = MatVisRender.normalizeData(disp_zoom, cmin_ds, cmax_ds);
+
+            if withAlpha
+                % Slice the alpha map exactly like the data (zoom /
+                % projection / flips), then blend against the background.
+                aLo   = model.AlphaContrastMins(ds);
+                aHi   = model.AlphaContrastMaxs(ds);
+                [aRawF, aRawZ] = cachedAlphaSlices(ds, planF, planZ);
+                aFull = MatVisRender.renderAlphaSlice(aRawF, aLo, aHi, model.AlphaGamma);
+                aZoom = MatVisRender.renderAlphaSlice(aRawZ, aLo, aHi, model.AlphaGamma);
+                rgb_full = MatVisRender.composeImageWithAlpha(norm_full, gamma_ds, ...
+                    model.ColormapIdx, aFull, model.AlphaBgWhite);
+                rgb_zoom = MatVisRender.composeImageWithAlpha(norm_zoom, gamma_ds, ...
+                    model.ColormapIdx, aZoom, model.AlphaBgWhite);
+            else
+                rgb_full = MatVisRender.composeImage(norm_full, gamma_ds, model.ColormapIdx);
+                rgb_zoom = MatVisRender.composeImage(norm_zoom, gamma_ds, model.ColormapIdx);
+            end
+        end
+
+        if withAlpha
+            aMapDs = model.AlphaMaps{ds};
+        else
+            aMapDs = [];
+        end
+
+        profiles = cell(1, nDims);
+        for ii = 1:nDims
+            if model.PlotDims(ii)
+                if F.filtOn && (ii == xd || ii == yd) && ~withAlpha && isempty(F.selRois)
+                    % Spatial profile + its filtered counterpart, drawn in
+                    % two colours (matches the original matVis behaviour of
+                    % overlaying filtered/unfiltered along x/y).
+                    [pRaw, pFilt] = MatVisRender.renderFilteredSpatialProfile( ...
+                        model, dsData, ii, model.PlotLock(ii));
+                    profiles{ii} = struct('data', [pRaw, pFilt], ...
+                        'names', {{'unfiltered', 'filtered'}}, ...
+                        'colors', [0 0 0; 0.85 0.33 0.10]);
+                elseif ~isempty(F.selRois) && ii ~= xd && ii ~= yd
+                    % ROI traces: mean over each ROI mask along dim ii
+                    % (alpha-weighted mean + mean-alpha trace with alpha)
+                    if model.PlotLock(ii)
+                        nT = model.ZoomRange(ii, 2) - model.ZoomRange(ii, 1) + 1;
+                    else
+                        nT = model.Size(ii);
+                    end
+                    M = NaN(nT, numel(F.selRois));
+                    A = NaN(nT, numel(F.selRois));
+                    for k = 1:numel(F.selRois)
+                        if withAlpha
+                            [p, a] = MatVisRender.renderRoiProfileAlphaFromData(model, ...
+                                dsData, aMapDs, ii, model.RoiList(F.selRois(k)), model.PlotLock(ii));
+                            if ~isempty(p), M(:, k) = p; A(:, k) = a; end
+                        else
+                            p = MatVisRender.renderRoiProfileFromData(model, dsData, ...
+                                ii, model.RoiList(F.selRois(k)), model.PlotLock(ii));
+                            if ~isempty(p), M(:, k) = p; end
+                        end
+                    end
+                    if withAlpha
+                        profiles{ii} = struct('data', M, ...
+                            'names', {F.roiNames}, 'colors', F.roiCols, 'alpha', A);
+                    else
+                        profiles{ii} = struct('data', M, ...
+                            'names', {F.roiNames}, 'colors', F.roiCols);
+                    end
+                elseif withAlpha
+                    % Alpha-weighted trace sum(data.*alpha)/sum(alpha)
+                    % plus the mean-alpha trace (avgMode 0 = single pixel)
+                    if model.PlotLock(ii)
+                        [p, a] = MatVisRender.renderProfileNeighborAlphaFromData( ...
+                            model, dsData, aMapDs, ii, plotAvgMode);
+                    else
+                        [p, a] = MatVisRender.renderFullProfileNeighborAlphaFromData( ...
+                            model, dsData, aMapDs, ii, plotAvgMode);
+                    end
+                    profiles{ii} = struct('data', p, 'alpha', a);
+                elseif plotAvgMode == 0
+                    if model.PlotLock(ii)
+                        profiles{ii} = MatVisRender.renderProfileFromData(model, dsData, ii);
+                    else
+                        profiles{ii} = MatVisRender.renderFullProfileFromData(model, dsData, ii);
+                    end
+                else
+                    if model.PlotLock(ii)
+                        profiles{ii} = MatVisRender.renderProfileNeighborFromData(model, dsData, ii, plotAvgMode);
+                    else
+                        profiles{ii} = MatVisRender.renderFullProfileNeighborFromData(model, dsData, ii, plotAvgMode);
+                    end
+                end
+            end
+        end
+
+        s = struct('rgbFull', rgb_full, 'rgbZoom', rgb_zoom, ...
+                   'cmin', cmin_ds, 'cmax', cmax_ds, 'gamma', gamma_ds, ...
+                   'chanRange', chanRange, 'srcFull', src_full, ...
+                   'srcZoom', src_zoom, 'rawFull', raw_full, ...
+                   'profiles', {profiles});
     end
 
     % ------------------------------------------------------------------
@@ -2438,6 +2530,11 @@ fprintf('\n');
     function onFigureButtonDown()
         inHist = isMouseInHistogram();
 
+        % Double-click on the Min / gamma / Max captions resets that value
+        if strcmp(fig.SelectionType, 'open') && handleContrastLabelReset()
+            return;
+        end
+
         if strcmp(fig.SelectionType, 'alt')
             if ~inHist, onMainWindowRightClick(); end
             return;
@@ -2671,6 +2768,48 @@ fprintf('\n');
         end
     end
 
+    % Double-click on one of the contrast captions (Min / gamma / Max) resets
+    % that value to its default: the dataset's data range for Min/Max and 1.0
+    % for gamma. uilabel has no mouse callback of its own, so the hit test is
+    % done here against the figure-relative pixel rectangle of each caption.
+    function handled = handleContrastLabelReset()
+        handled = false;
+        figPt   = fig.CurrentPoint;
+        if labelHit(lblContrastMin, figPt)
+            resetNumField(edtContrastMin, model.DataMin);
+            onContrastMinChanged(edtContrastMin);
+            handled = true;
+        elseif labelHit(lblGamma, figPt)
+            resetNumField(edtGamma, 1.0);
+            onGammaEditChanged(edtGamma);
+            handled = true;
+        elseif labelHit(lblContrastMax, figPt)
+            resetNumField(edtContrastMax, model.DataMax);
+            onContrastMaxChanged(edtContrastMax);
+            handled = true;
+        end
+    end
+
+    % Write a default into a numeric field, clamped to its current Limits --
+    % in the equalizing RGB modes those are [0 1], so the data-unit defaults
+    % clamp to the normalized window's own ends.
+    function resetNumField(h, val)
+        lims = h.Limits;
+        h.Value = max(lims(1), min(lims(2), val));
+    end
+
+    function tf = labelHit(h, figPt)
+        tf = false;
+        try
+            if isempty(h) || ~isvalid(h) || ~strcmp(h.Visible, 'on'), return; end
+            p = getpixelposition(h, true);
+            tf = figPt(1) >= p(1) && figPt(1) <= p(1) + p(3) && ...
+                 figPt(2) >= p(2) && figPt(2) <= p(2) + p(4);
+        catch
+            tf = false;
+        end
+    end
+
     function tf = isMouseInHistogram()
         tf = false;
         try
@@ -2843,6 +2982,37 @@ fprintf('\n');
             figure(mw2.fig);
         elseif ~isempty(metadataWin) && isvalid(metadataWin.fig)
             metadataWin.fig.Visible = 'off';
+        end
+    end
+
+    % ------------------------------------------------------------------
+    %  Video generator wiring
+    % ------------------------------------------------------------------
+    function vw = getVideoWin()
+        % Lazy: the generator owns an offscreen figure, so it is built only
+        % when the user asks for it.
+        if isempty(videoWin) || ~isvalid(videoWin.fig)
+            vcbs = struct();
+            vcbs.computeDisplay = @computeDisplayFor;
+            vcbs.liveRender     = renderFcn;
+            vcbs.onHide         = @() set(btnToggleVideo, 'Value', false);
+            videoWin = MatVisVideoWin(model, vcbs);
+            % Park it beside the main window.
+            try
+                mp = fig.Position;
+                videoWin.fig.Position(1:2) = [mp(1) + mp(3) + 20, mp(2)];
+            catch
+            end
+        end
+        vw = videoWin;
+    end
+
+    function toggleVideoWindow(isVisible)
+        if isVisible
+            v = getVideoWin();
+            v.Show();
+        elseif ~isempty(videoWin) && isvalid(videoWin.fig)
+            videoWin.fig.Visible = 'off';
         end
     end
 

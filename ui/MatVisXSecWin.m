@@ -320,7 +320,13 @@ xw.Refresh           = @forceRefresh;
         if ~isequal(sig, P(k).sig)
             P(k).sig = sig;
             data = model.Datasets{dsIdx};
-            raw  = MatVisRender.getRawSliceForDims(model, data, xd, yd, xIdx, yIdx);
+            % The panel repaints whenever contrast, gamma or the colormap
+            % change, but the slice behind it does not: its plan omits them,
+            % so the cache hands back the array it already holds instead of
+            % re-projecting.
+            plan = MatVisRender.rawSlicePlanForDims(model, xd, yd, xIdx, yIdx);
+            raw  = model.CachedSlice(sprintf('xsec%d_%d', dsIdx, k), plan.key, ...
+                @() MatVisRender.rawSliceFromPlan(data, model, plan));
 
             % In RGB mode the pages are equalized exactly as in the main
             % window before the (normalized) contrast window is applied;
@@ -340,8 +346,9 @@ xw.Refresh           = @forceRefresh;
                 % the spatial filter internally (as in the main window).
                 rgb = MatVisRender.renderStretchImage(model, raw, cLo, cHi, gam_);
                 if model.WithAlpha
-                    aRaw = MatVisRender.getRawSliceForDims(model, ...
-                        model.AlphaMaps{dsIdx}, xd, yd, xIdx, yIdx);
+                    aRaw = model.CachedSlice(sprintf('xsecA%d_%d', dsIdx, k), ...
+                        plan.key, @() MatVisRender.rawSliceFromPlan( ...
+                            model.AlphaMaps{dsIdx}, model, plan));
                     if ndims(aRaw) == 3, aRaw = mean(aRaw, 3); end
                     aN = MatVisRender.renderAlphaSlice(aRaw, ...
                         model.AlphaContrastMins(dsIdx), ...
@@ -352,8 +359,9 @@ xw.Refresh           = @forceRefresh;
                 disp_ = MatVisRender.filterImage(raw, model.FilterType, model.FilterPar);
                 nrm   = MatVisRender.normalizeData(disp_, cLo, cHi);
                 if model.WithAlpha
-                    aRaw = MatVisRender.getRawSliceForDims(model, ...
-                        model.AlphaMaps{dsIdx}, xd, yd, xIdx, yIdx);
+                    aRaw = model.CachedSlice(sprintf('xsecA%d_%d', dsIdx, k), ...
+                        plan.key, @() MatVisRender.rawSliceFromPlan( ...
+                            model.AlphaMaps{dsIdx}, model, plan));
                     aN = MatVisRender.renderAlphaSlice(aRaw, ...
                         model.AlphaContrastMins(dsIdx), ...
                         model.AlphaContrastMaxs(dsIdx), model.AlphaGamma);

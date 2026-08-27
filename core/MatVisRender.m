@@ -63,47 +63,91 @@ classdef MatVisRender
 
         function raw = getRawSliceFromData(model, data)
             % Like getRawSlice but uses the provided data array.
-            idx = num2cell(model.CurrPos);
-            xRange = model.ZoomRange(model.XDim, 1) : model.ZoomRange(model.XDim, 2);
-            yRange = model.ZoomRange(model.YDim, 1) : model.ZoomRange(model.YDim, 2);
-            idx{model.XDim} = xRange;
-            idx{model.YDim} = yRange;
-            [doProj, pd] = MatVisRender.projState_(model);
-            [doRGB, rd]  = MatVisRender.rgbState_(model, doProj, pd);
-            doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
-            if doProj
-                idx{pd} = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
-            end
-            if doStretch
-                idx{rd} = MatVisRender.stretchRangeIdx_(model, rd);
-            elseif doRGB
-                idx{rd} = MatVisRender.rgbTriadIdx_(model, rd);
-            end
-            raw = double(data(idx{:}));
-            raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd, doStretch);
+            raw = MatVisRender.rawSliceFromPlan(data, model, ...
+                MatVisRender.rawZoomSlicePlan(model));
         end
 
         function raw = getRawFullSliceFromData(model, data)
+            raw = MatVisRender.rawSliceFromPlan(data, model, ...
+                MatVisRender.rawFullSlicePlan(model));
+        end
+
+        % ------------------------------------------------------------------
+        %  Slice plans
+        %
+        %  A plan is the complete recipe for one raw slice: which elements to
+        %  read, and how to reduce and orient them.  It carries a KEY that
+        %  identifies the resulting array, so a caller can tell whether a
+        %  slice it already holds is still valid before paying for a new one
+        %  (see MatVisModel.CachedSlice).
+        %
+        %  Contrast bounds, gamma, the colormap and the RGB stretch colours
+        %  are deliberately absent from a plan: they change the colours a
+        %  slice is drawn in, never its pixel values, so adjusting them must
+        %  never cost a re-slice — which for a projection over a large stack
+        %  means re-reading the whole stack.
+        % ------------------------------------------------------------------
+        function plan = rawZoomSlicePlan(model)
+            % Plan for the zoom crop of the model's own display plane.
+            xIdx = model.ZoomRange(model.XDim, 1) : model.ZoomRange(model.XDim, 2);
+            yIdx = model.ZoomRange(model.YDim, 1) : model.ZoomRange(model.YDim, 2);
+            plan = MatVisRender.rawSlicePlan(model, model.XDim, model.YDim, ...
+                xIdx, yIdx, false, true);
+        end
+
+        function plan = rawFullSlicePlan(model)
+            % Plan for the full extent of the model's own display plane.
+            plan = MatVisRender.rawSlicePlan(model, model.XDim, model.YDim, ...
+                [], [], true, true);
+        end
+
+        function plan = rawSlicePlan(model, xDim, yDim, xIdx, yIdx, projLock, doFlip)
+            % rawSlicePlan  Index recipe + cache key for one raw slice.
+            %   xIdx / yIdx : index vectors along xDim / yDim; [] = full extent
+            %   projLock    : true  -> projection spans ProjZoomLock's range
+            %                 false -> projection always spans the zoom interval
+            %   doFlip      : apply model.FlipX / FlipY (only for its own plane)
             idx = num2cell(model.CurrPos);
-            idx{model.XDim} = 1 : model.Size(model.XDim);
-            idx{model.YDim} = 1 : model.Size(model.YDim);
-            [doProj, pd] = MatVisRender.projState_(model);
-            [doRGB, rd]  = MatVisRender.rgbState_(model, doProj, pd);
+            idx{xDim} = MatVisRender.canonIdx_(xIdx, model.Size(xDim));
+            idx{yDim} = MatVisRender.canonIdx_(yIdx, model.Size(yDim));
+            [doProj, pd] = MatVisRender.projStateFor_(model, xDim, yDim);
+            [doRGB,  rd] = MatVisRender.rgbStateFor_(model, xDim, yDim, doProj, pd);
             doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
             if doProj
-                if model.ProjZoomLock
-                    idx{pd} = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
+                if projLock && ~model.ProjZoomLock
+                    pIdx = [];                  % whole extent
                 else
-                    idx{pd} = 1 : model.Size(pd);
+                    pIdx = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
                 end
+                idx{pd} = MatVisRender.canonIdx_(pIdx, model.Size(pd));
             end
             if doStretch
-                idx{rd} = MatVisRender.stretchRangeIdx_(model, rd);
+                idx{rd} = MatVisRender.canonIdx_( ...
+                    MatVisRender.stretchRangeIdx_(model, rd), model.Size(rd));
             elseif doRGB
                 idx{rd} = MatVisRender.rgbTriadIdx_(model, rd);
             end
-            raw = double(data(idx{:}));
-            raw = MatVisRender.finalizeSlice_(raw, model, doProj, pd, doRGB, rd, doStretch);
+
+            flipX = doFlip && model.FlipX;
+            flipY = doFlip && model.FlipY;
+            plan  = struct('idx', {idx}, 'xDim', xDim, 'yDim', yDim, ...
+                'doProj', doProj, 'pd', pd, 'doRGB', doRGB, 'rd', rd, ...
+                'doStretch', doStretch, 'doFlip', doFlip, 'key', {[]});
+            % Everything the resulting values depend on.  idx covers CurrPos,
+            % the zoom ranges and the RGB / stretch index selection; because
+            % full-extent ranges are canonicalized to ':', the plans for the
+            % full image and for an un-zoomed crop come out with equal keys
+            % and the same slice serves both.
+            plan.key = {idx, model.ProjFun, ...
+                [xDim, yDim, doProj, pd, doRGB, rd, doStretch, flipX, flipY]};
+        end
+
+        function raw = rawSliceFromPlan(data, model, plan)
+            % rawSliceFromPlan  Execute a plan against one data array.
+            raw = MatVisRender.finalizeSliceDims_( ...
+                MatVisRender.subarray_(data, plan.idx), model, ...
+                plan.xDim, plan.yDim, plan.doProj, plan.pd, ...
+                plan.doRGB, plan.rd, plan.doStretch, plan.doFlip);
         end
 
         % ------------------------------------------------------------------
@@ -121,28 +165,16 @@ classdef MatVisRender
             % getRawSliceForDims  2-D slice spanned by an arbitrary dim pair.
             %   xIdx / yIdx : index vectors along xDim / yDim (e.g. lo:hi)
             % Returns rows = yDim, cols = xDim (H×W×N in RGB modes).
-            idx = num2cell(model.CurrPos);
-            idx{xDim} = xIdx;
-            idx{yDim} = yIdx;
-            [doProj, pd] = MatVisRender.projStateFor_(model, xDim, yDim);
-            [doRGB,  rd] = MatVisRender.rgbStateFor_(model, xDim, yDim, doProj, pd);
-            doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
-            if doProj
-                if model.ProjZoomLock
-                    idx{pd} = model.ZoomRange(pd, 1) : model.ZoomRange(pd, 2);
-                else
-                    idx{pd} = 1 : model.Size(pd);
-                end
-            end
-            if doStretch
-                idx{rd} = MatVisRender.stretchRangeIdx_(model, rd);
-            elseif doRGB
-                idx{rd} = MatVisRender.rgbTriadIdx_(model, rd);
-            end
+            raw = MatVisRender.rawSliceFromPlan(data, model, ...
+                MatVisRender.rawSlicePlanForDims(model, xDim, yDim, xIdx, yIdx));
+        end
+
+        function plan = rawSlicePlanForDims(model, xDim, yDim, xIdx, yIdx)
+            % Plan behind getRawSliceForDims — exposed so the cross-section
+            % window can skip re-slicing a panel whose content is unchanged.
             doFlip = (xDim == model.XDim && yDim == model.YDim);
-            raw = double(data(idx{:}));
-            raw = MatVisRender.finalizeSliceDims_(raw, model, xDim, yDim, ...
-                doProj, pd, doRGB, rd, doStretch, doFlip);
+            plan   = MatVisRender.rawSlicePlan(model, xDim, yDim, ...
+                xIdx, yIdx, true, doFlip);
         end
 
         function vol = getRawVolumeForDims(model, data, dims3, idxCells)
@@ -930,9 +962,162 @@ classdef MatVisRender
             if nargin < 1, n = 256; end
             cmap = MatVisRender.buildRainbow(n, 3, 1);
         end
+
+        % ==================================================================
+        %  Overlay painting
+        %
+        %  ROI and profile overlays are drawn identically in every panel that
+        %  shows a slice — the image window, the zoom window and the offscreen
+        %  panels of the video composer.  The panels differ only in where the
+        %  panel's (1,1) pixel sits in data coordinates, so that offset is the
+        %  single parameter.  Keeping one implementation is what stops the
+        %  movie from quietly falling behind the on-screen look.
+        %
+        %    origin : [xOff yOff] subtracted from data coords before drawing
+        %             full-image panel -> [0 0]
+        %             zoom panel       -> model.ZoomRange([XDim YDim], 1)' - 1
+        %    h      : handle pool returned by the previous call; pass [] the
+        %             first time.  Always assign the return value back.
+        % ==================================================================
+        function origin = panelOrigin(model, isZoomPanel)
+            % Data-coordinate offset of a panel's first pixel (see above).
+            if nargin < 2 || ~isZoomPanel
+                origin = [0 0];
+            else
+                origin = model.ZoomRange([model.XDim, model.YDim], 1)' - 1;
+            end
+        end
+
+        function h = paintRoiOverlay(ax, model, origin, h)
+            if nargin < 4 || isempty(h)
+                h = struct('lines', gobjects(1, 0), 'texts', gobjects(1, 0));
+            end
+            visIdx = model.VisibleRoiIndices();
+            n      = numel(visIdx);
+
+            % Grow / shrink the handle pools
+            for k = numel(h.lines)+1 : n
+                h.lines(k) = line(ax, NaN, NaN, 'HitTest', 'off', 'PickableParts', 'none');
+                h.texts(k) = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
+            end
+            for k = n+1 : numel(h.lines)
+                if isgraphics(h.lines(k)), delete(h.lines(k)); end
+                if isgraphics(h.texts(k)), delete(h.texts(k)); end
+            end
+            h.lines = h.lines(1:n);
+            h.texts = h.texts(1:n);
+            if n == 0, return; end
+
+            sel    = model.RoiSelection;
+            selVis = visIdx(ismember(visIdx, sel));
+            cols   = MatVisRender.roiColors(max(numel(selVis), 1));
+            lw     = max(model.RoiLineWidth, 0.5);
+
+            for k = 1:n
+                idx = visIdx(k);
+                c   = model.RoiList(idx).corners;
+                cx  = c(1,:) - origin(1);
+                cy  = c(2,:) - origin(2);
+                selPos = find(selVis == idx, 1);
+                if ~isempty(selPos)
+                    col = cols(selPos, :);  w = lw;             fw = 'bold';
+                else
+                    col = [1 1 1];          w = max(lw/2, 0.5);  fw = 'normal';
+                end
+                set(h.lines(k), 'XData', cx, 'YData', cy, ...
+                    'Color', col, 'LineWidth', w, 'LineStyle', model.RoiLineStyle, ...
+                    'Visible', 'on');
+                set(h.texts(k), 'Position', [max(cx) + 1, mean(cy)], ...
+                    'String', model.RoiList(idx).name, 'Color', col, ...
+                    'FontWeight', fw, 'Visible', MatVisRender.onOff_(model.RoiShowNames));
+            end
+        end
+
+        function h = paintProfileOverlay(ax, model, origin, h)
+            if nargin < 4 || isempty(h)
+                h = struct('lines', gobjects(1, 0), 'bands', gobjects(1, 0), ...
+                           'arrows', gobjects(1, 0), 'texts', gobjects(1, 0));
+            end
+            visIdx = model.VisibleProfileIndices();
+            n      = numel(visIdx);
+
+            for k = numel(h.lines)+1 : n
+                h.lines(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'LineWidth', 1.5);
+                h.bands(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'LineStyle', ':', 'LineWidth', 1);
+                h.arrows(k) = line(ax, NaN, NaN, 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'LineWidth', 1.5);
+                h.texts(k)  = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
+            end
+            for k = n+1 : numel(h.lines)
+                if isgraphics(h.lines(k)),  delete(h.lines(k));  end
+                if isgraphics(h.bands(k)),  delete(h.bands(k));  end
+                if isgraphics(h.arrows(k)), delete(h.arrows(k)); end
+                if isgraphics(h.texts(k)),  delete(h.texts(k));  end
+            end
+            h.lines  = h.lines(1:n);
+            h.bands  = h.bands(1:n);
+            h.arrows = h.arrows(1:n);
+            h.texts  = h.texts(1:n);
+            if n == 0, return; end
+
+            sel    = model.ProfileSelection;
+            selVis = visIdx(ismember(visIdx, sel));
+            cols   = MatVisRender.roiColors(max(numel(selVis), 1));
+
+            for k = 1:n
+                idx  = visIdx(k);
+                prof = model.ProfileList(idx);
+                sp   = prof.smoothedPoints;
+                [bx, by, axx, ayy] = MatVisRender.profileBandArrow_(model, sp);
+                spx = sp(1,:) - origin(1);   spy = sp(2,:) - origin(2);
+                bx  = bx  - origin(1);       by  = by  - origin(2);
+                axx = axx - origin(1);       ayy = ayy - origin(2);
+                selPos = find(selVis == idx, 1);
+                if ~isempty(selPos)
+                    col = cols(selPos, :);  w = 2;  fw = 'bold';
+                else
+                    col = [1 1 1];          w = 1;  fw = 'normal';
+                end
+                set(h.lines(k),  'XData', spx, 'YData', spy, ...
+                    'Color', col, 'LineWidth', w, 'Visible', 'on');
+                set(h.bands(k),  'XData', bx, 'YData', by, 'Color', col, ...
+                    'Visible', 'on');
+                set(h.arrows(k), 'XData', axx, 'YData', ayy, 'Color', col, ...
+                    'Visible', MatVisRender.onOff_(model.ProfileShowDir));
+                set(h.texts(k),  'Position', [spx(end) + 1, spy(end)], ...
+                    'String', prof.name, 'Color', col, 'FontWeight', fw, ...
+                    'Visible', MatVisRender.onOff_(model.ProfileShowNames));
+            end
+        end
     end
 
     methods (Static, Access = private)
+        function s = onOff_(tf)
+            if tf, s = 'on'; else, s = 'off'; end
+        end
+
+        function [bx, by, axx, ayy] = profileBandArrow_(model, sp)
+            % Width-band outline and direction arrow (data coords) for a path SP.
+            M   = MatVisModel.ProfileSampleMatrix(sp, model.ProfileWidth);
+            s1x = M(1, :, 1);    s1y = M(1, :, 2);
+            s2x = M(end, :, 1);  s2y = M(end, :, 2);
+            bx  = [s1x, fliplr(s2x), s1x(1)];
+            by  = [s1y, fliplr(s2y), s1y(1)];
+            p2  = sp(:, end);
+            p1  = sp(:, max(1, end-1));
+            d   = p2 - p1;  nd = hypot(d(1), d(2));  if nd == 0, nd = 1; end
+            d   = d / nd;   perp = [-d(2); d(1)];
+            aLen = max(3, model.ProfileWidth * 0.7);
+            b1  = p2 - aLen*d + aLen*0.4*perp;
+            b2  = p2 - aLen*d - aLen*0.4*perp;
+            axx = [b1(1), p2(1), b2(1)];
+            ayy = [b1(2), p2(2), b2(2)];
+        end
+
         function [wp, hp] = axesDataAreaPixels(ax)
             % Pixel size of the area the axes has for data, before the aspect
             % ratio shrinks the plot box inside it.  The units are read, not
@@ -1071,12 +1256,6 @@ classdef MatVisRender
                     ~(doProj && rd == pd);
         end
 
-        function raw = finalizeSlice_(data, model, doProj, pd, doRGB, rd, doStretch)
-            if nargin < 7, doStretch = false; end
-            raw = MatVisRender.finalizeSliceDims_(data, model, model.XDim, model.YDim, ...
-                doProj, pd, doRGB, rd, doStretch, true);
-        end
-
         function raw = finalizeSliceDims_(data, model, xDim, yDim, doProj, pd, doRGB, rd, doStretch, doFlip)
             % Reduce extracted data to a 2-D slice or, in RGB mode, an
             % H×W×nCh array, then apply axis flips.
@@ -1088,7 +1267,11 @@ classdef MatVisRender
                 raw = MatVisRender.finalize2D(data, doProj, model.ProjFun, ...
                     pd, xDim, yDim);
             else
-                nd  = ndims(data);
+                % rd can sit past ndims(data) when the RGB dimension is the
+                % trailing one and its selection left a singleton, which
+                % MATLAB drops from the size; the index cell has to reach it
+                % anyway, or the dims in between end up indexed with [].
+                nd  = max(ndims(data), rd);
                 if doStretch
                     nCh = size(data, rd);
                 else
@@ -1109,6 +1292,28 @@ classdef MatVisRender
             if doFlip
                 if model.FlipX, raw = fliplr(raw); end
                 if model.FlipY, raw = flipud(raw); end
+            end
+        end
+
+        function idx = canonIdx_(idx, n)
+            % Canonical form of one dimension's index vector: ':' whenever it
+            % selects the whole dimension in order.  Keeps slice-plan keys
+            % comparable across callers that spell the full extent differently
+            % ([] vs 1:n), and lets subarray_ skip the copy altogether.
+            if isempty(idx) || (numel(idx) == n && isequal(idx(:)', 1:n))
+                idx = ':';
+            end
+        end
+
+        function sub = subarray_(data, idx)
+            % Extract the elements a plan asks for.  An all-':' index would
+            % still make MATLAB materialize a full copy, so in that case the
+            % array is passed through untouched — for a projection over a
+            % large stack that copy is the single most expensive step.
+            if all(cellfun(@(c) isequal(c, ':'), idx))
+                sub = data;
+            else
+                sub = data(idx{:});
             end
         end
 
@@ -1147,6 +1352,9 @@ classdef MatVisRender
         function raw = finalize2D(data, doProj, projFun, projDim, xDim, yDim)
             % Collapse projection and orient data to [H x W].
             % Handles both scalar-reduction projections and the tile layout.
+            % DATA arrives in its stored type; the cast to double happens on
+            % the 2-D result, so an integer stack is never expanded into a
+            % full double copy of itself first.
             if doProj && strcmp(projFun, 'tile')
                 raw = MatVisRender.applyTile(data, projDim, xDim, yDim);
             else
@@ -1158,16 +1366,20 @@ classdef MatVisRender
                     raw = raw.';
                 end
             end
+            raw = double(raw);
         end
 
         function out = applyProjFun(data, fun, dim)
             % Reduce DATA along DIM using the named function.
+            % max/min are exact in any numeric type and mean accumulates in
+            % double when asked to, so those three run on the stored type.
+            % std/var accept only floating point, so they still cast first.
             switch fun
                 case 'max',  out = max(data,  [], dim);
                 case 'min',  out = min(data,  [], dim);
-                case 'mean', out = mean(data,     dim);
-                case 'std',  out = std(data,  0,  dim);
-                case 'var',  out = var(data,  0,  dim);
+                case 'mean', out = mean(data,     dim, 'double');
+                case 'std',  out = std(double(data),  0,  dim);
+                case 'var',  out = var(double(data),  0,  dim);
                 otherwise,   out = max(data,  [], dim);
             end
         end
@@ -1185,7 +1397,7 @@ classdef MatVisRender
 
             tiled = NaN(H * nR, W * nC);
 
-            nd  = ndims(data);
+            nd  = max(ndims(data), projDim);   % see finalizeSliceDims_
             for k = 1:N
                 % Extract frame k along projDim; keep X and Y as full ranges.
                 idx        = repmat({':'}, 1, nd);

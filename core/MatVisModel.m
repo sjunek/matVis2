@@ -137,6 +137,8 @@ classdef MatVisModel < handle
     properties (Access = private, Transient)
         LastImageDatas_  % 1×K cell — cached 2-D image slice per dataset (Image mode)
         LastZoomDatas_   % 1×K cell — cached zoom crop per dataset (Zoom mode)
+        SliceCacheKeys_  % struct — one field per cache tag: key of the held value
+        SliceCacheVals_  % struct — one field per cache tag: the held value
     end
 
     events
@@ -210,6 +212,7 @@ classdef MatVisModel < handle
             obj.LastImageDatas_ = cell(1, K);
             obj.LastZoomDatas_  = cell(1, K);
             obj.DatasetGammas   = ones(1, K);
+            obj.ClearSliceCache();
 
             % Shared navigation defaults
             s = refSz;
@@ -328,6 +331,12 @@ classdef MatVisModel < handle
     %  Setters
     % ------------------------------------------------------------------
     methods
+        function set.Datasets(obj, value)
+            % Replacing the data arrays invalidates every held slice.
+            obj.Datasets = value;
+            obj.ClearSliceCache();
+        end
+
         function set.ActiveDataset(obj, value)
             validateattributes(value, {'numeric'}, ...
                 {'scalar', 'integer', 'positive'}, 'MatVisModel.set.ActiveDataset', 'ActiveDataset');
@@ -622,6 +631,39 @@ classdef MatVisModel < handle
             obj.AlphaMaxs         = aMaxs;
             obj.AlphaContrastMins = aMins;
             obj.AlphaContrastMaxs = aMaxs;
+            obj.ClearSliceCache();
+        end
+
+        % ------------------------------------------------------------------
+        %  Derived-slice cache
+        %
+        %  Extracting what one window shows — above all a projection, which
+        %  reads a whole stack — costs far more than mapping the result to
+        %  colours.  Contrast bounds, gamma and the colormap change only the
+        %  mapping, so the render loop asks for its arrays through this cache
+        %  and pays for the extraction again only when something that alters
+        %  the values themselves has moved (see MatVisRender.rawSlicePlan).
+        % ------------------------------------------------------------------
+        function val = CachedSlice(obj, tag, key, fcn)
+            % CachedSlice  Value held under TAG, recomputed only when KEY differs.
+            %   tag : cache slot name (a valid struct field name)
+            %   key : anything isequal-comparable that identifies the value
+            %   fcn : @() ... producing the value on a miss
+            if isfield(obj.SliceCacheKeys_, tag) && ...
+                    isequal(obj.SliceCacheKeys_.(tag), key)
+                val = obj.SliceCacheVals_.(tag);
+                return;
+            end
+            val = fcn();
+            obj.SliceCacheKeys_.(tag) = key;
+            obj.SliceCacheVals_.(tag) = val;
+        end
+
+        function ClearSliceCache(obj)
+            % Drop every held slice.  Called whenever the underlying arrays
+            % are replaced, since cache keys describe the indexing only.
+            obj.SliceCacheKeys_ = struct();
+            obj.SliceCacheVals_ = struct();
         end
 
         function SetImageData(obj, imgData, dsIdx)
