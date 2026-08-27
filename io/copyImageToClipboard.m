@@ -42,11 +42,13 @@ try
     dobj = System.Windows.Forms.DataObject();
     dobj.SetData('DeviceIndependentBitmap', ms);
     % copy = true hands the data to the OS clipboard so it outlives this
-    % call; the retry count covers the window in which another process still
-    % holds the clipboard open.  MS is deliberately not disposed: the
+    % call.  The 20 x 100 ms retry rides out another process holding the
+    % clipboard open — without it "Requested Clipboard operation did not
+    % succeed" showed up now and then, which would silently demote the copy
+    % to the metafile fallback.  MS is deliberately not disposed: the
     % clipboard reads from the stream after this returns, and disposing it
     % made the paste come out empty.
-    System.Windows.Forms.Clipboard.SetDataObject(dobj, true, 10, 80);
+    System.Windows.Forms.Clipboard.SetDataObject(dobj, true, 20, 100);
     ok = true;
 catch me
     ok  = false;

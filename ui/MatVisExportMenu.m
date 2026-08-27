@@ -12,6 +12,9 @@ function MatVisExportMenu(fig, ax, exportSpec, defaultVarName, defaultFileName)
 %   The window is a separate uifigure rather than a uiconfirm dialog: an
 %   in-figure dialog is clipped by, and cannot be dragged out of, the window
 %   it belongs to, so on a small image window its buttons were unreachable.
+%   Being a window of its own, it has to be closed deliberately: it closes
+%   itself once an action has completed, and it is taken down with FIG when
+%   that panel (or the whole GUI) is closed.
 %
 %   For panels that show an image, two content modes are offered:
 %     'pixels'  (default) – the displayed image array itself, one file pixel
@@ -89,12 +92,25 @@ uibutton(btnRow, 'push', 'Text', 'Save as image...', 'FontSize', 11, ...
     'ButtonPushedFcn', @(~,~) onSave());
 uibutton(btnRow, 'push', 'Text', 'To workspace...', 'FontSize', 11, ...
     'ButtonPushedFcn', @(~,~) onWorkspace());
-uibutton(btnRow, 'push', 'Text', 'Close', 'FontSize', 11, ...
+uibutton(btnRow, 'push', 'Text', 'Cancel', 'FontSize', 11, ...
     'ButtonPushedFcn', @(~,~) delete(dlg));
+
+% This window is not a child of the panel it exports, so nothing would take
+% it down with the panel — closing the main GUI (which deletes the image /
+% zoom / plot figures) used to leave it orphaned on screen.  The listener is
+% parked in the dialog's UserData so it dies with the dialog and cannot fire
+% on a stale handle.
+dlg.UserData = addlistener(fig, 'ObjectBeingDestroyed', @(~,~) finish());
 
 dlg.Visible = 'on';
 
 % -------------------------------------------------------------------------
+    function finish()
+        % One export per window: the dialog closes as soon as an action has
+        % completed, and on the way out when its panel disappears.
+        if isvalid(dlg), delete(dlg); end
+    end
+
     function mode = contentMode()
         mode = 'panel';
         if hasImage && isgraphics(dropMode), mode = dropMode.Value; end
@@ -110,7 +126,7 @@ dlg.Visible = 'on';
                 if done
                     [h, w, ~] = size(imgHandle.CData);
                     fprintf('[matVis2] Copied %d x %d image to the clipboard\n', w, h);
-                    return;
+                    finish();  return;
                 end
                 % No bitmap clipboard (non-Windows, .NET missing, clipboard
                 % held by another process): the rendered path at least gets
@@ -119,6 +135,7 @@ dlg.Visible = 'on';
             end
             copygraphics(ax, 'ContentType', 'image', 'BackgroundColor', 'current');
             fprintf('[matVis2] Copied the panel to the clipboard\n');
+            finish();
         catch me
             uialert(dlg, sprintf('Copy failed: %s', me.message), 'Copy');
         end
@@ -151,6 +168,7 @@ dlg.Visible = 'on';
                     'Resolution', get(0, 'ScreenPixelsPerInch'));
                 fprintf('[matVis2] Saved the panel to "%s"\n', outFile);
             end
+            finish();
         catch me
             uialert(dlg, sprintf('Save failed: %s', me.message), 'Save as image');
         end
@@ -178,6 +196,7 @@ dlg.Visible = 'on';
                 made{i} = vn;
             end
             fprintf('[matVis2] Exported to workspace: %s\n', strjoin(made, ', '));
+            finish();
         catch me
             uialert(dlg, sprintf('Export failed: %s', me.message), 'Export to workspace');
         end
