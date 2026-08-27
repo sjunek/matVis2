@@ -852,11 +852,12 @@ fprintf('\n');
         % raw slices below are H×W×N stacks composed via renderStretchImage.
         stretchOn = MatVisRender.stretchActive(model);
 
-        % In RGB mode each page of the stack is first equalized onto [0,1]
-        % over the range picked by the contrast mode (Global / Channel /
-        % Channel Image), so the contrast window below is a fraction of that
-        % range rather than a data value.  See rgbChannelRanges.
-        rgbOn = MatVisRender.rgbActive(model);
+        % Channel / Channel Image equalize each page of the RGB stack onto
+        % [0,1] over its own range before the contrast window is applied, so
+        % those modes work in normalized units.  RGB Global leaves the pages
+        % on the common data scale and stays in data units, like every
+        % non-RGB mode.  See rgbChannelRanges / rgbEqualizing.
+        rgbEq = rgbEqualizing();
 
         rf_ads = [];
         rz_ads = [];
@@ -875,7 +876,7 @@ fprintf('\n');
             cmax_arr(ds) = cmax_ds;
             gamma_ds     = getGammaForDataset(ds);
 
-            if rgbOn
+            if rgbEq
                 chanRange = rgbChannelRanges(ds, raw_full);
                 src_full  = MatVisRender.normalizeChannels(raw_full, chanRange);
                 src_zoom  = MatVisRender.normalizeChannels(raw_zoom, chanRange);
@@ -1237,11 +1238,23 @@ fprintf('\n');
         dmax = model.AllDataMaxs(ds);
 
         if MatVisRender.rgbActive(model)
-            % Every RGB mode uses one manually adjustable window, expressed
-            % as a fraction of the (per-channel equalized) range — the mode
-            % itself only picks that equalization (see rgbChannelRanges).
-            cmin = model.RGBContrastRange(1);
-            cmax = model.RGBContrastRange(2);
+            % Every RGB mode uses one manually adjustable window, stored as a
+            % fraction in model.RGBContrastRange.  The equalizing modes report
+            % it as that fraction (their channels have been mapped onto [0,1]
+            % individually); Global reports it in data units over the common
+            % range it scales every channel by.
+            w = model.RGBContrastRange;
+            if rgbEqualizing()
+                cmin = w(1);
+                cmax = w(2);
+            else
+                [g0, g1] = rgbGlobalRange(ds);
+                cmin = g0 + w(1) * (g1 - g0);
+                cmax = g0 + w(2) * (g1 - g0);
+                if cmin >= cmax
+                    cmax = cmin + max(1, abs(cmin) * eps * 1e6);
+                end
+            end
             return;
         end
 
@@ -1323,6 +1336,63 @@ fprintf('\n');
         if ~(pLow < pHigh), pLow = 0; pHigh = 1; end
     end
 
+    function tf = rgbEqualizing()
+        % True in the RGB modes that equalize the channels page by page.
+        % Those are the only ones whose contrast window and histogram live on
+        % the normalized [0,1] axis: once each channel has been mapped onto
+        % its own range, one data value no longer means the same thing in all
+        % three.  RGB Global leaves the channels on the common data scale, so
+        % it keeps data units like every non-RGB mode.
+        tf = MatVisRender.rgbActive(model) && ...
+             ismember(model.ContrastMode, {'Channel', 'ChannelImage'});
+    end
+
+    function [g0, g1] = rgbGlobalRange(ds)
+        % The common range RGB Global scales all channels by: the dataset's
+        % range, or the global percentile cutoffs when those are set.
+        [pLow, pHigh] = percentileCutoffs();
+        if pLow > 0 || pHigh < 1
+            [g0, g1] = applyGlobalPercentile(ds, pLow, pHigh);
+        else
+            g0 = model.AllDataMins(ds);
+            g1 = model.AllDataMaxs(ds);
+        end
+        if ~(g1 > g0), g1 = g0 + 1; end
+    end
+
+    function w = rgbWindowFraction(v)
+        % Map a value read from the contrast field / histogram axis onto the
+        % stored window fraction, in whichever units that axis is showing.
+        if rgbEqualizing()
+            w = v;
+        else
+            [g0, g1] = rgbGlobalRange(model.ActiveDataset);
+            w = (v - g0) / (g1 - g0);
+        end
+        w = max(0, min(1, w));
+    end
+
+    function applyRGBWindowEdge(v, which_)
+        % Move one edge of the RGB contrast window to the displayed value v,
+        % read in whatever units the contrast field / histogram axis is using.
+        % An inverted entry is dropped (as in Manual mode) and the widgets are
+        % put back in step with the stored window, so a rejected edit snaps
+        % back without costing a render — this also runs per mouse-move while
+        % dragging a histogram line.
+        w    = model.RGBContrastRange;
+        wNew = rgbWindowFraction(v);
+        if (which_ == 1 && wNew < w(2)) || (which_ == 2 && wNew > w(1))
+            w(which_) = wNew;
+            if ~isequal(w, model.RGBContrastRange)
+                model.RGBContrastRange = w;
+                doRender();
+                return;
+            end
+        end
+        [c0, c1] = getBoundsForDataset(model.ActiveDataset, [], []);
+        updateContrastDisplay(c0, c1);
+    end
+
     function cr = rgbChannelRanges(ds, raw_full)
         % N×2 data-unit [lo hi] per page of the current RGB stack: the range
         % each channel is equalized to [0,1] over before the contrast window
@@ -1357,12 +1427,7 @@ fprintf('\n');
                 cr = MatVisRender.channelRangeFromStack(raw_full, pLow, pHigh);
 
             otherwise   % Global (and any non-RGB mode that slipped through)
-                if pLow > 0 || pHigh < 1
-                    [g0, g1] = applyGlobalPercentile(ds, pLow, pHigh);
-                else
-                    g0 = model.AllDataMins(ds);
-                    g1 = model.AllDataMaxs(ds);
-                end
+                [g0, g1] = rgbGlobalRange(ds);
                 cr = repmat([g0, g1], nCh, 1);
         end
 
@@ -1472,11 +1537,13 @@ fprintf('\n');
         if isempty(rawFull) || ~isnumeric(rawFull), return; end
         ensureHistObjects();
 
-        % In RGB mode rawFull/rawZoom arrive per-channel equalized on [0,1],
-        % so the axis switches to those units (see applyHistAxisUnits).
+        % In the equalizing RGB modes rawFull/rawZoom arrive per-channel
+        % normalized on [0,1], so the axis switches to those units; RGB
+        % Global passes raw data and keeps them (see applyHistAxisUnits).
         rgbHist   = MatVisRender.rgbActive(model);
+        normHist  = rgbEqualizing();
         triadHist = MatVisRender.rgbTriadActive(model) && size(rawFull, 3) == 3;
-        applyHistAxisUnits(rgbHist);
+        applyHistAxisUnits(normHist);
 
         histXMin = edtHistMin.Value;
         histXMax = edtHistMax.Value;
@@ -1486,11 +1553,12 @@ fprintf('\n');
         centers  = binEdges(1:end-1) + bw/2;
 
         % Cache key includes active dataset index.  Note: pass native-type
-        % data directly — double() would copy the whole dataset.  The
-        % whole-dataset histogram is meaningless once the channels have been
-        % equalized, so it is skipped in RGB mode.
+        % data directly — double() would copy the whole dataset.  Skipped when
+        % the channels have been equalized (the dataset's own values are no
+        % longer on the axis) and in the triad modes, where the three channel
+        % histograms replace the grey trio anyway.
         ads = model.ActiveDataset;
-        if rgbHist
+        if normHist || triadHist
             normG = [];
         else
             cacheKey = [ads, histXMin, histXMax];
@@ -1633,9 +1701,10 @@ fprintf('\n');
         % on a uifigure widget is a roundtrip to the web renderer.
         ads     = model.ActiveDataset;
 
-        if MatVisRender.rgbActive(model)
+        if rgbEqualizing()
             % Normalized window, always adjustable; the percentile cutoffs
             % shape the per-channel equalization instead of the window.
+            % (RGB Global falls through to the data-unit path below.)
             setNumField(edtContrastMin, [0, 1], cmin);
             setNumField(edtContrastMax, [0, 1], cmax);
             setIfChanged(edtGamma, 'Value', getGammaForDataset(ads));
@@ -1662,11 +1731,15 @@ fprintf('\n');
         setNumField(edtContrastMax, [safeMin, safeMax], cmax);
         setIfChanged(edtGamma,      'Value', getGammaForDataset(ads));
 
-        isManual = strcmp(model.ContrastMode, 'Manual');
+        % RGB Global reaches here too: its window is in data units, but —
+        % unlike non-RGB Global — it stays adjustable, since the RGB modes
+        % have no separate Manual button.
+        isManual = strcmp(model.ContrastMode, 'Manual') || ...
+                   MatVisRender.rgbActive(model);
         setEnableIfChanged(edtContrastMin, isManual);
         setEnableIfChanged(edtContrastMax, isManual);
-        setEnableIfChanged(edtPercLow,     ~isManual);
-        setEnableIfChanged(edtPercHigh,    ~isManual);
+        setEnableIfChanged(edtPercLow,  ~strcmp(model.ContrastMode, 'Manual'));
+        setEnableIfChanged(edtPercHigh, ~strcmp(model.ContrastMode, 'Manual'));
 
         if withAlpha
             setIfChanged(edtAlphaMin,   'Value', model.AlphaContrastMins(ads));
@@ -1717,9 +1790,10 @@ fprintf('\n');
     function updateHistLimitsForActiveDataset()
         ads  = model.ActiveDataset;
 
-        if MatVisRender.rgbActive(model)
-            % RGB mode keeps the histogram and the contrast window on the
-            % normalized [0,1] axis, whichever dataset is active.
+        if rgbEqualizing()
+            % The equalizing RGB modes keep the histogram and the contrast
+            % window on the normalized [0,1] axis, whichever dataset is
+            % active.  RGB Global uses the data-unit limits below.
             setNumField(edtHistMin, [0, 1], 0);
             setNumField(edtHistMax, [0, 1], 1);
             setNumField(edtContrastMin, [0, 1], model.RGBContrastRange(1));
@@ -2234,12 +2308,7 @@ fprintf('\n');
 
     function onContrastMinChanged(src)
         if MatVisRender.rgbActive(model)
-            % Normalized RGB window; reject an inverted entry like Manual does.
-            if src.Value < model.RGBContrastRange(2)
-                model.RGBContrastRange = [src.Value, model.RGBContrastRange(2)];
-                doRender();
-            end
-            src.Value = model.RGBContrastRange(1);
+            applyRGBWindowEdge(src.Value, 1);
             return;
         end
         if strcmp(model.ContrastMode, 'Manual')
@@ -2259,11 +2328,7 @@ fprintf('\n');
 
     function onContrastMaxChanged(src)
         if MatVisRender.rgbActive(model)
-            if src.Value > model.RGBContrastRange(1)
-                model.RGBContrastRange = [model.RGBContrastRange(1), src.Value];
-                doRender();
-            end
-            src.Value = model.RGBContrastRange(2);
+            applyRGBWindowEdge(src.Value, 2);
             return;
         end
         if strcmp(model.ContrastMode, 'Manual')
@@ -2446,9 +2511,11 @@ fprintf('\n');
         try
             ads      = model.ActiveDataset;
             rgbDrag  = MatVisRender.rgbActive(model);
-            if rgbDrag
-                dmin_ads = 0;   % RGB window lives on the normalized axis
+            if rgbEqualizing()
+                dmin_ads = 0;   % equalized channels: normalized axis
                 dmax_ads = 1;
+            elseif rgbDrag
+                [dmin_ads, dmax_ads] = rgbGlobalRange(ads);
             else
                 dmin_ads = model.AllDataMins(ads);
                 dmax_ads = model.AllDataMaxs(ads);
@@ -2458,11 +2525,7 @@ fprintf('\n');
             switch dragTarget
                 case 'MinLine'
                     if rgbDrag
-                        if xDrag < model.RGBContrastRange(2)
-                            model.RGBContrastRange = [xDrag, model.RGBContrastRange(2)];
-                            edtContrastMin.Value   = model.RGBContrastRange(1);
-                            doRender();
-                        end
+                        applyRGBWindowEdge(xDrag, 1);
                     elseif strcmp(model.ContrastMode, 'Manual') && xDrag < model.ContrastMax
                         model.ContrastMin    = xDrag;
                         edtContrastMin.Value = xDrag;
@@ -2470,11 +2533,7 @@ fprintf('\n');
                     end
                 case 'MaxLine'
                     if rgbDrag
-                        if xDrag > model.RGBContrastRange(1)
-                            model.RGBContrastRange = [model.RGBContrastRange(1), xDrag];
-                            edtContrastMax.Value   = model.RGBContrastRange(2);
-                            doRender();
-                        end
+                        applyRGBWindowEdge(xDrag, 2);
                     elseif strcmp(model.ContrastMode, 'Manual') && xDrag > model.ContrastMin
                         model.ContrastMax    = xDrag;
                         edtContrastMax.Value = xDrag;
