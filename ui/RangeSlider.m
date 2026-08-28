@@ -2,7 +2,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 % RangeSlider  Custom combined position + zoom-range slider component.
 %
 %   Visual layout (two rows per dimension):
-%     Row 1: [DimLabel] [PosEdit] [← | track | →] [PlayBtns] [chk] [lock]
+%     Row 1: [DimLabel] [PosSpinner] [track] [PlayBtns] [chk] [lock]
 %     Row 2:            [ZoomMin] [–] [ZoomMax] [: N]
 %
 %   Mouse interactions on the track:
@@ -14,7 +14,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 %     Over zoom edges          → 'fleur'      (requested: light-blue  cross)
 %     Over zoom body           → 'hand'       (requested: light-blue  hand)
 %
-%   Step buttons (← / →):
+%   Position spinner (▲ / ▼ arrows on the position box):
 %     Click        → position ±1
 %     Ctrl+click   → position ±10
 %
@@ -67,7 +67,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
     properties (Access = private, Transient, NonCopyable)
         Grid_          matlab.ui.container.GridLayout
         LabelComp_     matlab.ui.control.Label
-        EditPos_       matlab.ui.control.NumericEditField
+        EditPos_       matlab.ui.control.Spinner
         TrackAx_       matlab.ui.control.UIAxes
         BgPatch_       matlab.graphics.primitive.Patch
         ZoomPatch_     matlab.graphics.primitive.Patch
@@ -89,17 +89,29 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
         LockIconState_ (1,1) double = -1  % last PlotLock state pushed as icon (-1 = never)
     end
 
+    properties (Constant, Access = private)
+        % Vertical extents (axes units, 0..1) of the slider graphics inside the
+        % track axes. Both spans are 70 % of the axes height they used to fill,
+        % centred, so the drawn slider is 30 % thinner than its row while the
+        % spinner / play / lock buttons keep the full row height.
+        ZoomBarY_ = [0.15 0.85]   % blue zoom-range bar
+        BgTrackY_ = [0.22 0.78]   % grey full-range groove underneath it
+    end
+
     % ==================================================================
     methods (Access = protected)
 
         function setup(obj)
             % Grid: 2 rows × 6 cols
-            % [label(50) | posEdit(38) | trackArea(1x) | play(84) | chk(20) | lock(24)]
-            % Row 1 = 32 px so the track axes is tall enough for a visible zoom bar
-            % (~29 px at 0.9 fill). Controls are vertically centred to stay 26 px.
+            % [label(38) | posSpinner(62) | trackAxes(1x) | play(84) | chk(20) | lock(24)]
+            % Row 1 = 22 px: the position spinner, play buttons and lock button
+            % fill the row. The track axes' LooseInset is zeroed so the axes'
+            % inner box fills its cell too; the zoom bar itself is drawn at 70 %
+            % of that height (see ZoomBarY_ above), i.e. thinner than the
+            % surrounding controls.
             obj.Grid_ = uigridlayout(obj, [2 6]);
-            obj.Grid_.ColumnWidth   = {38, 38, '1x', 84, 20, 24};
-            obj.Grid_.RowHeight     = {32, 18};
+            obj.Grid_.ColumnWidth   = {38, 62, '1x', 84, 20, 24};
+            obj.Grid_.RowHeight     = {22, 20};
             obj.Grid_.Padding       = [2 1 2 1];
             obj.Grid_.ColumnSpacing = 3;
             obj.Grid_.RowSpacing    = 2;
@@ -114,49 +126,27 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             obj.LabelComp_.Layout.Row    = 1;
             obj.LabelComp_.Layout.Column = 1;
 
-            % -- Position edit (vertically centred → 26 px in 32 px row) --
-            posContainer = uigridlayout(obj.Grid_, [3, 1]);
-            posContainer.Layout.Row    = 1;
-            posContainer.Layout.Column = 2;
-            posContainer.RowHeight     = {'1x', 26, '1x'};
-            posContainer.ColumnWidth   = {'1x'};
-            posContainer.Padding       = [0 0 0 0];
-            posContainer.RowSpacing    = 0;
-
-            obj.EditPos_ = uieditfield(posContainer, 'numeric', ...
+            % -- Position spinner (fills the row) --
+            % The ▲/▼ arrows step the position by 1 (Ctrl+click: 10); they
+            % replace the former ◀/▶ buttons that flanked the track.
+            obj.EditPos_ = uispinner(obj.Grid_, ...
                 'Value', 1, ...
                 'Limits', [1 2], ...
-                'RoundFractionalValues', true, ...
+                'Step', 1, ...
+                'RoundFractionalValues', 'on', ...
+                'ValueDisplayFormat', '%d', ...
                 'HorizontalAlignment', 'center', ...
                 'FontSize', 11, ...
-                'Tooltip', 'Current frame — type a number to jump directly');
-            obj.EditPos_.Layout.Row    = 2;
-            obj.EditPos_.Layout.Column = 1;
+                'Tooltip', sprintf(['Current frame — type a number to jump directly\n' ...
+                                    'Arrows: step 1 frame (Ctrl+click: 10 frames)']));
+            obj.EditPos_.Layout.Row    = 1;
+            obj.EditPos_.Layout.Column = 2;
             obj.EditPos_.ValueChangedFcn = @obj.onEditPosChanged_;
 
-            % -- Track area: [← step btn | axes | step → btn] --
-            % 3-row container: axes spans all rows (32 px); step buttons are
-            % centred in row 2 (26 px) so they stay visually 26 px tall.
-            trackContainer = uigridlayout(obj.Grid_, [3, 3]);
-            trackContainer.Layout.Row    = 1;
-            trackContainer.Layout.Column = 3;
-            trackContainer.ColumnWidth   = {16, '1x', 16};
-            trackContainer.RowHeight     = {'1x', 26, '1x'};
-            trackContainer.Padding       = [0 0 0 0];
-            trackContainer.ColumnSpacing = 1;
-            trackContainer.RowSpacing    = 0;
-
-            btnStepLeft = uibutton(trackContainer, 'push', ...
-                'Text', '', ...
-                'Icon', RangeSlider.makeTriangleIcon_(12, 'left'), ...
-                'Tooltip', sprintf('Step back 1 frame\nCtrl+click: step back 10 frames'));
-            btnStepLeft.Layout.Row    = 2;
-            btnStepLeft.Layout.Column = 1;
-            btnStepLeft.ButtonPushedFcn = @obj.onStepLeft_;
-
-            obj.TrackAx_ = uiaxes(trackContainer);
-            obj.TrackAx_.Layout.Row    = [1, 3];
-            obj.TrackAx_.Layout.Column = 2;
+            % -- Track axes (spans the full row height) --
+            obj.TrackAx_ = uiaxes(obj.Grid_);
+            obj.TrackAx_.Layout.Row    = 1;
+            obj.TrackAx_.Layout.Column = 3;
             obj.TrackAx_.XLim    = [0 1];
             obj.TrackAx_.YLim    = [0 1];
             obj.TrackAx_.XTick   = [];
@@ -171,23 +161,23 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             % not hide and that steals vertical space. Setting Toolbar = []
             % removes it (also works on older releases).
             try; obj.TrackAx_.Toolbar = []; catch; end
-
-            btnStepRight = uibutton(trackContainer, 'push', ...
-                'Text', '', ...
-                'Icon', RangeSlider.makeTriangleIcon_(12, 'right'), ...
-                'Tooltip', sprintf('Step forward 1 frame\nCtrl+click: step forward 10 frames'));
-            btnStepRight.Layout.Row    = 2;
-            btnStepRight.Layout.Column = 3;
-            btnStepRight.ButtonPushedFcn = @obj.onStepRight_;
+            % uiaxes keeps a 5 px LooseInset on every side (space for labels we
+            % do not draw), which would make the drawn track 10 px shorter than
+            % its grid row. Zero it so the axes' inner box fills the cell and
+            % the zoom bar's height is exactly the row height.
+            try; obj.TrackAx_.LooseInset = [0 0 0 0]; catch; end
 
             % Patches (drawn after axes is parented)
+            bgY  = obj.BgTrackY_;
+            barY = obj.ZoomBarY_;
+
             obj.BgPatch_ = patch(obj.TrackAx_, ...
-                [0 1 1 0], [0.1 0.1 0.9 0.9], ...
+                [0 1 1 0], bgY([1 1 2 2]), ...
                 [0.78 0.78 0.78], 'EdgeColor', 'none', 'PickableParts', 'all');
             obj.BgPatch_.ButtonDownFcn = @obj.onTrackClick_;
 
             obj.ZoomPatch_ = patch(obj.TrackAx_, ...
-                [0 1 1 0], [0.05 0.05 0.95 0.95], ...
+                [0 1 1 0], barY([1 1 2 2]), ...
                 [0.45 0.65 1.0], ...
                 'EdgeColor', [0.2 0.4 0.8], 'LineWidth', 1.0, ...
                 'PickableParts', 'all');
@@ -214,24 +204,16 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             % RGB stretch bar: rainbow gradient over the frames folded into
             % the whole-dimension stretch. Also visual only (see above).
             obj.RGBStretchImg_ = image(obj.TrackAx_, ...
-                'XData', [0 1], 'YData', [0.05 0.95], ...
+                'XData', [0 1], 'YData', barY, ...
                 'CData', reshape([0.1 0.1 0.95], [1 1 3]), ...
                 'HitTest', 'off', 'PickableParts', 'none', 'Visible', 'off');
 
             obj.TrackAx_.ButtonDownFcn = @obj.onTrackClick_;
 
-            % -- Play buttons (vertically centred → 26 px in 32 px row) --
-            playContainer = uigridlayout(obj.Grid_, [3, 1]);
-            playContainer.Layout.Row    = 1;
-            playContainer.Layout.Column = 4;
-            playContainer.RowHeight     = {'1x', 26, '1x'};
-            playContainer.ColumnWidth   = {'1x'};
-            playContainer.Padding       = [0 0 0 0];
-            playContainer.RowSpacing    = 0;
-
-            playGrid = uigridlayout(playContainer, [1, 3]);
-            playGrid.Layout.Row    = 2;
-            playGrid.Layout.Column = 1;
+            % -- Play buttons (fill the row) --
+            playGrid = uigridlayout(obj.Grid_, [1, 3]);
+            playGrid.Layout.Row    = 1;
+            playGrid.Layout.Column = 4;
             playGrid.RowHeight     = {'1x'};
             playGrid.ColumnWidth   = {'1x', '1x', '1x'};
             playGrid.Padding       = [0 0 0 0];
@@ -272,23 +254,15 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             obj.ChkPlot_.Layout.Column = 5;
             obj.ChkPlot_.ValueChangedFcn = @obj.onPlotToggled_;
 
-            % -- Plot zoom lock button (col 6, vertically centred → 26 px) --
-            lockContainer = uigridlayout(obj.Grid_, [3, 1]);
-            lockContainer.Layout.Row    = 1;
-            lockContainer.Layout.Column = 6;
-            lockContainer.RowHeight     = {'1x', 26, '1x'};
-            lockContainer.ColumnWidth   = {'1x'};
-            lockContainer.Padding       = [0 0 0 0];
-            lockContainer.RowSpacing    = 0;
-
-            obj.BtnPlotLock_ = uibutton(lockContainer, 'state', ...
+            % -- Plot zoom lock button (col 6, fills the row) --
+            obj.BtnPlotLock_ = uibutton(obj.Grid_, 'state', ...
                 'Text', '', ...
                 'Icon', RangeSlider.makeOpenLockIcon_(14), ...
                 'Value', false, ...
                 'Tooltip', sprintf(['Lock profile-plot X-axis to current zoom range.\n' ...
                     'When active, the plot shows only data within the zoom interval.']));
-            obj.BtnPlotLock_.Layout.Row    = 2;
-            obj.BtnPlotLock_.Layout.Column = 1;
+            obj.BtnPlotLock_.Layout.Row    = 1;
+            obj.BtnPlotLock_.Layout.Column = 6;
             obj.BtnPlotLock_.ValueChangedFcn = @obj.onPlotLockToggled_;
 
             % -- Row 2: zoom min/max edits + length, centred under track (col 3) --
@@ -495,8 +469,17 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 
         % ---- Edit / zoom callbacks -----------------------------------
 
-        function onEditPosChanged_(obj, src, ~)
-            obj.Value = round(src.Value);
+        function onEditPosChanged_(obj, src, evt)
+            newVal = round(src.Value);
+            % A spinner arrow always delivers exactly ±Step (=±1).  When Ctrl
+            % is held at that moment, widen it to ±10 — the behaviour the old
+            % ◀/▶ track buttons had.  Typed values are taken at face value.
+            prev = [];
+            try; prev = round(evt.PreviousValue); catch; end
+            if ~isempty(prev) && abs(newVal - prev) == 1
+                newVal = prev + (newVal - prev) * obj.ctrlStep_();
+            end
+            obj.Value = max(obj.Limits(1), min(obj.Limits(2), newVal));
             notify(obj, 'ValueChanged');
         end
 
@@ -516,25 +499,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             end
         end
 
-        % ---- Step buttons -------------------------------------------
-
-        function onStepLeft_(obj, ~, ~)
-            step = obj.ctrlStep_();
-            newVal = max(obj.Limits(1), obj.Value - step);
-            if newVal ~= obj.Value
-                obj.Value = newVal;
-                notify(obj, 'ValueChanged');
-            end
-        end
-
-        function onStepRight_(obj, ~, ~)
-            step = obj.ctrlStep_();
-            newVal = min(obj.Limits(2), obj.Value + step);
-            if newVal ~= obj.Value
-                obj.Value = newVal;
-                notify(obj, 'ValueChanged');
-            end
-        end
+        % ---- Step size ----------------------------------------------
 
         function s = ctrlStep_(obj)
             fig = ancestor(obj, 'figure');
@@ -865,33 +830,6 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             openEnd = max(sT+sw, round(sz * 0.32));
             img(sT:openEnd, sR-sw+1:sR,  :) = fg;  % right wall (short — open)
         end
-
-        function img = makeTriangleIcon_(sz, direction)
-            % Filled triangle, 3-channel RGB. direction: 'left' | 'right'
-            bg = 0.94;  fg = 0.25;
-            img = bg * ones(sz, sz, 3);
-
-            pad = max(1, round(sz * 0.15));
-            rLo = pad;  rHi = sz - pad + 1;
-            cLo = pad;  cHi = sz - pad + 1;
-
-            for r = rLo:rHi
-                t  = (r - rLo) / max(rHi - rLo, 1);
-                ww = 1 - abs(2*t - 1);
-                if strcmp(direction, 'right')
-                    c1 = cLo;
-                    c2 = round(cLo + ww * (cHi - cLo));
-                else
-                    c2 = cHi;
-                    c1 = round(cHi - ww * (cHi - cLo));
-                end
-                c1 = max(1, c1);  c2 = min(sz, c2);
-                if c2 >= c1
-                    img(r, c1:c2, :) = fg;
-                end
-            end
-        end
-
 
         function hoverDispatch_(fig, ~)
             % Cursor-only hover handler. Active when no drag is in progress.

@@ -43,7 +43,7 @@ fig = uifigure('Name', baseTitle, 'Resize', 'off', 'Visible', 'off', 'HandleVisi
 mvTiming_.labels{end+1} = 'uifigure created'; mvTiming_.times(end+1) = toc(mvT0_);
 
 % Layout parameters
-rowH_slider     = 54;
+rowH_slider     = 46;   % RangeSlider: 22 (track/controls) + 20 (zoom edits) + spacing/padding
 rowH_dimSel     = 32;
 % contrastGrid: 9 rows {24,8,24,6,22,104,25,6,25} = 244 content + 8 spacings = 252
 % (+31 when an alpha channel adds rows 10/11: 6px spacer + 25px controls)
@@ -54,13 +54,14 @@ rowH_bottom     = 56;   % two rows of buttons, see "Bottom controls"
 % block can grow into that without making the window taller.
 rowH_bottomBudget = 40;
 rowH_plotBtns   = 32;   % height of the plot-tools button row inside posPanel
-rowH_playSpeed  = 26;   % height of the play-speed control row inside posPanel
+rowH_playSpeed  = 22;   % height of the play-speed control row inside posPanel
+rowH_playSpeedGap = 2;  % gap between the last slider and the play-speed row
 rowH_spacing    = 10;
 panelTitleH     = 36;
 panelPadV       = 5;
 figWidth        = 436;
 
-posPanelH      = nDims * rowH_slider + max(0, nDims-1) * rowH_spacing + rowH_playSpeed + rowH_spacing + rowH_plotBtns + rowH_spacing + 2*panelPadV + panelTitleH;
+posPanelH      = nDims * rowH_slider + max(0, nDims-1) * rowH_spacing + rowH_playSpeedGap + rowH_playSpeed + rowH_spacing + rowH_plotBtns + 2*panelPadV + panelTitleH;
 imagePanelH    = 3*rowH_dimSel + 4 + 2*4 + panelTitleH;   % three rows (dims/proj + RGB/aspect + filter)
 contrastPanelH = rowH_contrast + 2*panelPadV + panelTitleH;
 bottomH        = rowH_bottom;
@@ -82,8 +83,12 @@ posPanel = uipanel(grid, 'Title', 'Position and plot controls', ...
 posPanel.Layout.Row    = 1;
 posPanel.Layout.Column = 1;
 
-posGrid = uigridlayout(posPanel, [nDims + 2, 1]);
-posGrid.RowHeight   = [repmat({rowH_slider}, 1, nDims), {rowH_playSpeed}, {rowH_plotBtns}];
+% Rows 1..nDims-1 are single sliders; row nDims holds the last slider together
+% with the play-speed row right underneath it (small gap), so the play-speed
+% control reads as belonging to the play buttons above it.
+posGrid = uigridlayout(posPanel, [nDims + 1, 1]);
+posGrid.RowHeight   = [repmat({rowH_slider}, 1, nDims - 1), ...
+                       {rowH_slider + rowH_playSpeedGap + rowH_playSpeed}, {rowH_plotBtns}];
 posGrid.ColumnWidth = {'1x'};
 posGrid.Padding     = [5 5 5 5];
 posGrid.RowSpacing  = rowH_spacing;
@@ -104,12 +109,26 @@ lastBoundsAds = [];          % [cmin cmax] of active dataset from last render
 histObjs = [];               % persistent histogram graphics objects (see ensureHistObjects)
 suppressModeRender = false;  % guards the ContrastMode coercion in syncContrastModeButtons
 
+% Sub-grid for the last posGrid row: last slider on top, play-speed row below.
+lastRowGrid = uigridlayout(posGrid, [2, 1]);
+lastRowGrid.Layout.Row    = nDims;
+lastRowGrid.Layout.Column = 1;
+lastRowGrid.RowHeight     = {rowH_slider, rowH_playSpeed};
+lastRowGrid.ColumnWidth   = {'1x'};
+lastRowGrid.Padding       = [0 0 0 0];
+lastRowGrid.RowSpacing    = rowH_playSpeedGap;
+
 for d = 1:nDims
     nSteps   = model.Size(d);
     dimLabel = getDimLabel(model, d);
 
-    rs = RangeSlider(posGrid);
-    rs.Layout.Row    = d;
+    if d < nDims
+        rs = RangeSlider(posGrid);
+        rs.Layout.Row = d;
+    else
+        rs = RangeSlider(lastRowGrid);
+        rs.Layout.Row = 1;
+    end
     rs.Layout.Column = 1;
     rs.Limits   = [1, nSteps];
     rs.DimLabel = dimLabel;
@@ -138,17 +157,28 @@ plotFixXLimits = [1, max(model.Size)];
 plotFixY      = false;
 plotFixYLimits = [0, 1];   % overwritten on first fix-Y activation
 
-% --- Play-speed control row (above the Y-scale / Export plot buttons) -------
-%  Controls sit on the left; the live playback framerate is shown to their right.
-playSpeedRow = uigridlayout(posGrid, [1, 3]);
-playSpeedRow.Layout.Row    = nDims + 1;
+% --- Play-speed control row (directly below the last slider) ----------------
+%  The columns mirror the RangeSlider column layout; label, speed field and
+%  framerate readout sit side by side in a sub-grid spanning columns 4..6, i.e.
+%  from the left edge of the first play button to the right edge of the lock
+%  button, split into three equal shares.
+playSpeedRow = uigridlayout(lastRowGrid, [1, 6]);
+playSpeedRow.Layout.Row    = 2;
 playSpeedRow.Layout.Column = 1;
-playSpeedRow.ColumnWidth   = {75, 60, '1x'};
+playSpeedRow.ColumnWidth   = {38, 62, '1x', 84, 20, 24};
 playSpeedRow.RowHeight     = {'1x'};
-playSpeedRow.Padding       = [2 1 2 1];
-playSpeedRow.ColumnSpacing = 6;
+playSpeedRow.Padding       = [2 0 2 0];
+playSpeedRow.ColumnSpacing = 3;
 
-lblPlaySpeed = uilabel(playSpeedRow, 'Text', 'Play speed:', ...
+speedGrid = uigridlayout(playSpeedRow, [1, 3]);
+speedGrid.Layout.Row    = 1;
+speedGrid.Layout.Column = [4 6];
+speedGrid.ColumnWidth   = {'1x', '1x', '1x'};
+speedGrid.RowHeight     = {'1x'};
+speedGrid.Padding       = [0 0 0 0];
+speedGrid.ColumnSpacing = 0;
+
+lblPlaySpeed = uilabel(speedGrid, 'Text', 'Speed', ...
     'HorizontalAlignment', 'left', 'FontSize', 11);
 lblPlaySpeed.Layout.Column = 1;
 
@@ -156,21 +186,23 @@ playSpeedTooltip = sprintf(['Speed of playback (live framerate shown to the righ
     '1 = native speed (no pause, no skipping).\n' ...
     'Values > 1: faster playback by skipping frames (advance round(value) frames).\n' ...
     'Values between 0 and 1: slower playback by introducing pauses.']);
-edtPlaySpeed = uieditfield(playSpeedRow, 'numeric', ...
+edtPlaySpeed = uieditfield(speedGrid, 'numeric', ...
     'Value', 1, 'Limits', [0.1, 50], 'RoundFractionalValues', false, ...
     'ValueDisplayFormat', '%g', 'FontSize', 11, ...
     'Tooltip', playSpeedTooltip, ...
     'ValueChangedFcn', @(~, ~) onPlaySpeedChanged());
 edtPlaySpeed.Layout.Column = 2;
 
-lblFrameRate = uilabel(playSpeedRow, 'Text', '', ...
-    'HorizontalAlignment', 'left', 'FontSize', 11, ...
+% The readout shares a third of the row, so it shows the framerate itself and
+% keeps the skip / pause detail in its tooltip (see updateFrameRateDisplay).
+lblFrameRate = uilabel(speedGrid, 'Text', '', ...
+    'HorizontalAlignment', 'left', 'FontSize', 9, ...
     'Tag', 'matVisFrameRate', ...
     'Tooltip', 'Measured playback framerate');
 lblFrameRate.Layout.Column = 3;
 
 plotBtnRow = uigridlayout(posGrid, [1, 5]);
-plotBtnRow.Layout.Row    = nDims + 2;
+plotBtnRow.Layout.Row    = nDims + 1;
 plotBtnRow.Layout.Column = 1;
 plotBtnRow.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x'};
 plotBtnRow.RowHeight     = {'1x'};
@@ -755,7 +787,7 @@ try
 catch
 end
 
-posPanelH      = nDims*rowH_slider + max(0,nDims-1)*rowH_spacing + rowH_playSpeed + rowH_spacing + rowH_plotBtns + rowH_spacing + 2*panelPadV + actualTitleH;
+posPanelH      = nDims*rowH_slider + max(0,nDims-1)*rowH_spacing + rowH_playSpeedGap + rowH_playSpeed + rowH_spacing + rowH_plotBtns + 2*panelPadV + actualTitleH;
 contrastPanelH = rowH_contrast + 2*panelPadV + actualTitleH;
 applyPanelHeights();
 
@@ -820,19 +852,25 @@ fprintf('\n');
     end
 
     function onMainWindowRightClick()
+        % Raise this instance's windows.  Only windows that are currently shown
+        % may be raised: figure() on a hidden figure would make it visible again
+        % and thereby override the window toggle buttons.
         for ds = 1:nDatasets
-            try; if isvalid(imageWins{ds}.fig), figure(imageWins{ds}.fig); end; catch; end
-            try; if isvalid(zoomWins{ds}.fig),  figure(zoomWins{ds}.fig);  end; catch; end
-            try; if isvalid(plotWins{ds}.fig),  figure(plotWins{ds}.fig);  end; catch; end
-            try
-                if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig) && ...
-                        strcmp(xsecWins{ds}.fig.Visible, 'on')
-                    figure(xsecWins{ds}.fig);
-                end
-            catch
-            end
+            raiseIfVisible(imageWins{ds});
+            raiseIfVisible(zoomWins{ds});
+            raiseIfVisible(plotWins{ds});
+            raiseIfVisible(xsecWins{ds});
         end
         figure(fig);
+    end
+
+    function raiseIfVisible(win)
+        try
+            if ~isempty(win) && isvalid(win.fig) && strcmp(win.fig.Visible, 'on')
+                figure(win.fig);
+            end
+        catch
+        end
     end
 
     % ------------------------------------------------------------------
@@ -2161,7 +2199,8 @@ fprintf('\n');
             isPlayingAny = any(cellfun(@(tt) ~isempty(tt) && isvalid(tt), playTimers));
             % Histogram/contrast fields were skipped during playback — refresh once
             if ~isPlayingAny
-                lblFrameRate.Text = '';   % clear the framerate readout
+                lblFrameRate.Text    = '';   % clear the framerate readout
+                lblFrameRate.Tooltip = 'Measured playback framerate';
                 doRender();
             end
         end
@@ -2232,12 +2271,13 @@ fprintf('\n');
         if ~any(~isnan(d)), return; end
         fps = 1 / mean(d, 'omitnan');
         [inc, ps] = playSpeedParams();
+        lblFrameRate.Text = sprintf('%.1f fps', fps);
         if inc > 1
-            lblFrameRate.Text = sprintf('%.1f fps  (skip every %d frames)', fps, inc);
+            lblFrameRate.Tooltip = sprintf('%.1f fps (skip every %d frames)', fps, inc);
         elseif ps > 0
-            lblFrameRate.Text = sprintf('%.1f fps  (%.2g s pause)', fps, ps);
+            lblFrameRate.Tooltip = sprintf('%.1f fps (%.2g s pause)', fps, ps);
         else
-            lblFrameRate.Text = sprintf('%.1f fps', fps);
+            lblFrameRate.Tooltip = sprintf('%.1f fps', fps);
         end
     end
 

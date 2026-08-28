@@ -106,7 +106,9 @@ dropProjDim = uidropdown(cProjD, 'Tooltip', 'Dimension to project along', 'FontS
 btnProjLock = uibutton(cProjD, 'state', ...
     'Text', '', 'Icon', dimSelOpenLockIcon_(14), 'Value', false, ...
     'Tooltip', sprintf(['Lock projection to zoom range of selected dimension.\n' ...
-        'When active, only data within the zoom interval is projected.']));
+        'When active, only data within the zoom interval is projected.\n' ...
+        'Can be set before switching the projection on, so a projection over ' ...
+        'a large dimension never has to be computed in full.']));
 
 cFilt = subcell_(grid, 2, 3, {LBL, '1x'});
 uilabel(cFilt, 'Text', 'Filt:', 'HorizontalAlignment', 'right', 'FontSize', FONT_LBL);
@@ -183,7 +185,7 @@ dropX.ValueChangedFcn       = @(src, ~) onDropXChanged(src, model, dropY, dropPr
 dropY.ValueChangedFcn       = @(src, ~) onDropYChanged(src, model, dropX, dropProjDim, dropRGBDim, renderFcn);
 btnFlipX.ValueChangedFcn    = @(src, ~) onFlipChanged(src, 'X', model, renderFcn);
 btnFlipY.ValueChangedFcn    = @(src, ~) onFlipChanged(src, 'Y', model, renderFcn);
-dropProjFun.ValueChangedFcn  = @(src, ~) onProjFunChanged(src, model, dropProjDim, btnProjLock, dropRGBDim, renderFcn);
+dropProjFun.ValueChangedFcn  = @(src, ~) onProjFunChanged(src, model, dropProjDim, dropRGBDim, renderFcn);
 dropProjDim.ValueChangedFcn  = @(src, ~) onProjDimChanged(src, model, dropRGBDim, renderFcn);
 btnProjLock.ValueChangedFcn  = @(src, ~) onProjLockChanged(src, model, renderFcn);
 dropRGBDim.ValueChangedFcn   = @(src, ~) onRGBDimChanged(src, model, dropProjDim, renderFcn);
@@ -211,8 +213,9 @@ ds.dropFilter   = dropFilter;
 ds.editFilterPar = editFilterPar;
 ds.Update       = @() updateFromModel(model, dropX, dropY, btnFlipX, btnFlipY, dropProjDim, dropRGBDim, btnAspect, btnWinScale);
 
-% Sync lock button enable state with initial ProjFun
-btnProjLock.Enable = onoff_(~strcmp(model.ProjFun, 'none'));
+% The projection zoom lock stays enabled even with ProjFun == 'none', so it can
+% be armed before the projection is switched on (avoids projecting a large
+% dimension in full first).
 
 end % MatVisDimSelector
 
@@ -332,14 +335,13 @@ end
 
 % ---------------------------------------------------------------------------
 
-function onProjFunChanged(dropProjFun, model, dropProjDim, btnProjLock, dropRGBDim, renderFcn)
+function onProjFunChanged(dropProjFun, model, dropProjDim, dropRGBDim, renderFcn)
 model.ProjFun = dropProjFun.Value;
 % Activating/deactivating the projection changes which dims the RGB
 % dropdown may offer.
 populateRGBDimDropdown(model, dropRGBDim);
 active = ~strcmp(model.ProjFun, 'none');
 dropProjDim.Enable = onoff_(active && model.ProjDim > 0);
-btnProjLock.Enable = onoff_(active);
 renderFcn();
 end
 
