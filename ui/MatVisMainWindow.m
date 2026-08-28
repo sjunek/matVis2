@@ -1831,6 +1831,13 @@ fprintf('\n');
         % on a uifigure widget is a roundtrip to the web renderer.
         ads     = model.ActiveDataset;
 
+        % Integer data: let the fields themselves reject fractional input, so
+        % a typed value snaps the same way a dragged histogram line does.
+        % Cleared again in the RGB modes, whose window is fractional.
+        intScale = integerContrastScale();
+        setIfChanged(edtContrastMin, 'RoundFractionalValues', intScale);
+        setIfChanged(edtContrastMax, 'RoundFractionalValues', intScale);
+
         if rgbEqualizing()
             % Normalized window, always adjustable; the percentile cutoffs
             % shape the per-channel equalization instead of the window.
@@ -1857,8 +1864,8 @@ fprintf('\n');
         safeMax = max(cmax, dmax) + padded;
         % setNumField, not setIfChanged: coming back from RGB mode the field
         % still holds a [0,1] window that the data-unit limits may exclude.
-        setNumField(edtContrastMin, [safeMin, safeMax], cmin);
-        setNumField(edtContrastMax, [safeMin, safeMax], cmax);
+        setNumField(edtContrastMin, [safeMin, safeMax], snapContrastValue(cmin));
+        setNumField(edtContrastMax, [safeMin, safeMax], snapContrastValue(cmax));
         setIfChanged(edtGamma,      'Value', getGammaForDataset(ads));
 
         % RGB Global reaches here too: its window is in data units, but —
@@ -1888,6 +1895,22 @@ fprintf('\n');
         if logical(h.Enable) ~= logical(tf)
             h.Enable = tf;
         end
+    end
+
+    % True when the active dataset's contrast window lives on an integer
+    % scale.  There is nothing between two neighbouring values of an integer
+    % image, so a fractional bound is meaningless -- it only makes the
+    % readout noisy while the histogram's Min/Max lines are dragged.  The RGB
+    % modes are excluded: the equalizing ones put the window on the
+    % normalized [0,1] axis, and RGB Global stores it as a fraction of the
+    % channel range, so neither round-trips through whole numbers.
+    function tf = integerContrastScale()
+        tf = ~MatVisRender.rgbActive(model) && ...
+             isinteger(model.Datasets{model.ActiveDataset});
+    end
+
+    function v = snapContrastValue(v)
+        if integerContrastScale(), v = round(v); end
     end
 
     function g = getGammaForDataset(ds)
@@ -2464,7 +2487,7 @@ fprintf('\n');
             return;
         end
         if strcmp(model.ContrastMode, 'Manual')
-            newMin = src.Value;
+            newMin = snapContrastValue(src.Value);
             if ~model.ContrastLocked
                 model.DatasetContrastMins(model.ActiveDataset) = newMin;
                 model.ContrastMin = newMin;
@@ -2484,7 +2507,7 @@ fprintf('\n');
             return;
         end
         if strcmp(model.ContrastMode, 'Manual')
-            newMax = src.Value;
+            newMax = snapContrastValue(src.Value);
             if ~model.ContrastLocked
                 model.DatasetContrastMaxs(model.ActiveDataset) = newMax;
                 model.ContrastMax = newMax;
@@ -2679,6 +2702,7 @@ fprintf('\n');
             end
             curPt = histAx.CurrentPoint(1, 1:2);
             xDrag = max(min(curPt(1), dmax_ads), dmin_ads);
+            xDrag = snapContrastValue(xDrag);
             switch dragTarget
                 case 'MinLine'
                     if rgbDrag
