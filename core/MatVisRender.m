@@ -460,6 +460,35 @@ classdef MatVisRender
             end
         end
 
+        function bad = badDisplayImage(model, where, img)
+            % True when IMG is not something an Image object can take as
+            % CData (numeric/logical, at most 3-D, 1 or 3 planes).  A render
+            % must never hand one out; when it does the caller drops the
+            % frame, because letting the CData write throw out of a play
+            % timer kills playback and takes the state that caused it along.
+            persistent nReported
+            bad = ~((isnumeric(img) || islogical(img)) && ...
+                    ndims(img) <= 3 && any(size(img, 3) == [1, 3]));
+            if ~bad, return; end
+            if isempty(nReported), nReported = 0; end
+            nReported = nReported + 1;
+            if nReported > 5, return; end
+            dsSz = '';
+            for k = 1:numel(model.Datasets)
+                dsSz = [dsSz ' ' mat2str(size(model.Datasets{k}))];  %#ok<AGROW>
+            end
+            fprintf(2, ['[matVis2] %s received an invalid image (%s %s) - ' ...
+                'frame dropped.\n          X=%d Y=%d proj=%d/%s rgb=%d ' ...
+                'stretch=%s lock=%s\n          pos=%s zoom=%s filter=%s ' ...
+                'contrast=%s\n          model size=%s, data size(s)=%s\n'], ...
+                where, class(img), mat2str(size(img)), ...
+                model.XDim, model.YDim, model.ProjDim, model.ProjFun, ...
+                model.RGBDim, model.RGBStretchMode, ...
+                mat2str(model.RGBStretchZoomLock), mat2str(model.CurrPos), ...
+                mat2str(model.ZoomRange), model.FilterType, model.ContrastMode, ...
+                mat2str(model.Size), dsSz);
+        end
+
         function tf = filterAvailable()
             % True when the Image Processing Toolbox filtering functions are
             % on the path.  Cached after the first probe.

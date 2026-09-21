@@ -696,6 +696,14 @@ btnToggleVideo = uibutton(bottomGrid, 'state', 'Text', 'Video', 'Value', false, 
     'ValueChangedFcn', @(src, ~) toggleVideoWindow(src.Value));
 btnToggleVideo.Layout.Row = 1;  btnToggleVideo.Layout.Column = 6;
 
+btnToggle3D = uibutton(bottomGrid, 'state', 'Text', '3D', 'Value', false, ...
+    'FontSize', btnFS, ...
+    'Tooltip', sprintf(['Show/hide the 3-D view: a rotatable volume\n' ...
+        'rendering of three selectable dimensions, with its own\n' ...
+        'extent, rendering style and camera controls.']), ...
+    'ValueChangedFcn', @(src, ~) toggle3DWindows(src.Value));
+btnToggle3D.Layout.Row = 2;  btnToggle3D.Layout.Column = 6;
+
 setappdata(fig, 'OverlayVisible', true);
 
 mvTiming_.labels{end+1} = 'bottom controls created'; mvTiming_.times(end+1) = toc(mvT0_);
@@ -733,6 +741,7 @@ xsecCbs.positionFromMouse = @onPositionFromMouse;
 xsecCbs.zoomFromMouse     = @onZoomFromMouse;
 xsecCbs.onHide            = @() set(btnToggleXSec, 'Value', false);
 xsecWins        = cell(1, nDatasets);
+vol3DWins       = cell(1, nDatasets);   % 3-D view windows, also lazy
 xsecDefaultPos  = [];
 xsecSavedPos    = cell(1, nDatasets);   % from a loaded config, applied on creation
 
@@ -751,6 +760,7 @@ mw.imageWin     = imageWins{1};   % legacy single-window fields
 mw.zoomWin      = zoomWins{1};
 mw.plotWin      = plotWins{1};
 mw.getXSecWin   = @getXSecWin;    % cross-section windows are created lazily
+mw.get3DWin     = @get3DWin;      % 3-D view windows are created lazily
 mw.getRoiMgr    = @getRoiMgr;     % ROI manager is created lazily
 mw.getProfileMgr = @getProfileMgr;% Profile manager is created lazily
 mw.getMetadataWin = @getMetadataWin; % Metadata window is created lazily
@@ -844,6 +854,12 @@ fprintf('\n');
                 end
             catch
             end
+            try
+                if ~isempty(vol3DWins{ds}) && isvalid(vol3DWins{ds}.fig)
+                    delete(vol3DWins{ds}.fig);
+                end
+            catch
+            end
         end
         try; if ~isempty(videoWin) && isvalid(videoWin.fig), delete(videoWin.fig); end; catch; end
         try; if ~isempty(roiMgr) && isvalid(roiMgr.fig), delete(roiMgr.fig); end; catch; end
@@ -916,6 +932,9 @@ fprintf('\n');
             % window itself skips panels whose content hasn't changed.
             if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
                 xsecWins{ds}.Update(s.cmin, s.cmax, s.gamma, s.chanRange);
+            end
+            if ~isempty(vol3DWins{ds}) && isvalid(vol3DWins{ds}.fig)
+                vol3DWins{ds}.Update(s.cmin, s.cmax, s.gamma, s.chanRange);
             end
 
             plotWins{ds}.Update(s.profiles);
@@ -1210,7 +1229,10 @@ fprintf('\n');
         dimSelector.btnRGBMean.Value  = rgbOn && strcmp(mode, 'mean');
         dimSelector.btnRGBMax.Value   = rgbOn && strcmp(mode, 'max');
         shown = rgbOn && ~strcmp(mode, 'none');
-        dimSelector.btnRGBLock.Enable = onOffStr_(shown);
+        % The lock stays enabled for any active RGB dimension so it can be
+        % armed before a stretch mode is switched on (avoids stretching a
+        % long dimension in full first).
+        dimSelector.btnRGBLock.Enable = onOffStr_(rgbOn);
         dimSelector.btnRGBLock.Value  = logical(model.RGBStretchZoomLock);
         % The bar's row is always reserved, so this only shows/hides it —
         % no figure resize or element repositioning.
@@ -3060,6 +3082,9 @@ fprintf('\n');
             vcbs.computeDisplay = @computeDisplayFor;
             vcbs.liveRender     = renderFcn;
             vcbs.onHide         = @() set(btnToggleVideo, 'Value', false);
+            vcbs.setZoom        = @applyZoomRange;
+            vcbs.get3DView      = @live3DView;
+            vcbs.histRange      = @() [edtHistMin.Value, edtHistMax.Value];
             videoWin = MatVisVideoWin(model, vcbs);
             % Park it beside the main window.
             try
@@ -3069,6 +3094,31 @@ fprintf('\n');
             end
         end
         vw = videoWin;
+    end
+
+    function v = live3DView()
+        % What an open 3-D window is showing, so the video generator can
+        % copy it into a sequence.  The active dataset's window wins;
+        % failing that, any open one, because a movie of a single dataset is
+        % the common case.  A window whose camera can be read is preferred
+        % over one whose cannot, but either still carries dims and style.
+        % Loop variable deliberately not "ds": nested functions share the
+        % parent workspace, so a click landing on this while doRender is
+        % between datasets would otherwise move its loop counter.
+        v = [];
+        order = [model.ActiveDataset, setdiff(1:nDatasets, model.ActiveDataset)];
+        for kDs3_ = order
+            w = vol3DWins{kDs3_};
+            if isempty(w) || ~isvalid(w.fig) || ~isfield(w, 'View'), continue; end
+            try
+                got = w.View();
+            catch
+                got = [];
+            end
+            if isempty(got), continue; end
+            if isempty(v), v = got; end
+            if all(isfinite([got.az, got.el, got.zoom])), v = got; return; end
+        end
     end
 
     function toggleVideoWindow(isVisible)
@@ -3120,6 +3170,36 @@ fprintf('\n');
         end
     end
 
+    % ------------------------------------------------------------------
+    %  3-D view wiring
+    % ------------------------------------------------------------------
+    function w = get3DWin(ds)
+        % Lazy: a 3-D view owns a volume renderer, so it is built only when
+        % the user first asks for it.
+        if isempty(vol3DWins{ds}) || ~isvalid(vol3DWins{ds}.fig)
+            cbs3 = struct('onHide', @() set(btnToggle3D, 'Value', false));
+            vol3DWins{ds} = MatVis3DWin(model, cbs3, ds);
+            try
+                mp = fig.Position;
+                vol3DWins{ds}.fig.Position(1:2) = ...
+                    [mp(1) + mp(3) + 20, mp(2)] + (ds-1) * [24, -24];
+            catch
+            end
+        end
+        w = vol3DWins{ds};
+    end
+
+    function toggle3DWindows(isVisible)
+        for ds = 1:nDatasets
+            if isVisible
+                w = get3DWin(ds);
+                w.Show();
+            elseif ~isempty(vol3DWins{ds}) && isvalid(vol3DWins{ds}.fig)
+                vol3DWins{ds}.fig.Visible = 'off';
+            end
+        end
+    end
+
     function applyRoiPosition(pos, zoomVal)
         % Jump navigation state to an ROI's stored position/zoom and sync sliders.
         if numel(pos) == nDims
@@ -3130,6 +3210,18 @@ fprintf('\n');
         end
         for d = 1:nDims
             rangeSliders{d}.Value   = model.CurrPos(d);
+            rangeSliders{d}.ZoomMin = model.ZoomRange(d, 1);
+            rangeSliders{d}.ZoomMax = model.ZoomRange(d, 2);
+        end
+        doRender();
+    end
+
+    function applyZoomRange(zoomVal)
+        % Set the zoom box from outside (video generator) and keep the
+        % sliders and the live windows in step.
+        if ~isequal(size(zoomVal), [nDims, 2]), return; end
+        model.ZoomRange = zoomVal;
+        for d = 1:nDims
             rangeSliders{d}.ZoomMin = model.ZoomRange(d, 1);
             rangeSliders{d}.ZoomMax = model.ZoomRange(d, 2);
         end

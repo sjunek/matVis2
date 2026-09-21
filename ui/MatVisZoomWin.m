@@ -63,18 +63,13 @@ selRect = rectangle(ax, 'Position', [1 1 1 1], ...
 selRect.HitTest      = 'off';
 selRect.PickableParts = 'none';
 
-% ROI overlay (outlines + name labels) and temp drawing shape
-roiLines    = gobjects(1, 0);
-roiTexts    = gobjects(1, 0);
+% ROI / profile overlays are painted by MatVisRender (shared with the image
+% window and the video composer); these are only their handle pools.
+roiOverlay  = [];
+profOverlay = [];
 tempRoiLine = line(ax, NaN, NaN, 'Color', [1 1 0], 'LineWidth', 1.2, ...
     'LineStyle', '--', 'Visible', 'off');
 tempRoiLine.HitTest = 'off';  tempRoiLine.PickableParts = 'none';
-
-% Profile overlay (centerline, width band, direction arrow, name label)
-profLines  = gobjects(1, 0);
-profBands  = gobjects(1, 0);
-profArrows = gobjects(1, 0);
-profTexts  = gobjects(1, 0);
 
 % State variables
 dragStart  = [];   % [x y] in local (zoomed) data coords
@@ -110,6 +105,7 @@ zw.SetAspectRatio    = @applyAspectRatio;
         % Only the image CData changes every frame — limits and crosshair
         % are written only when their values actually change.
         if ~isvalid(fig), return; end
+        if MatVisRender.badDisplayImage(model, 'zoom window', rgbImg), return; end
         set(imgHandle, 'CData', rgbImg);
         [H, W, ~] = size(rgbImg);
         szChanged = ~isequal(lastHW, [H, W]);
@@ -180,130 +176,15 @@ zw.SetAspectRatio    = @applyAspectRatio;
         end
     end
 
-    % ---- ROI overlay (corners converted to local coords) -------------------
+    % ---- ROI / profile overlays (shared painter, zoom-local coords) --------
     function syncRoiOverlay()
-        visIdx = model.VisibleRoiIndices();
-        n      = numel(visIdx);
-
-        for k = numel(roiLines)+1 : n
-            roiLines(k) = line(ax, NaN, NaN, 'HitTest', 'off', 'PickableParts', 'none');
-            roiTexts(k) = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
-                'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
-        end
-        for k = n+1 : numel(roiLines)
-            if isgraphics(roiLines(k)), delete(roiLines(k)); end
-            if isgraphics(roiTexts(k)), delete(roiTexts(k)); end
-        end
-        roiLines = roiLines(1:n);
-        roiTexts = roiTexts(1:n);
-        if n == 0, return; end
-
-        xd  = model.XDim;  yd = model.YDim;
-        xrZ = model.ZoomRange(xd, :);
-        yrZ = model.ZoomRange(yd, :);
-
-        sel    = model.RoiSelection;
-        selVis = visIdx(ismember(visIdx, sel));
-        cols   = MatVisRender.roiColors(max(numel(selVis), 1));
-        lw     = max(model.RoiLineWidth, 0.5);
-
-        for k = 1:n
-            idx = visIdx(k);
-            c   = model.RoiList(idx).corners;
-            cxL = c(1,:) - xrZ(1) + 1;
-            cyL = c(2,:) - yrZ(1) + 1;
-            selPos = find(selVis == idx, 1);
-            if ~isempty(selPos)
-                col = cols(selPos, :);  w = lw;             fw = 'bold';
-            else
-                col = [1 1 1];          w = max(lw/2, 0.5);  fw = 'normal';
-            end
-            set(roiLines(k), 'XData', cxL, 'YData', cyL, ...
-                'Color', col, 'LineWidth', w, 'LineStyle', model.RoiLineStyle, ...
-                'Visible', 'on');
-            set(roiTexts(k), 'Position', [max(cxL) + 1, mean(cyL)], ...
-                'String', model.RoiList(idx).name, 'Color', col, ...
-                'FontWeight', fw, 'Visible', onOff_(model.RoiShowNames));
-        end
+        roiOverlay = MatVisRender.paintRoiOverlay(ax, model, ...
+            MatVisRender.panelOrigin(model, true), roiOverlay);
     end
 
-    % ---- Profile overlay (coordinates converted to local) ------------------
     function syncProfileOverlay()
-        visIdx = model.VisibleProfileIndices();
-        n      = numel(visIdx);
-
-        for k = numel(profLines)+1 : n
-            profLines(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
-                'PickableParts', 'none', 'LineWidth', 1.5);
-            profBands(k)  = line(ax, NaN, NaN, 'HitTest', 'off', ...
-                'PickableParts', 'none', 'LineStyle', ':', 'LineWidth', 1);
-            profArrows(k) = line(ax, NaN, NaN, 'HitTest', 'off', ...
-                'PickableParts', 'none', 'LineWidth', 1.5);
-            profTexts(k)  = text(ax, NaN, NaN, '', 'HitTest', 'off', ...
-                'PickableParts', 'none', 'FontSize', 9, 'Clipping', 'on');
-        end
-        for k = n+1 : numel(profLines)
-            if isgraphics(profLines(k)),  delete(profLines(k));  end
-            if isgraphics(profBands(k)),  delete(profBands(k));  end
-            if isgraphics(profArrows(k)), delete(profArrows(k)); end
-            if isgraphics(profTexts(k)),  delete(profTexts(k));  end
-        end
-        profLines  = profLines(1:n);
-        profBands  = profBands(1:n);
-        profArrows = profArrows(1:n);
-        profTexts  = profTexts(1:n);
-        if n == 0, return; end
-
-        xd  = model.XDim;  yd = model.YDim;
-        xOff = model.ZoomRange(xd, 1) - 1;
-        yOff = model.ZoomRange(yd, 1) - 1;
-
-        sel    = model.ProfileSelection;
-        selVis = visIdx(ismember(visIdx, sel));
-        cols   = MatVisRender.roiColors(max(numel(selVis), 1));
-
-        for k = 1:n
-            idx  = visIdx(k);
-            prof = model.ProfileList(idx);
-            sp   = prof.smoothedPoints;
-            [bx, by, axx, ayy] = profileBandArrow(sp);
-            spx = sp(1,:) - xOff;   spy = sp(2,:) - yOff;
-            bx  = bx - xOff;        by  = by - yOff;
-            axx = axx - xOff;       ayy = ayy - yOff;
-            selPos = find(selVis == idx, 1);
-            if ~isempty(selPos)
-                col = cols(selPos, :);  w = 2;  fw = 'bold';
-            else
-                col = [1 1 1];          w = 1;  fw = 'normal';
-            end
-            set(profLines(k),  'XData', spx, 'YData', spy, ...
-                'Color', col, 'LineWidth', w, 'Visible', 'on');
-            set(profBands(k),  'XData', bx, 'YData', by, 'Color', col, ...
-                'Visible', 'on');
-            set(profArrows(k), 'XData', axx, 'YData', ayy, 'Color', col, ...
-                'Visible', onOff_(model.ProfileShowDir));
-            set(profTexts(k),  'Position', [spx(end) + 1, spy(end)], ...
-                'String', prof.name, 'Color', col, 'FontWeight', fw, ...
-                'Visible', onOff_(model.ProfileShowNames));
-        end
-    end
-
-    function [bx, by, axx, ayy] = profileBandArrow(sp)
-        % Width-band outline and direction arrow (data coords) for a path SP.
-        M   = MatVisModel.ProfileSampleMatrix(sp, model.ProfileWidth);
-        s1x = M(1, :, 1);    s1y = M(1, :, 2);
-        s2x = M(end, :, 1);  s2y = M(end, :, 2);
-        bx  = [s1x, fliplr(s2x), s1x(1)];
-        by  = [s1y, fliplr(s2y), s1y(1)];
-        p2  = sp(:, end);
-        p1  = sp(:, max(1, end-1));
-        d   = p2 - p1;  nd = hypot(d(1), d(2));  if nd == 0, nd = 1; end
-        d   = d / nd;   perp = [-d(2); d(1)];
-        aLen = max(3, model.ProfileWidth * 0.7);
-        b1  = p2 - aLen*d + aLen*0.4*perp;
-        b2  = p2 - aLen*d - aLen*0.4*perp;
-        axx = [b1(1), p2(1), b2(1)];
-        ayy = [b1(2), p2(2), b2(2)];
+        profOverlay = MatVisRender.paintProfileOverlay(ax, model, ...
+            MatVisRender.panelOrigin(model, true), profOverlay);
     end
 
     % ---- ROI interaction mode ----------------------------------------------
