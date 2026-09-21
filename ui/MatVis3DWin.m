@@ -77,7 +77,7 @@ if model.NumDatasets > 1
 end
 fig = uifigure('Name', name, 'NumberTitle', 'off', 'Resize', 'on', ...
     'AutoResizeChildren', 'off', 'Visible', 'off', ...
-    'Position', [140 140 940 660]);
+    'Position', [140 140 980 710]);
 fig.CloseRequestFcn = @(~,~) onCloseRequest();
 
 root = uigridlayout(fig, [2 1]);
@@ -87,7 +87,7 @@ root.RowSpacing = 3;
 
 main = uigridlayout(root, [1 2]);
 main.Layout.Row     = 1;
-main.ColumnWidth    = {'1x', 272};
+main.ColumnWidth    = {'1x', 312};
 main.Padding        = [0 0 0 0];
 main.ColumnSpacing  = 4;
 
@@ -96,7 +96,9 @@ holder.Layout.Column = 1;
 
 side = uigridlayout(main, [5 1]);
 side.Layout.Column = 2;
-side.RowHeight     = {112, 128, 178, 190, '1x'};
+% Room for the rows themselves (22 each), plus the spacing and padding of the
+% panel's own grid and the panel title bar: 22*n + 3*(n-1) + 8 + 23.
+side.RowHeight     = {128, 153, 178, 190, '1x'};
 side.Padding       = [0 0 0 0];
 side.RowSpacing    = 4;
 side.Scrollable    = 'on';
@@ -213,24 +215,24 @@ spIso = uispinner(gr, 'Limits', [0 1], 'Value', 0.15, 'Step', 0.01, ...
     'Tooltip', 'Isosurface level / gradient-opacity threshold, 0..1.', ...
     'ValueChangedFcn', @(~,~) onLookChanged());
 
-chkOwnContrast = uicheckbox(gr, 'Text', 'Own contrast', ...
+g6 = uigridlayout(gr, [1 4]);
+g6.Layout.Row    = 6;
+g6.Layout.Column = [1 2];
+g6.ColumnWidth   = {'fit', '1x', '1x', '1x'};
+g6.Padding       = [0 0 0 0];
+g6.ColumnSpacing = 3;
+uicheckbox(g6, 'Text', 'Own contrast', ...
     'Value', ownContrast, 'Tooltip', ...
     ['Off: the contrast bounds and gamma of the main window.' newline ...
      'On: the ones set here — a projection often needs a different window.'], ...
     'ValueChangedFcn', @(src, ~) onOwnContrastToggle(src.Value));
-chkOwnContrast.Layout.Row    = 6;
-chkOwnContrast.Layout.Column = 1;
-gcn = uigridlayout(gr, [1 3]);
-gcn.Layout.Row    = 6;
-gcn.Layout.Column = 2;
-gcn.ColumnWidth   = {'1x', '1x', '1x'};
-gcn.Padding       = [0 0 0 0];
-gcn.ColumnSpacing = 3;
-spCMin = uispinner(gcn, 'Value', cMin_, 'Enable', 'off', ...
+spCMin = uispinner(g6, 'Value', cMin_, 'Enable', 'off', ...
+    'ValueDisplayFormat', '%.10g', ...
     'Tooltip', 'Contrast minimum', 'ValueChangedFcn', @(~,~) onContrastEdit());
-spCMax = uispinner(gcn, 'Value', cMax_, 'Enable', 'off', ...
+spCMax = uispinner(g6, 'Value', cMax_, 'Enable', 'off', ...
+    'ValueDisplayFormat', '%.10g', ...
     'Tooltip', 'Contrast maximum', 'ValueChangedFcn', @(~,~) onContrastEdit());
-spGam  = uispinner(gcn, 'Limits', [0.1 5], 'Value', 1, 'Step', 0.1, ...
+spGam  = uispinner(g6, 'Limits', [0.1 5], 'Value', 1, 'Step', 0.1, ...
     'Enable', 'off', 'Tooltip', 'Gamma', ...
     'ValueChangedFcn', @(~,~) onContrastEdit());
 
@@ -271,14 +273,16 @@ uilabel(gvw, 'Text', 'Zoom:');
 spZoom = uispinner(gvw, 'Limits', [0.05 50], 'Value', 1, 'Step', 0.1, ...
     'ValueChangedFcn', @(src, ~) onZoomEdit(src.Value));
 
-chkBox = uicheckbox(gvw, 'Text', 'Bounding box', 'Value', true, ...
+g5 = uigridlayout(gvw, [1 2]);
+g5.Layout.Row    = 5;
+g5.Layout.Column = [1 2];
+g5.ColumnWidth   = {'fit', '1x'};
+g5.Padding       = [0 0 0 0];
+g5.ColumnSpacing = 3;
+uicheckbox(g5, 'Text', 'Bounding box', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) onBoxToggle(src.Value));
-chkBox.Layout.Row    = 5;
-chkBox.Layout.Column = 1;
-chkOrient = uicheckbox(gvw, 'Text', 'Orientation axes', 'Value', true, ...
+uicheckbox(g5, 'Text', 'Orientation axes', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) onOrientToggle(src.Value));
-chkOrient.Layout.Row    = 5;
-chkOrient.Layout.Column = 2;
 
 ddBg = uidropdown(gvw, 'Items', {'Black', 'White'}, ...
     'ItemsData', {'black', 'white'}, 'Value', 'black', ...
