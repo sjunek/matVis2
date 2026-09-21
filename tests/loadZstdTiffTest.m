@@ -230,13 +230,62 @@ classdef loadZstdTiffTest < matlab.unittest.TestCase
             testCase.verifyFalse(isZstdTiff(g));
         end
 
-        function loadZstdTiffRejectsNonZstd(testCase)
-            % Same container, but the Compression tag says "uncompressed".
+        function loadZstdTiffRejectsUnsupportedCompression(testCase)
+            % Same container, but the Compression tag says JPEG.
             ref = uint16(ones(4, 4));
             f = testCase.tmpFile('faked.tif');
-            writeTestZstdTiff(f, ref, 'Compression', 1);
+            writeTestZstdTiff(f, ref, 'Compression', 7);
 
-            testCase.verifyError(@() loadZstdTiff(f), 'loadZstdTiff:notZstd');
+            testCase.verifyError(@() loadZstdTiff(f), 'loadZstdTiff:unsupportedCompression');
+        end
+
+        function otherSchemesPerPage(testCase)
+            % Compression is a per-directory tag, so one page's scheme says
+            % nothing about the next one's.
+            schemes = [1, 5, 8, 32773, 32946, 50000];
+            ref = uint16(randi([0, 65535], 9, 7, 1, numel(schemes)));
+            f = testCase.tmpFile('each_scheme.tif');
+            writeTestZstdTiff(f, ref, 'Compression', schemes, 'RowsPerStrip', 4);
+
+            testCase.verifyEqual(loadZstdTiff(f), reshape(ref, 9, 7, numel(schemes)));
+        end
+
+        function mixedPackbitsAndZstd(testCase)
+            % The real-world case: mostly-empty planes stored as PackBits,
+            % the rest as Zstandard, in one BigTIFF.
+            ref = uint16(randi([0, 4095], 12, 10, 1, 4));
+            ref(:, :, 1, [1, 3]) = 0;
+            f = testCase.tmpFile('mixed.tif');
+            writeTestZstdTiff(f, ref, 'BigTiff', true, 'RowsPerStrip', 5, ...
+                'Compression', [32773, 50000, 32773, 50000]);
+
+            testCase.verifyTrue(isZstdTiff(f));
+            [data, meta] = loadFiles(f);
+            testCase.verifyEqual(data, reshape(ref, 12, 10, 4));
+            map = containers.Map(meta.instrument.TiffTags(:, 1), meta.instrument.TiffTags(:, 2));
+            testCase.verifyEqual(map('Compression'), ...
+                'mixed: PackBits (32773) on 2 page(s), Zstandard (50000) on 2 page(s)');
+        end
+
+        function zstdOnALaterPageStillRoutes(testCase)
+            % Page 1 is PackBits, which MATLAB could read on its own -- but
+            % the file as a whole still has to come here.
+            ref = uint16(randi([0, 255], 6, 6, 1, 3));
+            f = testCase.tmpFile('late_zstd.tif');
+            writeTestZstdTiff(f, ref, 'Compression', [32773, 32773, 50000]);
+
+            testCase.verifyTrue(isZstdTiff(f));
+            testCase.verifyEqual(loadFiles(f), reshape(ref, 6, 6, 3));
+        end
+
+        function packbitsOnlyStaysWithMatlab(testCase)
+            % No Zstandard anywhere: MATLAB reads it, so do not route here.
+            ref = uint16(randi([0, 255], 5, 5, 1, 2));
+            f = testCase.tmpFile('packbits_only.tif');
+            writeTestZstdTiff(f, ref, 'Compression', 32773);
+
+            testCase.verifyFalse(isZstdTiff(f));
+            testCase.verifyEqual(loadZstdTiff(f), reshape(ref, 5, 5, 2));
         end
 
     end

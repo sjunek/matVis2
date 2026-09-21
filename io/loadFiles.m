@@ -74,7 +74,10 @@ end
 % ZstdCodec sizes its output buffer from the Zstandard frame's optional
 % content-size field, which these writers omit, and dies with
 % NegativeArraySizeException. So they get their own reader, which takes the
-% decompressed size from the strip/tile geometry instead.
+% decompressed size from the strip/tile geometry instead. One Zstandard
+% page is enough to route the file here: Compression is a per-directory
+% tag, and these writers mix schemes within a file, so loadZstdTiff also
+% decodes the PackBits/Deflate/LZW/uncompressed pages alongside.
 if ismember(ext, {'.tif', '.tiff'}) && isZstdTiff(filepath)
     [data, meta] = loadZstdTiff(filepath);
     return;

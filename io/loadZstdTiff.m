@@ -5,7 +5,12 @@ function [data, meta] = loadZstdTiff(filepath)
 %   Neither MATLAB's TIFF library ("The compression scheme 50000 is not
 %   currently supported when reading TIFF files.") nor Bio-Formats 8.5 can
 %   read these files, so this is a self-contained reader: parseTiffIfds for
-%   the tags, zstdDecompress for the strip/tile payloads.
+%   the tags, tiffDecompressSegment for the strip/tile payloads.
+%
+%   Compression is a per-directory tag, so a single file may mix schemes --
+%   the stacks this was written for store mostly-empty planes as PackBits
+%   and the rest as Zstandard. Every page is decoded with its own scheme;
+%   see tiffDecompressSegment for the list of schemes understood.
 %
 %   data is [Y X] for a single-page grayscale image, [Y X Z] for a
 %   multi-page one, and [Y X C] / [Y X C Z] when SamplesPerPixel > 1.
@@ -26,7 +31,7 @@ function [data, meta] = loadZstdTiff(filepath)
 %   and 32/64-bit float samples, chunky and planar configuration, predictor
 %   1 (none) and 2 (horizontal differencing, integer samples).
 %
-%   See also isZstdTiff, parseTiffIfds, zstdDecompress, loadFiles.
+%   See also isZstdTiff, parseTiffIfds, tiffDecompressSegment, loadFiles.
 
 [ifds, hdr] = parseTiffIfds(filepath);
 if isempty(ifds)
@@ -35,6 +40,10 @@ end
 
 g = readGeometry(ifds(1), hdr, filepath);
 nPages = numel(ifds);
+
+% Reject an unreadable scheme before allocating the (possibly very large)
+% output array, and only then start decoding.
+compressions = pageCompressions(ifds, filepath);
 
 fid = fopen(filepath, 'r', 'ieee-le');
 if fid < 0
@@ -45,7 +54,7 @@ closer = onCleanup(@() fclose(fid)); %#ok<NASGU>
 data = zeros([g.height, g.width, g.spp, nPages], g.cls);
 for k = 1:nPages
     checkPageMatches(ifds(k), g, k, filepath);
-    data(:, :, :, k) = readPage(fid, ifds(k), g);
+    data(:, :, :, k) = readPage(fid, ifds(k), g, compressions(k));
 end
 
 % Collapse the axes the file does not actually use, mirroring the built-in
@@ -54,7 +63,24 @@ keep = [true, true, g.spp > 1, nPages > 1];
 sz4 = [g.height, g.width, g.spp, nPages];
 data = reshape(data, sz4(keep));
 
-meta = buildMeta(ifds, hdr, g, nPages, keep);
+meta = buildMeta(ifds, hdr, g, nPages, keep, compressions);
+end
+
+% =============================================================================
+function compressions = pageCompressions(ifds, filepath)
+% The Compression tag of every directory, checked up front so an
+% unreadable scheme fails before any pixel data is touched.
+compressions = zeros(1, numel(ifds));
+for k = 1:numel(ifds)
+    compressions(k) = scalarTag(ifds(k), 259, 1, 'Compression', filepath);
+end
+for c = unique(compressions)
+    if ~ismember(c, [1, 5, 8, 32771, 32773, 32946, 50000])
+        error('loadZstdTiff:unsupportedCompression', ...
+            'Page %d of "%s" uses %s, which this reader cannot decode.', ...
+            find(compressions == c, 1), filepath, tiffCompressionName(c));
+    end
+end
 end
 
 % =============================================================================
@@ -64,12 +90,6 @@ function g = readGeometry(ifd, hdr, filepath)
 g.width  = scalarTag(ifd, 256, [], 'ImageWidth', filepath);
 g.height = scalarTag(ifd, 257, [], 'ImageLength', filepath);
 g.spp    = scalarTag(ifd, 277, 1, 'SamplesPerPixel', filepath);
-
-compression = scalarTag(ifd, 259, 1, 'Compression', filepath);
-if compression ~= 50000
-    error('loadZstdTiff:notZstd', ...
-        'File "%s" uses compression %d, not Zstandard (50000).', filepath, compression);
-end
 
 bits = tiffTagValue(ifd, 258, 8);
 if numel(unique(bits)) > 1
@@ -124,7 +144,7 @@ end
 end
 
 % =============================================================================
-function page = readPage(fid, ifd, g)
+function page = readPage(fid, ifd, g, compression)
 % Decode one directory into a [height width spp] array.
 page = zeros(g.height, g.width, g.spp, g.cls);
 
@@ -156,7 +176,7 @@ if ~isempty(tileWidth)
         y1    = min(g.height, y0 + tileHeight - 1);
         x1    = min(g.width,  x0 + tileWidth - 1);
         % Tiles are always full-size on disk; the edge ones are padded.
-        block = decodeSegment(fid, offsets(s), byteCounts(s), tileWidth, tileHeight, segSpp, g);
+        block = decodeSegment(fid, offsets(s), byteCounts(s), tileWidth, tileHeight, segSpp, g, compression);
         block = block(1:(y1 - y0 + 1), 1:(x1 - x0 + 1), :);
         if g.planar == 2
             page(y0:y1, x0:x1, plane) = block;
@@ -186,7 +206,7 @@ for s = 1:numel(offsets)
     idx   = mod(s - 1, perPlane);
     y0    = idx * rowsPerStrip + 1;
     y1    = min(g.height, y0 + rowsPerStrip - 1);
-    block = decodeSegment(fid, offsets(s), byteCounts(s), g.width, y1 - y0 + 1, segSpp, g);
+    block = decodeSegment(fid, offsets(s), byteCounts(s), g.width, y1 - y0 + 1, segSpp, g, compression);
     if g.planar == 2
         page(y0:y1, :, plane) = block;
     else
@@ -196,7 +216,7 @@ end
 end
 
 % =============================================================================
-function block = decodeSegment(fid, offset, byteCount, w, h, spp, g)
+function block = decodeSegment(fid, offset, byteCount, w, h, spp, g, compression)
 % Read one Zstandard-compressed strip/tile and reshape it to [h w spp].
 if fseek(fid, offset, 'bof') ~= 0
     error('loadZstdTiff:badSegmentOffset', ...
@@ -210,7 +230,7 @@ if numel(comp) ~= byteCount
 end
 
 expected = w * h * spp * g.bytesPerSample;
-raw = zstdDecompress(comp, expected);
+raw = tiffDecompressSegment(comp, expected, compression);
 
 vals = typecast(raw, g.cls);
 if g.bytesPerSample > 1 && ~g.littleEndian
@@ -269,7 +289,7 @@ v = v(1);
 end
 
 % =============================================================================
-function meta = buildMeta(ifds, hdr, g, nPages, keep)
+function meta = buildMeta(ifds, hdr, g, nPages, keep, compressions)
 % Build the dimNames/dimScale/dimUnits/channelNames/instrument struct, and
 % collect the file's tags into instrument.TiffTags for the metadata window.
 ifd = ifds(1);
@@ -296,7 +316,7 @@ instrument = struct( ...
     'ChannelExWavelengthUnit', {repmat({''}, 1, g.spp)}, ...
     'ChannelEmWavelengthUnit', {repmat({''}, 1, g.spp)}, ...
     'ChannelAcquisitionMode', {repmat({''}, 1, g.spp)}, ...
-    'TiffTags', {tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes, s)});
+    'TiffTags', {tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes, s, compressions)});
 
 meta = struct( ...
     'dimNames',     {dimNames(keep)}, ...
@@ -307,7 +327,7 @@ meta = struct( ...
 end
 
 % =============================================================================
-function rows = tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes, scales)
+function rows = tiffTagRows(ifds, hdr, g, nPages, resUnit, xRes, yRes, scales, compressions)
 % Every piece of metadata the file actually carries, as Property/Value rows.
 if hdr.isBigTiff
     flavour = 'BigTIFF';
@@ -321,7 +341,7 @@ else
 end
 
 rows = {'TIFF flavour', sprintf('%s, %s', flavour, order)};
-rows(end+1, :) = {'Compression', 'Zstandard (50000)'};
+rows(end+1, :) = {'Compression', compressionSummary(compressions)};
 rows(end+1, :) = {'Image size', sprintf('%d x %d px', g.width, g.height)};
 rows(end+1, :) = {'Pages (IFDs)', sprintf('%d', nPages)};
 rows(end+1, :) = {'Samples per pixel', sprintf('%d', g.spp)};
@@ -355,6 +375,23 @@ for i = 1:size(textTags, 1)
         rows(end+1, :) = {textTags{i, 2}, truncate(s, 400)}; %#ok<AGROW>
     end
 end
+end
+
+% =============================================================================
+function s = compressionSummary(compressions)
+% One scheme for the whole file prints as itself; a mixed file lists each
+% scheme with the number of pages that use it.
+codes = unique(compressions);
+if isscalar(codes)
+    s = tiffCompressionName(codes);
+    return;
+end
+parts = cell(1, numel(codes));
+for i = 1:numel(codes)
+    parts{i} = sprintf('%s on %d page(s)', tiffCompressionName(codes(i)), ...
+        sum(compressions == codes(i)));
+end
+s = ['mixed: ', strjoin(parts, ', ')];
 end
 
 % =============================================================================
