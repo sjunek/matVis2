@@ -742,6 +742,7 @@ xsecCbs.zoomFromMouse     = @onZoomFromMouse;
 xsecCbs.onHide            = @() set(btnToggleXSec, 'Value', false);
 xsecWins        = cell(1, nDatasets);
 vol3DWins       = cell(1, nDatasets);   % 3-D view windows, also lazy
+vol3DView       = [];                   % view the linked 3-D windows share
 xsecDefaultPos  = [];
 xsecSavedPos    = cell(1, nDatasets);   % from a loaded config, applied on creation
 
@@ -3177,13 +3178,19 @@ fprintf('\n');
         % Lazy: a 3-D view owns a volume renderer, so it is built only when
         % the user first asks for it.
         if isempty(vol3DWins{ds}) || ~isvalid(vol3DWins{ds}.fig)
-            cbs3 = struct('onHide', @() set(btnToggle3D, 'Value', false));
+            cbs3 = struct('onHide', @() set(btnToggle3D, 'Value', false), ...
+                          'onViewChanged', @(s) share3DView(ds, s), ...
+                          'sharedView', @shared3DView);
             vol3DWins{ds} = MatVis3DWin(model, cbs3, ds);
             try
                 mp = fig.Position;
                 vol3DWins{ds}.fig.Position(1:2) = ...
                     [mp(1) + mp(3) + 20, mp(2)] + (ds-1) * [24, -24];
             catch
+            end
+            % A window opened later joins the view the others already share.
+            if ~isempty(vol3DView)
+                vol3DWins{ds}.ApplyView(vol3DView);
             end
         end
         w = vol3DWins{ds};
@@ -3197,6 +3204,29 @@ fprintf('\n');
             elseif ~isempty(vol3DWins{ds}) && isvalid(vol3DWins{ds}.fig)
                 vol3DWins{ds}.fig.Visible = 'off';
             end
+        end
+    end
+
+    function s = shared3DView()
+        % The view the linked 3-D windows currently agree on, [] until one of
+        % them has changed something.  A nested function, not @() vol3DView:
+        % an anonymous handle would freeze the value it had at creation.
+        s = vol3DView;
+    end
+
+    function share3DView(srcDs, s)
+        % One linked 3-D window changed its view: keep it, so a window opened
+        % later joins the same one, and mirror it into the others.  Loop
+        % variable deliberately not "ds" — see live3DView.
+        vol3DView = s;
+        for kDsLnk_ = 1:nDatasets
+            if kDsLnk_ == srcDs, continue; end
+            wLnk_ = vol3DWins{kDsLnk_};
+            if isempty(wLnk_) || ~isvalid(wLnk_.fig) || ...
+                    ~isfield(wLnk_, 'ApplyView')
+                continue;
+            end
+            try; wLnk_.ApplyView(s); catch; end
         end
     end
 

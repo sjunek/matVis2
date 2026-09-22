@@ -22,7 +22,8 @@ classdef MatVisVolumeView < handle
 %              Labels -- change any of them, then call applyLook().
 %
 %   Camera     cameraAngles / setCameraAngles / cameraZoom / setCameraZoom /
-%              resetCamera / setProjection / pan / zoomAtCursor.
+%              cameraPose / setCameraPose / resetCamera / setProjection /
+%              pan / zoomAtCursor.
 %              All of them work on both backends.
 %
 %   Mouse      A viewer3d handles pointer and wheel events inside its own
@@ -151,9 +152,7 @@ classdef MatVisVolumeView < handle
                 end
                 dist = norm(T - C);
                 if ~isfinite(dist) || dist <= 0, return; end
-                a = az * pi/180;  e = el * pi/180;
-                dir = [sin(a)*cos(e), -cos(a)*cos(e), sin(e)];
-                up  = [-sin(a)*sin(e), cos(a)*sin(e), cos(e)];
+                [dir, up] = MatVisVolumeView.camFrame(az, el);
                 obj.CamBusy_ = true;
                 try
                     v.CameraPosition = T + dist * dir;
@@ -164,6 +163,104 @@ classdef MatVisVolumeView < handle
                 obj.CamPrev_ = MatVisVolumeView.readCam(v);
             elseif ~isempty(obj.Ax3) && isvalid(obj.Ax3)
                 view(obj.Ax3, az, el);
+                obj.placeMipFace();
+            end
+        end
+
+        function p = cameraPose(obj)
+            % The camera exactly as the backend holds it — position, target,
+            % up vector, view angle, zoom — so one view can be reproduced in
+            % another of the same geometry.  Azimuth and elevation cannot do
+            % that: a free rotation rolls the camera, two angles cannot say
+            % by how much, and the second view ends up in an orientation of
+            % its own.
+            %
+            % The pose is read whatever the backend's Camera*Mode says.  A
+            % viewer3d leaves them all on 'auto' until something writes the
+            % camera, and its own rotation gesture is not such a write — so
+            % honouring 'auto' would mean reporting no pose for exactly the
+            % gesture the pose is there to carry, until the user happened to
+            % press one of the preset-direction buttons.  An auto value can
+            % be the fit of the *previous* volume for a moment after the
+            % volume changed; the poll in MatVis3DWin sends the re-fitted one
+            % along as soon as the backend has it.
+            p = struct('pos', nan(1, 3), 'target', nan(1, 3), ...
+                       'up', nan(1, 3), 'va', NaN, 'zoom', NaN);
+            if isempty(obj.Vol_)
+                return;         % no volume, so no camera worth sharing
+            end
+            if obj.isViewer3D()
+                v = obj.Viewer;
+                p.pos    = MatVisVolumeView.camProp(v, 'CameraPosition', 3);
+                p.target = MatVisVolumeView.camProp(v, 'CameraTarget',   3);
+                p.up     = MatVisVolumeView.camProp(v, 'CameraUpVector', 3);
+                p.zoom   = MatVisVolumeView.camProp(v, 'CameraZoom',     1);
+            elseif ~isempty(obj.Ax3) && isvalid(obj.Ax3)
+                % The fallback draws from the axes' View property — so does
+                % placeMipFace — and the axes' camera properties can say
+                % something else entirely, because view() writes View and
+                % leaves them alone.  The pose is therefore built from View,
+                % or it would describe a camera this window is not using.
+                % (Which also means this backend cannot carry a roll; nothing
+                % it offers makes one.)
+                try
+                    a = obj.Ax3;
+                    [az, el] = view(a);
+                    T   = camtarget(a);
+                    dst = norm(campos(a) - T);
+                    if ~isfinite(dst) || dst <= 0, dst = 1; end
+                    [dir_, up_] = MatVisVolumeView.camFrame(az, el);
+                    p.target = T;
+                    p.pos    = T + dst * dir_;
+                    p.up     = up_;
+                    p.va     = camva(a);
+                catch
+                end
+            end
+        end
+
+        function setCameraPose(obj, p)
+            % Put the camera where P says, component by component; the ones P
+            % leaves at NaN keep whatever this backend has.  A P with nothing
+            % in it at all means the other view is letting its backend choose,
+            % so this one goes back to choosing too.
+            if ~isstruct(p) || ~isscalar(p), return; end
+            if ~any(isfinite([p.pos, p.target, p.up, p.va, p.zoom]))
+                q = obj.cameraPose();
+                if any(isfinite([q.pos, q.target, q.up, q.va, q.zoom]))
+                    obj.resetCamera();
+                end
+                return;
+            end
+            if obj.isViewer3D()
+                v = obj.Viewer;
+                obj.CamBusy_ = true;
+                try
+                    if all(isfinite(p.target)), v.CameraTarget   = p.target; end
+                    if all(isfinite(p.pos)),    v.CameraPosition = p.pos;    end
+                    if all(isfinite(p.up)),     v.CameraUpVector = p.up;     end
+                    if isfinite(p.zoom),        v.CameraZoom     = p.zoom;   end
+                catch
+                end
+                obj.CamBusy_ = false;
+                obj.CamPrev_ = MatVisVolumeView.readCam(v);
+            elseif ~isempty(obj.Ax3) && isvalid(obj.Ax3)
+                % Through view(), for the reason cameraPose gives.  The roll
+                % in P is dropped: View cannot hold one, and the gestures this
+                % backend offers never make one.
+                try
+                    if all(isfinite(p.target)), camtarget(obj.Ax3, p.target); end
+                    if all(isfinite(p.pos)) && all(isfinite(p.target))
+                        d = p.pos - p.target;
+                        if norm(d) > 0
+                            d = d / norm(d);
+                            view(obj.Ax3, atan2d(d(1), -d(2)), ...
+                                          asind(max(-1, min(1, d(3)))));
+                        end
+                    end
+                    if isfinite(p.va), camva(obj.Ax3, p.va); end
+                catch
+                end
                 obj.placeMipFace();
             end
         end
@@ -675,6 +772,27 @@ classdef MatVisVolumeView < handle
                 tf = affinetform3d(A);
             elseif ~isempty(which('affine3d'))
                 tf = affine3d(A');      % older post-multiply convention
+            end
+        end
+
+        function [dir, up] = camFrame(az, el)
+            % Unit vector from the target towards a camera at AZ / EL, and the
+            % up vector that goes with it (no roll).
+            a   = az * pi/180;
+            e   = el * pi/180;
+            dir = [sin(a)*cos(e), -cos(a)*cos(e), sin(e)];
+            up  = [-sin(a)*sin(e), cos(a)*sin(e), cos(e)];
+        end
+
+        function v = camProp(h, name, n)
+            % A camera property of a viewer3d or an axes, as it stands, or
+            % NaN(1,N) if it cannot be read or is not the expected size.
+            v = nan(1, n);
+            try
+                w = double(h.(name));
+                w = w(:).';
+                if numel(w) == n, v = w; end
+            catch
             end
         end
 

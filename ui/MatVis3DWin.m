@@ -10,7 +10,11 @@ function w3 = MatVis3DWin(model, cbs, dsIdx)
 %   camera angles and zoom).
 %
 %   cbs (all optional):
-%       .onHide()    — the window was closed
+%       .onHide()          — the window was closed
+%       .onViewChanged(s)  — a linked view setting changed here, so the owner
+%                            should hand S to the other datasets' windows
+%       .sharedView()      — the view the linked windows currently agree on,
+%                            [] while there is none
 %
 %   w3.fig                        uifigure handle (created hidden)
 %   w3.dsIdx                      dataset this window shows
@@ -20,6 +24,15 @@ function w3 = MatVis3DWin(model, cbs, dsIdx)
 %                                 with this dataset's contrast bounds; a
 %                                 no-op while "Follow main window" is off
 %   w3.Refresh()                  force a re-render (bypasses the skip cache)
+%   w3.ViewState()                this window's linked view settings
+%   w3.ApplyView(s)               adopt another window's; ignored while unlinked
+%
+%   With more than one dataset open the windows start linked: the dimensions,
+%   the extent, the rendering and the camera of one are mirrored by the others,
+%   so the same view is compared across datasets.  Contrast is not — bounds
+%   only mean something per dataset — and neither is "Follow main window",
+%   which is a per-window freeze switch.  Clearing "Link view to other
+%   datasets" decouples a window; ticking it again rejoins the others.
 %
 %   The volume itself is a MatVisVolumeView, so this window gets the Image
 %   Processing Toolbox renderer where it exists and the toolbox-free
@@ -40,9 +53,30 @@ nDims = numel(model.Size);
 % window uses.  A full-size volume is sent to the renderer only on request.
 MAXVOX = 4e6;
 
+% How long after adopting a view a camera report from the backend is taken
+% for an echo of that adopt rather than a move of the user's own.  A viewer3d
+% confirms a camera write through a web component, so its report lands well
+% after the write — and can still carry the reading from before it.
+ECHOWAIT = 0.25;     % seconds
+
+% How often the camera is read back.  A viewer3d is an HTML component that
+% keeps its gestures to itself: it offers a CameraMovedFcn, but an interactive
+% rotation can pass without one, and the new camera then only reaches the
+% other windows when something else happens to broadcast — which is what a
+% linked view trailing one step behind actually looks like.
+CAMPOLL = 0.1;       % seconds
+
 hideCb = [];
 if isfield(cbs, 'onHide') && isa(cbs.onHide, 'function_handle')
     hideCb = cbs.onHide;
+end
+viewChangedCb = [];
+if isfield(cbs, 'onViewChanged') && isa(cbs.onViewChanged, 'function_handle')
+    viewChangedCb = cbs.onViewChanged;
+end
+sharedViewCb = [];
+if isfield(cbs, 'sharedView') && isa(cbs.sharedView, 'function_handle')
+    sharedViewCb = cbs.sharedView;
 end
 
 CMAPS  = getColormapItems3D();
@@ -56,6 +90,14 @@ ranges  = fullRanges(dims3);
 follow  = true;                      % track the main window's navigation
 useMainZoom = false;                 % take the extent from the shared zoom
 fullRes = false;
+linked   = model.NumDatasets > 1;    % mirror the view in the other datasets
+applying = false;                    % guard: adopting another window's view
+pending  = [];                       % view that arrived while one was applied
+adopted  = [];                       % last view adopted, to spot our own echo
+adoptTic = [];                       % when that was, see ECHOWAIT
+camPoll  = [];                       % timer watching the camera, see CAMPOLL
+lastCam  = [];                       % camera as of the last time we looked
+ready    = false;                    % construction done, so we may broadcast
 cMin_ = model.AllDataMins(dsIdx);    % overwritten by every Update() call
 cMax_ = model.AllDataMaxs(dsIdx);
 gam_  = model.Gamma;
@@ -75,9 +117,11 @@ name = '3D view';
 if model.NumDatasets > 1
     name = ['3D view: ' model.DatasetNames{dsIdx}];
 end
+% Tall enough for the side column, which grows by the link row (see below)
+% when there is another dataset to share the view with.
 fig = uifigure('Name', name, 'NumberTitle', 'off', 'Resize', 'on', ...
     'AutoResizeChildren', 'off', 'Visible', 'off', ...
-    'Position', [140 140 980 710]);
+    'Position', [140 140 980 710 + 25*(model.NumDatasets > 1)]);
 fig.CloseRequestFcn = @(~,~) onCloseRequest();
 
 root = uigridlayout(fig, [2 1]);
@@ -98,7 +142,8 @@ side = uigridlayout(main, [5 1]);
 side.Layout.Column = 2;
 % Room for the rows themselves (22 each), plus the spacing and padding of the
 % panel's own grid and the panel title bar: 22*n + 3*(n-1) + 8 + 23.
-side.RowHeight     = {128, 153, 178, 190, '1x'};
+% View takes one row more when there is another dataset to link the view to.
+side.RowHeight     = {128, 153, 178, 190 + 25*(model.NumDatasets > 1), '1x'};
 side.Padding       = [0 0 0 0];
 side.RowSpacing    = 4;
 side.Scrollable    = 'on';
@@ -238,14 +283,15 @@ spGam  = uispinner(g6, 'Limits', [0.1 5], 'Value', 1, 'Step', 0.1, ...
 
 %% ---- View --------------------------------------------------------------
 pView = uipanel(side, 'Title', 'View');
-gvw = uigridlayout(pView, [6 2]);
-gvw.RowHeight   = {22, 22, 22, 22, 22, 22};
+nViewRows = 6 + (model.NumDatasets > 1);
+gvw = uigridlayout(pView, [nViewRows 2]);
+gvw.RowHeight   = repmat({22}, 1, nViewRows);
 gvw.ColumnWidth = {68, '1x'};
 gvw.Padding     = [6 4 6 4];
 gvw.RowSpacing  = 3;
 
 uilabel(gvw, 'Text', 'Projection:');
-uidropdown(gvw, 'Items', {'Orthographic', 'Perspective'}, ...
+ddProj = uidropdown(gvw, 'Items', {'Orthographic', 'Perspective'}, ...
     'ItemsData', {'orthographic', 'perspective'}, 'Value', 'orthographic', ...
     'ValueChangedFcn', @(src, ~) onProjChanged(src.Value));
 
@@ -264,10 +310,12 @@ ga = uigridlayout(gvw, [1 2]);
 ga.ColumnWidth   = {'1x', '1x'};
 ga.Padding       = [0 0 0 0];
 ga.ColumnSpacing = 4;
+% Through a nested function, not an anonymous one: an anonymous callback
+% captures its variables where it is written, and spEl does not exist yet.
 spAz = uispinner(ga, 'Limits', [-180 180], 'Value', -37.5, 'Step', 5, ...
-    'ValueChangedFcn', @(~,~) setAngles(spAz.Value, spEl.Value));
+    'ValueChangedFcn', @(~,~) onAngleEdit());
 spEl = uispinner(ga, 'Limits', [-89 89], 'Value', 30, 'Step', 5, ...
-    'ValueChangedFcn', @(~,~) setAngles(spAz.Value, spEl.Value));
+    'ValueChangedFcn', @(~,~) onAngleEdit());
 
 uilabel(gvw, 'Text', 'Zoom:');
 spZoom = uispinner(gvw, 'Limits', [0.05 50], 'Value', 1, 'Step', 0.1, ...
@@ -279,9 +327,9 @@ g5.Layout.Column = [1 2];
 g5.ColumnWidth   = {'fit', '1x'};
 g5.Padding       = [0 0 0 0];
 g5.ColumnSpacing = 3;
-uicheckbox(g5, 'Text', 'Bounding box', 'Value', true, ...
+chkBox = uicheckbox(g5, 'Text', 'Bounding box', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) onBoxToggle(src.Value));
-uicheckbox(g5, 'Text', 'Orientation axes', 'Value', true, ...
+chkOrient = uicheckbox(g5, 'Text', 'Orientation axes', 'Value', true, ...
     'ValueChangedFcn', @(src, ~) onOrientToggle(src.Value));
 
 ddBg = uidropdown(gvw, 'Items', {'Black', 'White'}, ...
@@ -293,6 +341,16 @@ btnResetView = uibutton(gvw, 'Text', 'Reset view', ...
     'ButtonPushedFcn', @(~,~) resetView());
 btnResetView.Layout.Row    = 6;
 btnResetView.Layout.Column = 2;
+
+if model.NumDatasets > 1
+    chkLink = uicheckbox(gvw, 'Text', 'Link view to other datasets', ...
+        'Value', linked, 'Tooltip', ...
+        ['On: dimensions, extent, rendering and camera are shared with the' ...
+         newline 'other datasets'' 3-D windows.  Off: this one keeps its own.'], ...
+        'ValueChangedFcn', @(src, ~) onLinkToggle(src.Value));
+    chkLink.Layout.Row    = 7;
+    chkLink.Layout.Column = [1 2];
+end
 
 %% ---- volume view -------------------------------------------------------
 vv = MatVisVolumeView(holder);
@@ -307,6 +365,14 @@ fig.WindowButtonUpFcn     = @(~, ~)   onMouseUp();
 fig.WindowScrollWheelFcn  = @(~, evt) onScrollWheel(evt);
 
 syncControls();
+ready = true;                % from here on a control change is broadcast
+
+if model.NumDatasets > 1
+    camPoll = timer('Name', 'matVis3DCam', 'ExecutionMode', 'fixedSpacing', ...
+        'Period', CAMPOLL, 'BusyMode', 'drop', 'TimerFcn', @(~,~) pollCamera());
+    fig.DeleteFcn = @(~,~) stopCamPoll();
+    start(camPoll);
+end
 
 %% ---- public interface --------------------------------------------------
 w3.fig     = fig;
@@ -317,6 +383,8 @@ w3.Refresh = @forceRefresh;
 w3.View    = @currentView;    % camera + dims + style, for the video generator
 w3.Dims    = @() dims3;
 w3.Style   = @() ddStyle.Value;
+w3.ViewState = @viewState;    % the settings a linked window mirrors
+w3.ApplyView = @applyView;
 
 % =========================================================================
 %  Rendering
@@ -355,10 +423,19 @@ w3.Style   = @() ddStyle.Value;
     function showWin()
         fig.Visible = 'on';
         forceRefresh();
+        % A view adopted while this window was hidden never reached the
+        % camera: the backend only has one once it has been given a volume.
+        % Now that it has, rejoin the other datasets.
+        if linked && ~isempty(sharedViewCb)
+            try; applyView(sharedViewCb()); catch; end
+        end
         figure(fig);
     end
 
-    function render()
+    function did = render()
+        % DID is false when the volume was already up to date, so a caller
+        % that also changed the look knows it still has to push it itself.
+        did = false;
         if nDims < 3 || numel(unique(dims3)) < 3, return; end
         rng3 = effectiveRanges();
         budget = MAXVOX;
@@ -385,6 +462,7 @@ w3.Style   = @() ddStyle.Value;
         lastVox = double(size(V, 1:3));
         lastStr = strides;
         showStatus();
+        did = true;
     end
 
     function applyLook()
@@ -502,6 +580,32 @@ w3.Style   = @() ddStyle.Value;
             spZoom.Value = z;
         end
         showStatus();
+        lastCam = currentCam();
+        broadcast();
+    end
+
+    function c = currentCam()
+        [az, el] = vv.cameraAngles();
+        c = struct('pose', vv.cameraPose(), 'az', az, 'el', el, ...
+                   'zoom', vv.cameraZoom());
+    end
+
+    function pollCamera()
+        % Has the backend moved the camera without telling us?  See CAMPOLL.
+        if ~ready || applying || ~linked || ~isvalid(fig) || ...
+                ~strcmp(fig.Visible, 'on')
+            return;
+        end
+        if ~isempty(lastCam) && sameCam3_(currentCam(), lastCam), return; end
+        syncCameraControls();     % refreshes the readouts and broadcasts
+    end
+
+    function stopCamPoll()
+        if ~isempty(camPoll) && isvalid(camPoll)
+            try; stop(camPoll);   catch; end
+            try; delete(camPoll); catch; end
+        end
+        camPoll = [];
     end
 
     function onDimChanged(slot, newDim)
@@ -514,6 +618,7 @@ w3.Style   = @() ddStyle.Value;
         ranges = fullRanges(dims3);
         syncControls();
         forceRefresh();
+        broadcast(true);
     end
 
     function onExtentChanged(slot)
@@ -526,23 +631,27 @@ w3.Style   = @() ddStyle.Value;
         end
         ranges(slot, :) = [lo, hi];
         render();
+        broadcast(true);
     end
 
     function resetExtent()
         ranges = fullRanges(dims3);
         syncControls();
         render();
+        broadcast(true);
     end
 
     function onMainZoomToggle(tf)
         useMainZoom = logical(tf);
         syncControls();
         render();
+        broadcast(true);
     end
 
     function onFullResToggle(tf)
         fullRes = logical(tf);
         render();
+        broadcast(true);
     end
 
     function onFollowToggle(tf)
@@ -555,6 +664,7 @@ w3.Style   = @() ddStyle.Value;
         % A style or alpha change does not need a new volume, but a colormap
         % change does reach the fallback renderer's cached faces — applyLook
         % redraws those, so nothing else is needed here.
+        broadcast(true);
     end
 
     function onOwnContrastToggle(tf)
@@ -581,22 +691,31 @@ w3.Style   = @() ddStyle.Value;
 
     function onProjChanged(mode)
         vv.setProjection(mode);
+        broadcast(true);
     end
 
     function onZoomEdit(z)
         vv.setCameraZoom(z);
+        broadcast(true);
     end
 
     function onBoxToggle(tf)
         vv.setBoxVisible(tf);
+        broadcast(true);
     end
 
     function onOrientToggle(tf)
         vv.setOrientationAxes(tf);
+        broadcast(true);
     end
 
     function onBgChanged(c)
         vv.setBackground(c);
+        broadcast(true);
+    end
+
+    function onAngleEdit()
+        setAngles(spAz.Value, spEl.Value);
     end
 
     function setAngles(az, el)
@@ -607,6 +726,173 @@ w3.Style   = @() ddStyle.Value;
     function resetView()
         vv.resetCamera();
         syncCameraControls();
+    end
+
+% =========================================================================
+%  Linked views
+% =========================================================================
+    function s = viewState()
+        % What a linked window mirrors: what goes into the volume, how it is
+        % rendered, and how it is viewed.  Contrast stays out — its bounds
+        % only mean something per dataset — and so does "Follow main window".
+        %
+        % The camera travels as the backend's own pose rather than as azimuth
+        % and elevation, which cannot describe the roll a free rotation adds.
+        % The datasets have the same size and the same pixel sizes, and both
+        % windows span the same dims and extent, so a pose means the same
+        % thing in both.  The angles come along as a fallback: a backend that
+        % keeps its camera on 'auto' reports no pose to copy, and they are
+        % read whatever the mode says.
+        [az, el] = vv.cameraAngles();
+        s = struct('dims', dims3, 'ranges', ranges, ...
+                   'useMainZoom', useMainZoom, 'fullRes', fullRes, ...
+                   'style', ddStyle.Value, 'cmap', ddCmap.Value, ...
+                   'alpha', ddAlpha.Value, ...
+                   'alphaWin', [spAlphaLo.Value, spAlphaHi.Value], ...
+                   'iso', spIso.Value, 'proj', ddProj.Value, ...
+                   'bg', ddBg.Value, 'box', chkBox.Value, ...
+                   'orient', chkOrient.Value, 'pose', vv.cameraPose(), ...
+                   'az', az, 'el', el, 'zoom', vv.cameraZoom());
+    end
+
+    function applyView(s)
+        % Adopt another dataset's view.  A decoupled window ignores it.
+        %
+        % Adopting one takes a render, and a render lets queued callbacks
+        % through, so a newer view can arrive in the middle of an older one.
+        % It is parked in PENDING and picked up here rather than applied by a
+        % nested call, which would finish by laying the older view back over
+        % the newer one — the window would trail one step behind for good.
+        if ~linked || isempty(s) || ~isstruct(s), return; end
+        if applying
+            pending = s;
+            return;
+        end
+        applying = true;
+        pending  = [];
+        try
+            while ~isempty(s)
+                if ~sameView3_(s, viewState())
+                    adoptView(s);
+                end
+                adopted = s;
+                s       = pending;
+                pending = [];
+            end
+        catch
+        end
+        applying = false;
+        pending  = [];
+        adoptTic = tic;
+    end
+
+    function adoptView(s)
+        % The scene is only touched when it differs.  A camera-only update
+        % arrives as fast as the other window is being dragged, and pushing
+        % the volume to the renderer at that rate would make this one crawl.
+        if ~sameScene3_(s, viewState())
+            adoptScene(s);
+        end
+        adoptCamera(s);
+        % Last, because until now the angle spinners and the status line still
+        % showed the camera this window had *before* the adopt.
+        syncCameraControls();
+    end
+
+    function adoptScene(s)
+        d = s.dims(:).';
+        if numel(d) == 3 && all(d >= 1 & d <= nDims) && numel(unique(d)) == 3
+            dims3 = d;
+        end
+        if isequal(size(s.ranges), [3 2]), ranges = s.ranges; end
+        useMainZoom = logical(s.useMainZoom);
+        fullRes     = logical(s.fullRes);
+        chkMainZoom.Value = useMainZoom;
+        chkFullRes.Value  = fullRes;
+        ddStyle.Value   = s.style;
+        ddCmap.Value    = s.cmap;
+        ddAlpha.Value   = s.alpha;
+        spAlphaLo.Value = s.alphaWin(1);
+        spAlphaHi.Value = s.alphaWin(2);
+        spIso.Value     = s.iso;
+        ddProj.Value    = s.proj;
+        ddBg.Value      = s.bg;
+        chkBox.Value    = s.box;
+        chkOrient.Value = s.orient;
+        syncControls();              % clamps the extent to this dataset
+        vv.setProjection(s.proj);
+        vv.setBackground(s.bg);
+        vv.setBoxVisible(s.box);
+        vv.setOrientationAxes(s.orient);
+        if strcmp(fig.Visible, 'on')
+            if ~render(), applyLook(); end
+        else
+            dataSig = [];            % the next Show() rebuilds it
+        end
+    end
+
+    function adoptCamera(s)
+        % After the scene: a rebuilt volume re-fits a camera still in auto
+        % mode, which would undo a write made before it.  It is written only
+        % when it really differs, because a viewer3d answers a write with a
+        % CameraMovedFcn of its own.
+        if hasPose3_(s.pose)
+            if ~samePose3_(s.pose, vv.cameraPose())
+                vv.setCameraPose(s.pose);
+            end
+        else
+            % Nothing to copy verbatim, so aim by the angles instead.  A roll
+            % cannot survive that — but a backend that reports no pose offers
+            % no way to carry one anyway.
+            [az0, el0] = vv.cameraAngles();
+            if isfinite(s.az) && isfinite(s.el) && ...
+                    (~isfinite(az0) || ~isfinite(el0) || ...
+                     abs(mod(az0 - s.az + 180, 360) - 180) > 0.01 || ...
+                     abs(el0 - s.el) > 0.01)
+                vv.setCameraAngles(s.az, s.el);
+            end
+            z0 = vv.cameraZoom();
+            if isfinite(s.zoom) && (~isfinite(z0) || abs(z0 - s.zoom) > 1e-4)
+                vv.setCameraZoom(s.zoom);
+            end
+        end
+    end
+
+    function broadcast(force)
+        % Hand this view to the owner, which mirrors it into the other
+        % datasets' 3-D windows.
+        %
+        % FORCE marks a change the user made in this window, which always
+        % goes out.  Without it the call comes from the backend reporting
+        % that the camera moved, and that may be nothing but the echo of a
+        % view this window has just adopted — returning one of those to the
+        % window it came from is what makes a pair of linked views chase each
+        % other one step apart.  So an unforced report is dropped while it
+        % still describes the adopted view, and during ECHOWAIT after the
+        % adopt, by when a genuine gesture would have moved on.
+        if ~ready || applying || ~linked || isempty(viewChangedCb), return; end
+        v = viewState();
+        if nargin < 1 || ~force
+            if ~isempty(adoptTic) && toc(adoptTic) < ECHOWAIT, return; end
+            if sameView3_(v, adopted), return; end
+        end
+        adopted  = [];       % from here on this window drives its own view
+        adoptTic = [];
+        try; viewChangedCb(v); catch; end
+    end
+
+    function onLinkToggle(tf)
+        linked = logical(tf);
+        if ~linked, return; end
+        s = [];
+        if ~isempty(sharedViewCb)
+            try; s = sharedViewCb(); catch; s = []; end
+        end
+        if isempty(s)
+            broadcast(true);     % nothing shared yet — this window sets the view
+        else
+            applyView(s);    % rejoin the others
+        end
     end
 
 % =========================================================================
@@ -694,6 +980,65 @@ end % MatVis3DWin
 % ---- Module helpers -------------------------------------------------------
 function s = onOff3_(tf)
     if tf, s = 'on'; else, s = 'off'; end
+end
+
+function tf = sameView3_(a, b)
+    % Do two linked-view structs describe the same view?
+    tf = sameScene3_(a, b) && sameCam3_(a, b);
+end
+
+function tf = sameCam3_(a, b)
+    % Same camera?  Compared with a tolerance: a viewer3d hands its camera
+    % back through a web component, so what comes back differs in the last
+    % few digits from what was written.  NaN (no camera) equals NaN.
+    tf = false;
+    if isempty(a) || isempty(b) || ~isstruct(a) || ~isstruct(b), return; end
+    tf = samePose3_(a.pose, b.pose) && nearPt3_(a.az, b.az) && ...
+         nearPt3_(a.el, b.el) && nearPt3_(a.zoom, b.zoom);
+end
+
+function tf = sameScene3_(a, b)
+    % Everything but the camera: what goes into the volume, and how it is
+    % drawn.
+    tf = false;
+    if isempty(a) || isempty(b) || ~isstruct(a) || ~isstruct(b), return; end
+    if ~isequal(a.dims, b.dims) || ~isequal(a.ranges, b.ranges) || ...
+            ~isequal(logical(a.useMainZoom), logical(b.useMainZoom)) || ...
+            ~isequal(logical(a.fullRes), logical(b.fullRes)) || ...
+            ~strcmp(a.style, b.style) || ~isequal(a.cmap, b.cmap) || ...
+            ~strcmp(a.alpha, b.alpha) || ~isequal(a.alphaWin, b.alphaWin) || ...
+            ~isequal(a.iso, b.iso) || ~strcmp(a.proj, b.proj) || ...
+            ~strcmp(a.bg, b.bg) || ...
+            ~isequal(logical(a.box), logical(b.box)) || ...
+            ~isequal(logical(a.orient), logical(b.orient))
+        return;
+    end
+    tf = true;
+end
+
+function tf = hasPose3_(p)
+    % Did the backend hand over a camera, or is it still choosing one itself?
+    tf = isstruct(p) && isscalar(p) && ...
+         any(isfinite([p.pos, p.target, p.up, p.va, p.zoom]));
+end
+
+function tf = samePose3_(a, b)
+    % Same camera pose?  What a viewer3d hands back differs in the last digits
+    % from what was written into it, so the comparison is relative; a
+    % component both sides leave to their backend is NaN on both.
+    tf = false;
+    if ~isstruct(a) || ~isstruct(b) || ~isscalar(a) || ~isscalar(b), return; end
+    tf = nearPt3_(a.pos, b.pos) && nearPt3_(a.target, b.target) && ...
+         nearPt3_(a.up, b.up) && nearPt3_(a.va, b.va) && ...
+         nearPt3_(a.zoom, b.zoom);
+end
+
+function tf = nearPt3_(p, q)
+    % Equal but for float noise, with NaN (nothing to compare) equal to NaN.
+    tol = 1e-9;
+    tf = numel(p) == numel(q) && ...
+         all((isnan(p) & isnan(q)) | ...
+             (abs(p - q) <= tol * (1 + abs(p) + abs(q))));
 end
 
 function items = getColormapItems3D()
