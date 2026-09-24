@@ -37,6 +37,14 @@ mvT0_     = tic;
 % a second and a stale value costs at worst one frame at the wrong sampling.
 dispPxCache = struct();
 
+% A dataset whose values are all identical has an empty value range, and no
+% numeric field or axis accepts one: Limits and XLim both demand the second
+% element be greater than the first.  Widen it by one unit for the controls
+% only -- the data is untouched, and matVis2 has already told the user the
+% dataset is uniform.  syncAfterDataChange applies the same rule when the
+% data is swapped.
+[dataLo, dataHi] = displayRange_(model);
+
 % Signatures of display settings already warned about as expensive reads.  A
 % projection or an RGB stretch over a file-backed dataset turns one
 % navigation step into a run of plane reads; the warning belongs to the
@@ -464,7 +472,7 @@ lblHistMin.Layout.Column = 1;
 
 edtHistMin = uieditfield(contrastGrid, 'numeric', ...
     'Value', model.DataMin, ...
-    'Limits', [model.DataMin, model.DataMax], ...
+    'Limits', [dataLo, dataHi], ...
     'RoundFractionalValues', false, 'FontSize', 10, ...
     'ValueChangedFcn', @(src, ~) onHistMinChanged(src));
 edtHistMin.Layout.Row    = 5;
@@ -476,7 +484,7 @@ lblHistMax.Layout.Column = 7;
 
 edtHistMax = uieditfield(contrastGrid, 'numeric', ...
     'Value', model.DataMax, ...
-    'Limits', [model.DataMin, model.DataMax], ...
+    'Limits', [dataLo, dataHi], ...
     'RoundFractionalValues', false, 'FontSize', 10, ...
     'ValueChangedFcn', @(src, ~) onHistMaxChanged(src));
 edtHistMax.Layout.Row    = 5;
@@ -545,7 +553,7 @@ lblContrastMin.Layout.Column = 1;
 
 edtContrastMin = uieditfield(contrastGrid, 'numeric', ...
     'Value', model.ContrastMin, ...
-    'Limits', [model.DataMin, model.DataMax], ...
+    'Limits', [dataLo, dataHi], ...
     'RoundFractionalValues', false, 'FontSize', 10, ...
     'ValueChangedFcn', @(src, ~) onContrastMinChanged(src));
 edtContrastMin.Layout.Row    = 7;
@@ -570,7 +578,7 @@ lblContrastMax.Layout.Column = 7;
 
 edtContrastMax = uieditfield(contrastGrid, 'numeric', ...
     'Value', model.ContrastMax, ...
-    'Limits', [model.DataMin, model.DataMax], ...
+    'Limits', [dataLo, dataHi], ...
     'RoundFractionalValues', false, 'FontSize', 10, ...
     'ValueChangedFcn', @(src, ~) onContrastMaxChanged(src));
 edtContrastMax.Layout.Row    = 7;
@@ -2145,6 +2153,12 @@ fprintf('\n');
 
         histXMin = edtHistMin.Value;
         histXMax = edtHistMax.Value;
+        if ~(histXMax > histXMin)
+            % Uniform data, or the two fields dragged together: give the one
+            % bar somewhere to stand rather than hand the axis an empty span.
+            histXMin = histXMin - 0.5;
+            histXMax = histXMax + 0.5;
+        end
         nBins    = 100;
         binEdges = linspace(histXMin, histXMax, nBins + 1);
         bw       = binEdges(2) - binEdges(1);
@@ -3900,8 +3914,9 @@ fprintf('\n');
         end
         model.Datasets = loaded;      % also clears every held slice
         model.RefreshDataRanges();
-        edtHistMin.Limits = [model.DataMin, model.DataMax];
-        edtHistMax.Limits = [model.DataMin, model.DataMax];
+        [dataLo, dataHi]  = displayRange_(model);
+        edtHistMin.Limits = [dataLo, dataHi];
+        edtHistMax.Limits = [dataLo, dataHi];
         edtHistMin.Value  = model.DataMin;
         edtHistMax.Value  = model.DataMax;
 
@@ -4540,6 +4555,15 @@ if n < 90
 else
     s = sprintf('%.0f min', n / 60);
 end
+end
+
+function [lo, hi] = displayRange_(model)
+% The data range, widened to something a control can actually take when the
+% dataset is uniform.  Equal limits are rejected by uieditfield and by every
+% axis, so a constant-valued stack would otherwise fail to open at all.
+lo = model.DataMin;
+hi = model.DataMax;
+if ~(hi > lo), hi = lo + 1; end
 end
 
 function k = MatVisMainWindow_DisplaySamplesPerPixel()

@@ -107,10 +107,15 @@ if fileMode
         {'dimNames', fm.dimNames, 'dimUnits', fm.dimUnits, 'dimScale', fm.dimScale, ...
          'datasetNames', fm.datasetNames, 'fileMetadata', fm.fileMetadata}, restArgs);
 else
-    % Split leading numeric arrays from name-value pairs
+    % Split leading datasets from name-value pairs.  A dataset is a numeric
+    % array or a MatVisDataSource that reads one from a file on demand --
+    % nothing downstream tells them apart, and neither may this.  Opening a
+    % large file from a running window hands the new window exactly such a
+    % source, and accepting only arrays here rejected it.
     nLeading = 0;
     for k = 1:numel(varargin)
-        if isnumeric(varargin{k}) && ~isscalar(varargin{k})
+        if (isnumeric(varargin{k}) && ~isscalar(varargin{k})) || ...
+                isa(varargin{k}, 'MatVisDataSource')
             nLeading = k;
         else
             break;
@@ -118,7 +123,8 @@ else
     end
 
     if nLeading == 0
-        error('matVis2:noData', 'At least one numeric data array must be provided.');
+        error('matVis2:noData', ...
+            'At least one data array or MatVisDataSource must be provided.');
     end
 
     datasets  = varargin(1:nLeading);
@@ -152,6 +158,11 @@ if ~isempty(args.alphaMap);  model.SetAlphaMaps(args.alphaMap); end
 model.applyStartPar(args.startPar);
 fprintf('[matVis2] MatVisModel:     %.3f s\n', toc(t2_));
 
+if ~confirmUniformData(model)
+    if nargout > 0, varargout{1} = []; end
+    return;
+end
+
 t3_ = tic;
 mw = MatVisMainWindow(model);
 fprintf('[matVis2] MatVisMainWindow:%.3f s  (includes sub-section detail above)\n', toc(t3_));
@@ -160,6 +171,52 @@ fprintf('[matVis2] Total:           %.3f s\n\n', toc(t0_matvis_));
 if nargout > 0
     varargout{1} = mw;
 end
+end
+
+% =============================================================================
+function tf = confirmUniformData(model)
+% A dataset in which every entry is the same value has nothing to display:
+% no contrast, an empty histogram, a blank image.  That is usually a sign
+% that the wrong file or the wrong channel was picked, so say so and let the
+% user decide rather than opening a window onto nothing.
+%
+% It is worth asking rather than merely warning, because on a large file the
+% window costs seconds to build.
+tf = true;
+uniform = false(1, model.NumDatasets);
+for k = 1:model.NumDatasets
+    [lo, hi] = model.Datasets{k}.valueRange();
+    uniform(k) = ~(hi > lo);
+end
+if ~any(uniform)
+    return;
+end
+
+names = model.DatasetNames;
+if numel(names) ~= model.NumDatasets
+    names = arrayfun(@(i) sprintf('Dataset %d', i), 1:model.NumDatasets, ...
+        'UniformOutput', false);
+end
+[val, ~] = model.Datasets{find(uniform, 1)}.valueRange();
+
+if all(uniform) && model.NumDatasets == 1
+    body = sprintf(['Every value in this dataset is %g, so there is nothing ' ...
+        'to see: no contrast, and an empty histogram.'], val);
+else
+    body = sprintf(['Every value is identical in: %s.  Those datasets have ' ...
+        'no contrast and an empty histogram.'], strjoin(names(uniform), ', '));
+end
+
+if ~usejava('desktop')
+    % Non-interactive: say it and carry on, rather than block a script on a
+    % dialog nobody can answer.
+    warning('matVis2:uniformData', '%s Opening it anyway.', body);
+    return;
+end
+
+choice = questdlg([body newline newline 'Open it anyway?'], 'Uniform data', ...
+    'Open anyway', 'Cancel', 'Open anyway');
+tf = strcmp(choice, 'Open anyway');
 end
 
 % =============================================================================
