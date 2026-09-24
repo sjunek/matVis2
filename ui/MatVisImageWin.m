@@ -115,23 +115,35 @@ iw.SetRoiMode        = @setRoiMode;
 iw.SetAspectRatio    = @applyAspectRatio;
 
 % -------------------------------------------------------------------------
-    function updateDisplay(rgbImg, zoomRect, posX, posY)
+    function updateDisplay(rgbImg, zoomRect, posX, posY, ext)
         % Only the image CData changes every frame — limits, crosshair and
         % zoom rect are written only when their values actually change.
         if ~isvalid(fig), return; end
         if MatVisRender.badDisplayImage(model, 'image window', rgbImg), return; end
         set(imgHandle, 'CData', rgbImg);
         [H, W, ~] = size(rgbImg);
-        szChanged = ~isequal(lastHW, [H, W]);
+
+        % The picture may be a decimated view of the plane rather than one
+        % pixel per data point (see MatVisRender.planExtent), so it is placed
+        % by the data coordinates it covers and the axes keep spanning the
+        % full dimension.  Everything else in this window -- ticks, ROI
+        % outlines, the crosshair, the zoom rectangle -- works in those
+        % coordinates and so needs no knowledge of the decimation.
+        if nargin < 5 || isempty(ext)
+            ext = struct('x', [1, W], 'y', [1, H], 'nx', W, 'ny', H);
+        end
+        set(imgHandle, 'XData', ext.x, 'YData', ext.y);
+
+        szChanged = ~isequal(lastHW, [ext.ny, ext.nx]);
         if szChanged
-            lastHW  = [H, W];
-            ax.XLim = [0.5, W + 0.5];
-            ax.YLim = [0.5, H + 0.5];
+            lastHW  = [ext.ny, ext.nx];
+            ax.XLim = [0.5, ext.nx + 0.5];
+            ax.YLim = [0.5, ext.ny + 0.5];
         end
 
         % Full-image rulers: data index == pixel (offset 0). Re-label only
         % when the display extent or the X/Y dimension assignment changes.
-        tickSig = [W, H, model.XDim, model.YDim];
+        tickSig = [ext.nx, ext.ny, model.XDim, model.YDim];
         if ~isequal(tickSig, lastTickSig)
             MatVisRender.applyAxisScale(ax, model, model.XDim, 0, model.YDim, 0);
             lastTickSig = tickSig;
@@ -167,8 +179,8 @@ iw.SetAspectRatio    = @applyAspectRatio;
 
         % Position cross-hair
         if nargin >= 4 && (posChanged || szChanged)
-            set(posLineV, 'XData', [posX posX], 'YData', [0.5, H + 0.5]);
-            set(posLineH, 'XData', [0.5, W + 0.5], 'YData', [posY posY]);
+            set(posLineV, 'XData', [posX posX], 'YData', [0.5, ext.ny + 0.5]);
+            set(posLineH, 'XData', [0.5, ext.nx + 0.5], 'YData', [posY posY]);
         end
 
         syncRoiOverlay();
@@ -488,10 +500,10 @@ iw.SetAspectRatio    = @applyAspectRatio;
         idx      = num2cell(model.CurrPos);
         idx{xd}  = px;
         idx{yd}  = py;
-        val = model.Data(idx{:});
+        val = model.Data.readSub(idx);
         alphaVal = [];
         if model.WithAlpha
-            alphaVal = model.AlphaMaps{model.ActiveDataset}(idx{:});
+            alphaVal = model.AlphaMaps{model.ActiveDataset}.readSub(idx);
         end
     end
 

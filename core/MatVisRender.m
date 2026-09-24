@@ -3,6 +3,13 @@ classdef MatVisRender
         % Fraction of the RGB-stretch slider track reserved at each end for
         % solid blue / red (the rainbow fills the middle 1 - 2*PAD).
         RGB_STRETCH_PAD = 0.15;
+
+        % Most in-plane samples a displayed slice may contain.  No screen
+        % shows more, and on a source with resolution levels a request this
+        % size is served from a coarse level rather than by reading the fine
+        % one.  Only the display passes it; anything that wants the data
+        % itself (the export menu, the video writer) leaves it at Inf.
+        DISPLAY_PIXEL_BUDGET = 4e6;
     end
 
     methods (Static)
@@ -44,7 +51,7 @@ classdef MatVisRender
         function profile1D = renderProfile(model, dimIdx)
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = model.ZoomRange(dimIdx, 1) : model.ZoomRange(dimIdx, 2);
-            raw = double(model.Data(idx{:}));
+            raw = double(model.Data.readSub(idx));
             profile1D = raw(:);
         end
 
@@ -52,17 +59,24 @@ classdef MatVisRender
             % Like renderProfile but spans the full dimension extent (ignores ZoomRange).
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = 1 : model.Size(dimIdx);
-            raw = double(model.Data(idx{:}));
+            raw = double(model.Data.readSub(idx));
             profile1D = raw(:);
         end
 
         % ------------------------------------------------------------------
-        %  Data-overriding variants — use provided data array instead of
-        %  model.Data.  Used by multi-dataset rendering loop.
+        %  Data-overriding variants — use the provided data source instead of
+        %  model.Data.  Used by the multi-dataset rendering loop.
+        %
+        %  Throughout this class, a `data` argument is a MatVisDataSource, not
+        %  a numeric array: it is asked for elements through readSub/readLinear
+        %  rather than indexed directly, so the same code serves a dataset held
+        %  in memory and one read from a file on demand.  Everything derived
+        %  from those elements — projection, RGB splitting, filtering — runs
+        %  here, on ordinary arrays.
         % ------------------------------------------------------------------
 
         function raw = getRawSliceFromData(model, data)
-            % Like getRawSlice but uses the provided data array.
+            % Like getRawSlice but uses the provided data source.
             raw = MatVisRender.rawSliceFromPlan(data, model, ...
                 MatVisRender.rawZoomSlicePlan(model));
         end
@@ -87,29 +101,42 @@ classdef MatVisRender
         %  never cost a re-slice — which for a projection over a large stack
         %  means re-reading the whole stack.
         % ------------------------------------------------------------------
-        function plan = rawZoomSlicePlan(model)
+        function plan = rawZoomSlicePlan(model, pixelBudget)
             % Plan for the zoom crop of the model's own display plane.
+            if nargin < 2, pixelBudget = Inf; end
             xIdx = model.ZoomRange(model.XDim, 1) : model.ZoomRange(model.XDim, 2);
             yIdx = model.ZoomRange(model.YDim, 1) : model.ZoomRange(model.YDim, 2);
             plan = MatVisRender.rawSlicePlan(model, model.XDim, model.YDim, ...
-                xIdx, yIdx, false, true);
+                xIdx, yIdx, false, true, pixelBudget);
         end
 
-        function plan = rawFullSlicePlan(model)
+        function plan = rawFullSlicePlan(model, pixelBudget)
             % Plan for the full extent of the model's own display plane.
+            if nargin < 2, pixelBudget = Inf; end
             plan = MatVisRender.rawSlicePlan(model, model.XDim, model.YDim, ...
-                [], [], true, true);
+                [], [], true, true, pixelBudget);
         end
 
-        function plan = rawSlicePlan(model, xDim, yDim, xIdx, yIdx, projLock, doFlip)
+        function plan = rawSlicePlan(model, xDim, yDim, xIdx, yIdx, projLock, doFlip, pixelBudget)
             % rawSlicePlan  Index recipe + cache key for one raw slice.
             %   xIdx / yIdx : index vectors along xDim / yDim; [] = full extent
             %   projLock    : true  -> projection spans ProjZoomLock's range
             %                 false -> projection always spans the zoom interval
             %   doFlip      : apply model.FlipX / FlipY (only for its own plane)
+            %   pixelBudget : most in-plane samples the slice may contain;
+            %                 Inf (the default) means every pixel of the region
+            %
+            % A budget is what a *display* wants: no screen shows a gigapixel
+            % plane, and a source with resolution levels serves a strided
+            % request from a level instead of reading the finest one.  It is
+            % opt-in because callers that want the data itself -- the export
+            % menu above all -- must keep getting every pixel.
+            if nargin < 8, pixelBudget = Inf; end
             idx = num2cell(model.CurrPos);
             idx{xDim} = MatVisRender.canonIdx_(xIdx, model.Size(xDim));
             idx{yDim} = MatVisRender.canonIdx_(yIdx, model.Size(yDim));
+            [idx{xDim}, idx{yDim}] = MatVisRender.decimateToBudget_( ...
+                idx{xDim}, idx{yDim}, model.Size(xDim), model.Size(yDim), pixelBudget);
             [doProj, pd] = MatVisRender.projStateFor_(model, xDim, yDim);
             [doRGB,  rd] = MatVisRender.rgbStateFor_(model, xDim, yDim, doProj, pd);
             doStretch    = doRGB && ~strcmp(model.RGBStretchMode, 'none');
@@ -142,10 +169,35 @@ classdef MatVisRender
                 [xDim, yDim, doProj, pd, doRGB, rd, doStretch, flipX, flipY]};
         end
 
+        function ext = planExtent(plan, model)
+            % planExtent  Where a plan's samples sit in data coordinates.
+            %   .x / .y : [first last] index actually sampled along the plan's
+            %             display dims; .nx / .ny : the full extent of those
+            %             dims.  A decimated slice has fewer pixels than the
+            %             region it covers, so the image it is drawn into has
+            %             to be placed by these rather than by its own size --
+            %             that is what keeps axis ticks, ROI outlines and the
+            %             crosshair in data coordinates and unaware of the
+            %             resolution level behind the picture.
+            ext = struct( ...
+                'x',  MatVisRender.idxEnds_(plan.idx{plan.xDim}, model.Size(plan.xDim)), ...
+                'y',  MatVisRender.idxEnds_(plan.idx{plan.yDim}, model.Size(plan.yDim)), ...
+                'nx', model.Size(plan.xDim), ...
+                'ny', model.Size(plan.yDim));
+        end
+
+        function e = idxEnds_(idx, n)
+            if isequal(idx, ':')
+                e = [1, n];
+            else
+                e = [idx(1), idx(end)];
+            end
+        end
+
         function raw = rawSliceFromPlan(data, model, plan)
             % rawSliceFromPlan  Execute a plan against one data array.
             raw = MatVisRender.finalizeSliceDims_( ...
-                MatVisRender.subarray_(data, plan.idx), model, ...
+                data.readSub(plan.idx), model, ...
                 plan.xDim, plan.yDim, plan.doProj, plan.pd, ...
                 plan.doRGB, plan.rd, plan.doStretch, plan.doFlip);
         end
@@ -188,7 +240,7 @@ classdef MatVisRender
             for k = 1:3
                 idx{dims3(k)} = idxCells{k};
             end
-            raw   = data(idx{:});
+            raw   = data.readSub(idx);
             nd    = numel(model.Size);
             order = [dims3(:)', setdiff(1:nd, dims3)];
             raw   = permute(raw, order);
@@ -234,14 +286,14 @@ classdef MatVisRender
         function profile1D = renderProfileFromData(model, data, dimIdx)
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = model.ZoomRange(dimIdx, 1) : model.ZoomRange(dimIdx, 2);
-            raw = double(data(idx{:}));
+            raw = double(data.readSub(idx));
             profile1D = MatVisRender.avgOverNonProfileDims_(raw, dimIdx, numel(model.Size));
         end
 
         function profile1D = renderFullProfileFromData(model, data, dimIdx)
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = 1 : model.Size(dimIdx);
-            raw = double(data(idx{:}));
+            raw = double(data.readSub(idx));
             profile1D = MatVisRender.avgOverNonProfileDims_(raw, dimIdx, numel(model.Size));
         end
 
@@ -251,7 +303,7 @@ classdef MatVisRender
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = model.ZoomRange(dimIdx, 1) : model.ZoomRange(dimIdx, 2);
             idx = MatVisRender.applyNeighborIdx_(model, dimIdx, avgMode, idx);
-            raw = double(data(idx{:}));
+            raw = double(data.readSub(idx));
             profile1D = MatVisRender.avgOverNonProfileDims_(raw, dimIdx, numel(model.Size));
         end
 
@@ -260,7 +312,7 @@ classdef MatVisRender
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = 1 : model.Size(dimIdx);
             idx = MatVisRender.applyNeighborIdx_(model, dimIdx, avgMode, idx);
-            raw = double(data(idx{:}));
+            raw = double(data.readSub(idx));
             profile1D = MatVisRender.avgOverNonProfileDims_(raw, dimIdx, numel(model.Size));
         end
 
@@ -274,7 +326,7 @@ classdef MatVisRender
             idx{dimIdx} = model.ZoomRange(dimIdx, 1) : model.ZoomRange(dimIdx, 2);
             idx = MatVisRender.applyNeighborIdx_(model, dimIdx, avgMode, idx);
             [profile1D, alphaProf] = MatVisRender.weightedProfiles_( ...
-                double(data(idx{:})), double(alphaMap(idx{:})), dimIdx, numel(model.Size));
+                double(data.readSub(idx)), double(alphaMap.readSub(idx)), dimIdx, numel(model.Size));
         end
 
         function [profile1D, alphaProf] = renderFullProfileNeighborAlphaFromData(model, data, alphaMap, dimIdx, avgMode)
@@ -284,7 +336,7 @@ classdef MatVisRender
             idx{dimIdx} = 1 : model.Size(dimIdx);
             idx = MatVisRender.applyNeighborIdx_(model, dimIdx, avgMode, idx);
             [profile1D, alphaProf] = MatVisRender.weightedProfiles_( ...
-                double(data(idx{:})), double(alphaMap(idx{:})), dimIdx, numel(model.Size));
+                double(data.readSub(idx)), double(alphaMap.readSub(idx)), dimIdx, numel(model.Size));
         end
 
         function profile1D = renderRoiProfileFromData(model, data, dimIdx, roi, useZoomRange)
@@ -295,7 +347,7 @@ classdef MatVisRender
             % already constrains those) or the ROI mask is empty.
             [lin, nPix, nT] = MatVisRender.roiLinIndex_(model, dimIdx, roi, useZoomRange);
             if isempty(lin), profile1D = []; return; end
-            vals = reshape(double(data(lin)), nPix, nT);
+            vals = reshape(double(data.readLinear(lin)), nPix, nT);
             profile1D = mean(vals, 1, 'omitnan')';
         end
 
@@ -306,8 +358,8 @@ classdef MatVisRender
             % is the plain mean of the alpha map over the same pixels.
             [lin, nPix, nT] = MatVisRender.roiLinIndex_(model, dimIdx, roi, useZoomRange);
             if isempty(lin), profile1D = []; alphaProf = []; return; end
-            vals  = reshape(double(data(lin)),     nPix, nT);
-            aVals = reshape(double(alphaMap(lin)), nPix, nT);
+            vals  = reshape(double(data.readLinear(lin)),     nPix, nT);
+            aVals = reshape(double(alphaMap.readLinear(lin)), nPix, nT);
             num = sum(vals .* aVals,           1, 'omitnan');
             den = sum(aVals .* ~isnan(vals),   1, 'omitnan');
             profile1D = (num ./ den)';
@@ -333,7 +385,7 @@ classdef MatVisRender
                     subs{d} = repmat(model.CurrPos(d), numel(xs), 1);
                 end
             end
-            vals = double(data(sub2ind(sz, subs{:})));
+            vals = double(data.readLinear(sub2ind(sz, subs{:})));
         end
 
         function cols = roiColors(n)
@@ -386,7 +438,7 @@ classdef MatVisRender
             idx{model.YDim} = 1 : model.Size(model.YDim);
             for t = 1:nT
                 idx{dimIdx} = t;
-                raw = squeeze(double(data(idx{:})));
+                raw = squeeze(double(data.readSub(idx)));
                 if model.XDim < model.YDim, raw = raw.'; end
                 img = interp2(raw, xq, yq);
                 traceMat(:, t) = MatVisRender.profileProject(img, model.ProfileProjection);
@@ -399,7 +451,7 @@ classdef MatVisRender
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = model.ZoomRange(dimIdx, 1) : model.ZoomRange(dimIdx, 2);
             idx = MatVisRender.applyNeighborIdx_(model, dimIdx, avgMode, idx);
-            raw = double(model.Data(idx{:}));
+            raw = double(model.Data.readSub(idx));
             profile1D = MatVisRender.avgOverNonProfileDims_(raw, dimIdx, numel(model.Size));
         end
 
@@ -408,7 +460,7 @@ classdef MatVisRender
             idx = num2cell(model.CurrPos);
             idx{dimIdx} = 1 : model.Size(dimIdx);
             idx = MatVisRender.applyNeighborIdx_(model, dimIdx, avgMode, idx);
-            raw = double(model.Data(idx{:}));
+            raw = double(model.Data.readSub(idx));
             profile1D = MatVisRender.avgOverNonProfileDims_(raw, dimIdx, numel(model.Size));
         end
 
@@ -475,7 +527,7 @@ classdef MatVisRender
             if nReported > 5, return; end
             dsSz = '';
             for k = 1:numel(model.Datasets)
-                dsSz = [dsSz ' ' mat2str(size(model.Datasets{k}))];  %#ok<AGROW>
+                dsSz = [dsSz ' ' mat2str(model.Datasets{k}.Size)];  %#ok<AGROW>
             end
             fprintf(2, ['[matVis2] %s received an invalid image (%s %s) - ' ...
                 'frame dropped.\n          X=%d Y=%d proj=%d/%s rgb=%d ' ...
@@ -505,6 +557,22 @@ classdef MatVisRender
                  && any(model.FilterPar(:) ~= 0) && MatVisRender.filterAvailable();
         end
 
+        function pad = filterSupport_(model)
+            % Half-width, in pixels, beyond which a filter cannot influence a
+            % pixel.  Generous on purpose: a Gaussian is truncated at 3 sigma
+            % and everything else uses its own neighbourhood size, with a
+            % floor so a degenerate parameter still reads a usable band.
+            fs = double(model.FilterPar(:)');
+            if isempty(fs), fs = 0; end
+            m  = max(abs(fs));
+            switch model.FilterType
+                case 'gauss',   pad = ceil(3 * m);
+                case 'unsharp', pad = ceil(2 * m);
+                otherwise,      pad = ceil(m);
+            end
+            pad = max(pad, 1);
+        end
+
         function [pRaw, pFilt] = renderFilteredSpatialProfile(model, data, dimIdx, useZoom)
             % Profile along a display (X or Y) dimension together with its
             % spatially-filtered counterpart, for overlaying both traces in
@@ -517,22 +585,34 @@ classdef MatVisRender
             % renderProfileFromData), so toggling the filter never flips the
             % unfiltered trace relative to the unfiltered-only display.
             xd = model.XDim;  yd = model.YDim;
-            idx = num2cell(model.CurrPos);
-            idx{xd} = 1 : model.Size(xd);
-            idx{yd} = 1 : model.Size(yd);
-            slab = squeeze(double(data(idx{:})));   % only XDim/YDim are non-singleton
+            % Only a band around the extracted line is read, not the whole
+            % plane.  The filters here are local, so rows further than their
+            % support from the line cannot influence it -- and on a stitched
+            % image the whole plane is gigabytes and cannot be read at all.
+            pad  = MatVisRender.filterSupport_(model);
+            idx  = num2cell(model.CurrPos);
+            if dimIdx == xd     % vary X at the current Y: need rows near CurrPos(yd)
+                bandDim = yd;  lineDim = xd;
+            else                % vary Y at the current X: need columns near CurrPos(xd)
+                bandDim = xd;  lineDim = yd;
+            end
+            bLo = max(1, model.CurrPos(bandDim) - pad);
+            bHi = min(model.Size(bandDim), model.CurrPos(bandDim) + pad);
+            idx{lineDim} = 1 : model.Size(lineDim);
+            idx{bandDim} = bLo : bHi;
+            slab = squeeze(double(data.readSub(idx)));
             if xd < yd
                 slab = slab.';                       % orient to [Y x X]
             end
+            % Index of the line itself within the band that was read.
+            bandPos = model.CurrPos(bandDim) - bLo + 1;
             filt = MatVisRender.filterImage(slab, model.FilterType, model.FilterPar);
             if dimIdx == xd          % vary X (columns) at the current Y (row)
-                r = model.CurrPos(yd);
-                pRaw  = slab(r, :).';
-                pFilt = filt(r, :).';
+                pRaw  = slab(bandPos, :).';
+                pFilt = filt(bandPos, :).';
             else                     % vary Y (rows) at the current X (column)
-                c = model.CurrPos(xd);
-                pRaw  = slab(:, c);
-                pFilt = filt(:, c);
+                pRaw  = slab(:, bandPos);
+                pFilt = filt(:, bandPos);
             end
             if useZoom
                 zr = model.ZoomRange(dimIdx, :);
@@ -792,12 +872,31 @@ classdef MatVisRender
         end
 
         function img = applyColormap(data, cmapIdx)
-            cmap    = MatVisRender.getColormap(cmapIdx, 256);
-            indices = max(1, min(256, round(data * 255) + 1));
+            % Gather straight from a uint8 lookup table.  Going via a double
+            % RGB array first -- 24 MB for a megapixel slice, written twice
+            % before being cast down to 3 MB of uint8 -- made this half of the
+            % whole render time on a large image.  The result is identical:
+            % uint8(c*255) and a table pre-rounded the same way agree exactly.
+            % No separate non-finite pass: min/max already discard NaN the way
+            % normalize_ does, so a NaN arrives here as the top of the map --
+            % which is exactly what it was displayed as before.
+            cmap8 = MatVisRender.colormap8_(cmapIdx);
+            idx   = uint16(max(0, min(255, round(data * 255)))) + 1;
             H = size(data, 1);
             W = size(data, 2);
-            rgb = reshape(cmap(indices(:), :), [H W 3]);
-            img = uint8(rgb * 255);
+            img = reshape(cmap8(idx(:), :), [H W 3]);
+        end
+
+        function c8 = colormap8_(cmapIdx)
+            % The 0..255 form of the active colormap, built once per map.
+            persistent lastIdx lastMap
+            if ~isempty(lastMap) && isequal(lastIdx, cmapIdx)
+                c8 = lastMap;
+                return;
+            end
+            c8      = uint8(MatVisRender.getColormap(cmapIdx, 256) * 255);
+            lastIdx = cmapIdx;
+            lastMap = c8;
         end
 
         function [counts, edges] = computeHistogram(data)
@@ -1324,25 +1423,39 @@ classdef MatVisRender
             end
         end
 
+        function [ix, iy] = decimateToBudget_(ix, iy, nx, ny, budget)
+            % Thin the two in-plane index vectors by a common stride until
+            % they hold at most BUDGET samples between them.  One stride for
+            % both axes, so the picture keeps its aspect ratio; ':' is left
+            % alone when no thinning is needed, which keeps the cache keys of
+            % un-decimated plans exactly as they were.
+            if ~isfinite(budget) || budget <= 0
+                return;
+            end
+            cx = MatVisRender.idxCount_(ix, nx);
+            cy = MatVisRender.idxCount_(iy, ny);
+            if cx * cy <= budget
+                return;
+            end
+            step = ceil(sqrt(cx * cy / budget));
+            if isequal(ix, ':'), ix = 1:nx; end
+            if isequal(iy, ':'), iy = 1:ny; end
+            ix = ix(1:step:end);
+            iy = iy(1:step:end);
+        end
+
+        function n = idxCount_(idx, sz)
+            if isequal(idx, ':'), n = sz; else, n = numel(idx); end
+        end
+
         function idx = canonIdx_(idx, n)
             % Canonical form of one dimension's index vector: ':' whenever it
             % selects the whole dimension in order.  Keeps slice-plan keys
             % comparable across callers that spell the full extent differently
-            % ([] vs 1:n), and lets subarray_ skip the copy altogether.
+            % ([] vs 1:n), and lets a source skip the copy altogether (see
+            % MatVisMemorySource.readSub).
             if isempty(idx) || (numel(idx) == n && isequal(idx(:)', 1:n))
                 idx = ':';
-            end
-        end
-
-        function sub = subarray_(data, idx)
-            % Extract the elements a plan asks for.  An all-':' index would
-            % still make MATLAB materialize a full copy, so in that case the
-            % array is passed through untouched — for a projection over a
-            % large stack that copy is the single most expensive step.
-            if all(cellfun(@(c) isequal(c, ':'), idx))
-                sub = data;
-            else
-                sub = data(idx{:});
             end
         end
 
@@ -1372,7 +1485,7 @@ classdef MatVisRender
             idx = num2cell(model.CurrPos);
             idx{model.XDim} = 1 : model.Size(model.XDim);
             idx{model.YDim} = 1 : model.Size(model.YDim);
-            S = squeeze(double(data(idx{:})));
+            S = squeeze(double(data.readSub(idx)));
             if model.XDim < model.YDim
                 S = S.';
             end

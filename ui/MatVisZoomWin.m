@@ -101,18 +101,35 @@ zw.SetRoiMode        = @setRoiMode;
 zw.SetAspectRatio    = @applyAspectRatio;
 
 % -------------------------------------------------------------------------
-    function updateImage(rgbImg, posXLocal, posYLocal)
+    function updateImage(rgbImg, posXLocal, posYLocal, ext)
         % Only the image CData changes every frame — limits and crosshair
         % are written only when their values actually change.
         if ~isvalid(fig), return; end
         if MatVisRender.badDisplayImage(model, 'zoom window', rgbImg), return; end
         set(imgHandle, 'CData', rgbImg);
         [H, W, ~] = size(rgbImg);
-        szChanged = ~isequal(lastHW, [H, W]);
+
+        % This window works in local coordinates: local pixel 1 is the first
+        % data index of the crop.  The picture may be a decimated view of that
+        % crop, so it is placed by the data coordinates it covers (converted
+        % to local) while the axes keep spanning the crop itself -- local2data
+        % and the rulers then need no knowledge of the decimation.
+        xd = model.XDim;  yd = model.YDim;
+        xOff = model.ZoomRange(xd, 1) - 1;
+        yOff = model.ZoomRange(yd, 1) - 1;
+        if nargin < 4 || isempty(ext)
+            ext = struct('x', [1, W] + xOff, 'y', [1, H] + yOff, ...
+                         'nx', W + xOff, 'ny', H + yOff);
+        end
+        localW = model.ZoomRange(xd, 2) - xOff;
+        localH = model.ZoomRange(yd, 2) - yOff;
+        set(imgHandle, 'XData', ext.x - xOff, 'YData', ext.y - yOff);
+
+        szChanged = ~isequal(lastHW, [localH, localW]);
         if szChanged
-            lastHW  = [H, W];
-            ax.XLim = [0.5, W + 0.5];
-            ax.YLim = [0.5, H + 0.5];
+            lastHW  = [localH, localW];
+            ax.XLim = [0.5, localW + 0.5];
+            ax.YLim = [0.5, localH + 0.5];
         end
         if strcmp(imgHandle.Visible, 'off')
             imgHandle.Visible = 'on';
@@ -120,10 +137,7 @@ zw.SetAspectRatio    = @applyAspectRatio;
 
         % Zoom rulers: data index == local pixel + (ZoomRange start - 1).
         % Re-label when the crop extent, offset or X/Y assignment changes.
-        xd = model.XDim;  yd = model.YDim;
-        xOff = model.ZoomRange(xd, 1) - 1;
-        yOff = model.ZoomRange(yd, 1) - 1;
-        tickSig = [W, H, xd, yd, xOff, yOff];
+        tickSig = [localW, localH, xd, yd, xOff, yOff];
         if ~isequal(tickSig, lastTickSig)
             MatVisRender.applyAxisScale(ax, model, xd, xOff, yd, yOff);
             lastTickSig = tickSig;
@@ -140,13 +154,13 @@ zw.SetAspectRatio    = @applyAspectRatio;
         % Position cross-hair (NaN if out of bounds)
         if nargin >= 3 && (posChanged || szChanged)
             px = posXLocal;  py = posYLocal;
-            if px >= 0.5 && px <= W + 0.5
-                set(posLineV, 'XData', [px px], 'YData', [0.5, H + 0.5]);
+            if px >= 0.5 && px <= localW + 0.5
+                set(posLineV, 'XData', [px px], 'YData', [0.5, localH + 0.5]);
             else
                 set(posLineV, 'XData', [NaN NaN]);
             end
-            if py >= 0.5 && py <= H + 0.5
-                set(posLineH, 'XData', [0.5, W + 0.5], 'YData', [py py]);
+            if py >= 0.5 && py <= localH + 0.5
+                set(posLineH, 'XData', [0.5, localW + 0.5], 'YData', [py py]);
             else
                 set(posLineH, 'YData', [NaN NaN]);
             end
@@ -463,10 +477,10 @@ zw.SetAspectRatio    = @applyAspectRatio;
         idx      = num2cell(model.CurrPos);
         idx{xd}  = px;
         idx{yd}  = py;
-        val = model.Data(idx{:});
+        val = model.Data.readSub(idx);
         alphaVal = [];
         if model.WithAlpha
-            alphaVal = model.AlphaMaps{model.ActiveDataset}(idx{:});
+            alphaVal = model.AlphaMaps{model.ActiveDataset}.readSub(idx);
         end
     end
 

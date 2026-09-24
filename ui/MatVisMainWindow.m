@@ -31,6 +31,12 @@ withAlpha = model.WithAlpha;
 mvTiming_ = struct('labels', {{}}, 'times', []);
 mvT0_     = tic;
 
+% Cached on-screen size of each display axes.  getpixelposition costs about
+% 1.7 ms, which is a tenth of a whole render on a small image, and the answer
+% only changes when a window is resized -- so it is re-measured at most twice
+% a second and a stale value costs at worst one frame at the wrong sampling.
+dispPxCache = struct();
+
 %% Figure setup
 % Window title shows the dataset name(s). The live playback framerate is shown
 % in a label next to the play-speed control (see updateFrameRateDisplay).
@@ -38,6 +44,12 @@ if isempty(model.DatasetNames)
     baseTitle = 'matVis 2.0';
 else
     baseTitle = ['matVis 2.0: ' strjoin(model.DatasetNames, ', ')];
+end
+% A dataset read from disk on demand behaves differently enough -- sampled
+% whole-dataset statistics, a per-step read cost -- that the window says so
+% for as long as it is open, not just in a message at load time.
+if model.StatsApproximate
+    baseTitle = [baseTitle '  [memory-efficient]'];
 end
 fig = uifigure('Name', baseTitle, 'Resize', 'off', 'Visible', 'off', 'HandleVisibility', 'on');
 mvTiming_.labels{end+1} = 'uifigure created'; mvTiming_.times(end+1) = toc(mvT0_);
@@ -66,12 +78,26 @@ imagePanelH    = 3*rowH_dimSel + 4 + 2*4 + panelTitleH;   % three rows (dims/pro
 contrastPanelH = rowH_contrast + 2*panelPadV + panelTitleH;
 bottomH        = rowH_bottom;
 
-figHeight = posPanelH + imagePanelH + contrastPanelH + rowH_bottomBudget + 3*rowH_spacing + 200;
+% Status strip: what the viewer is doing and, when the data is read on
+% demand, that it is doing so.  Only present in that mode -- an ordinary
+% dataset has nothing to report and should not lose the space.
+statusH = 24 * double(model.StatsApproximate);
+
+rowHeights = {posPanelH, imagePanelH, contrastPanelH, bottomH};
+if statusH > 0
+    rowHeights{end+1} = statusH;
+end
+
+% The strip needs its own height AND the spacing above it; without the second
+% term the grid asks for more than the figure has, and the last row -- the
+% strip itself -- is the one that collapses to nothing.
+figHeight = posPanelH + imagePanelH + contrastPanelH + rowH_bottomBudget + 3*rowH_spacing + 200 ...
+          + (statusH + rowH_spacing) * double(statusH > 0);
 fig.Position(3:4) = [figWidth, figHeight];
 
-nRows = 4;
+nRows = numel(rowHeights);
 grid  = uigridlayout(fig, [nRows, 1]);
-grid.RowHeight   = {posPanelH, imagePanelH, contrastPanelH, bottomH};
+grid.RowHeight   = rowHeights;
 grid.ColumnWidth = {'1x'};
 grid.Padding     = [6 6 6 6];
 grid.RowSpacing  = rowH_spacing;
@@ -302,11 +328,10 @@ barWrap.ColumnWidth   = {23, '1x'};
 barWrap.RowHeight     = {'1x'};
 barWrap.Padding       = [2 1 2 0];
 barWrap.ColumnSpacing = 4;
-stretchBar = MatVisRGBStretchBar(barWrap, @onRGBStretchRangeChanged);
-stretchBar.root.Layout.Row    = 1;
-stretchBar.root.Layout.Column = 2;
-stretchBar.SetValue(model.RGBStretchRange);
-stretchBar.SetVisible(false);
+% The bar carries a uiaxes, an image and two lines, and RGB stretch is off by
+% default -- so it used to be built, realized and hidden on every startup.  Its
+% row stays reserved either way, so building it later costs no relayout.
+stretchBar = [];
 
 % Aspect ratio + window scaling: DimSelector builds the buttons; the
 % behaviour lives here because it acts on the image/zoom windows.
@@ -387,6 +412,17 @@ rbImage.Value  = strcmp(model.ContrastMode, 'Image');
 rbZoom.Value   = strcmp(model.ContrastMode, 'Zoom');
 rbManual.Value = strcmp(model.ContrastMode, 'Manual');
 
+% Global is the one mode whose bounds are sampled rather than measured when
+% the data is read on demand; Image, Zoom and Manual all work from arrays
+% that are fully in hand, so they stay exact and say nothing.
+approxTip = '';
+if model.StatsApproximate
+    approxTip = ['Bounds come from a reduced-resolution overview, not every ' ...
+                 'pixel, because the data is read from disk as you navigate. ' ...
+                 'Re-open with matVis2(file, ''LoadMode'', ''full'') for exact values.'];
+    rbGlobal.Tooltip = approxTip;
+end
+
 % Row 3: Dataset selector + contrast lock  (row 2 = 8px spacer)
 dsPanel = uipanel(contrastGrid, 'BorderType', 'none', 'BackgroundColor', fig.Color);
 dsPanel.Layout.Row    = 3;
@@ -462,6 +498,16 @@ edtPercHigh = uieditfield(contrastGrid, 'numeric', ...
 edtPercHigh.Layout.Row    = 5;
 edtPercHigh.Layout.Column = 5;
 edtPercHigh.Enable = ~strcmp(model.ContrastMode, 'Manual');
+
+% Every control above reads a whole-dataset number: the histogram range is
+% the data range, and the percentile cutoffs are taken from the whole-dataset
+% histogram.  All of them are sampled in memory-efficient mode.
+if model.StatsApproximate
+    edtHistMin.Tooltip  = approxTip;
+    edtHistMax.Tooltip  = approxTip;
+    edtPercLow.Tooltip  = ['Lower percentile cutoff (0-1). Ignored in Manual mode.  ' approxTip];
+    edtPercHigh.Tooltip = ['Upper percentile cutoff (0-1). Ignored in Manual mode.  ' approxTip];
+end
 
 % Histogram-during-playback toggle (off = faster playback, as in original matVis)
 btnPlayHist = uibutton(contrastGrid, 'state', ...
@@ -706,6 +752,52 @@ btnToggle3D.Layout.Row = 2;  btnToggle3D.Layout.Column = 6;
 
 setappdata(fig, 'OverlayVisible', true);
 
+%% Status strip (memory-efficient mode only)
+% Reading a plane from disk takes tens of milliseconds and a projection reads
+% a whole stack of them, so this mode has waits an in-memory dataset never
+% has.  The strip says which mode is running, reports what is being read while
+% it happens, and offers the way out.
+lblStatus   = [];
+btnLoadFull = [];
+if statusH > 0
+    statusGrid = uigridlayout(grid, [1, 2]);
+    statusGrid.Layout.Row    = 5;
+    statusGrid.Layout.Column = 1;
+    statusGrid.ColumnWidth   = {'1x', 130};
+    statusGrid.RowHeight     = {22};
+    statusGrid.Padding       = [2 0 0 0];
+    statusGrid.ColumnSpacing = 6;
+
+    lblStatus = uilabel(statusGrid, 'Text', 'Memory-efficient mode', ...
+        'FontSize', 11, 'FontColor', [0.72 0.45 0.10], ...
+        'Tooltip', ['Image planes are read from the file as you navigate. ' ...
+                    'Whole-dataset numbers (the value range, the global ' ...
+                    'histogram) come from a reduced-resolution overview.']);
+    lblStatus.Layout.Row = 1;  lblStatus.Layout.Column = 1;
+
+    btnLoadFull = uibutton(statusGrid, 'Text', 'Load full dataset', 'FontSize', 10, ...
+        'ButtonPushedFcn', @(~,~) onLoadFullDataset());
+    btnLoadFull.Layout.Row = 1;  btnLoadFull.Layout.Column = 2;
+    if ~allDatasetsLoadable()
+        btnLoadFull.Enable  = 'off';
+        btnLoadFull.Tooltip = ['This file cannot be held in one array at all ' ...
+            '(a single plane exceeds the 2 GB limit of the reader), so there ' ...
+            'is nothing to load it into.'];
+    else
+        btnLoadFull.Tooltip = ['Read the whole dataset into memory. Everything ' ...
+            'becomes exact and instant to navigate, at the cost of the wait ' ...
+            'and the memory.'];
+    end
+
+    % Every lazy dataset reports what it is reading, so a projection or an
+    % overview build shows progress instead of an unexplained pause.
+    for dsP = 1:model.NumDatasets
+        if isa(model.Datasets{dsP}, 'MatVisLazySource')
+            model.Datasets{dsP}.ProgressFcn = @onSourceProgress;
+        end
+    end
+end
+
 mvTiming_.labels{end+1} = 'bottom controls created'; mvTiming_.times(end+1) = toc(mvT0_);
 %% ROI Manager window — created lazily on first use (saves a uifigure at startup)
 roiCbs = struct();
@@ -773,6 +865,16 @@ mw.rbZoom       = rbZoom;
 mw.rbManual     = rbManual;
 mw.Render       = renderFcn;
 mw.ComputeDisplay = @computeDisplayFor;  % video composer: same pipeline as the windows
+mw.LoadNewData  = @loadNewData;   % swap the data without rebuilding the window
+% matVis 1.x exposed this as handles.fctHandles.loadNewData; scripts written
+% against that keep working.
+mw.fctHandles.loadNewData = @loadNewData;
+
+% A menu bar costs no room in the layout, which the bottom button grid has
+% none of -- and File > Open is where this belongs anyway.
+mFile = uimenu(fig, 'Text', '&File');
+uimenu(mFile, 'Text', '&Open data...', 'Accelerator', 'O', ...
+    'MenuSelectedFcn', @(~,~) onOpenData());
 
 fig.CloseRequestFcn       = @(~,~) onMainWindowClosing();
 fig.WindowButtonDownFcn   = @(~,~) onFigureButtonDown();
@@ -925,8 +1027,8 @@ fprintf('\n');
                 chanRng_ads = s.chanRange;
             end
 
-            imageWins{ds}.Update(s.rgbFull, zoomRect, posX, posY);
-            zoomWins{ds}.Update(s.rgbZoom, posXLocal, posYLocal);
+            imageWins{ds}.Update(s.rgbFull, zoomRect, posX, posY, s.extFull);
+            zoomWins{ds}.Update(s.rgbZoom, posXLocal, posYLocal, s.extZoom);
 
             % Cross sections share this dataset's contrast bounds and gamma
             % so every window maps data values to colours identically. The
@@ -1054,8 +1156,13 @@ fprintf('\n');
         % arrays already in hand instead of extracting them again — which for
         % a projection means re-reading the whole stack.
         dsData = model.Datasets{ds};
-        planF  = MatVisRender.rawFullSlicePlan(model);
-        planZ  = MatVisRender.rawZoomSlicePlan(model);
+        % The display asks for at most a screenful of pixels.  On an ordinary
+        % dataset the region is smaller than that and nothing is decimated;
+        % on a gigapixel stitched image it is the difference between reading a
+        % coarse pyramid level and trying to hold a 3 GB plane.
+        budget = MatVisRender.DISPLAY_PIXEL_BUDGET;
+        planF  = MatVisRender.rawFullSlicePlan(model, budget);
+        planZ  = MatVisRender.rawZoomSlicePlan(model, budget);
         [raw_full, raw_zoom] = memoPair('raw', ds, planF.key, planZ.key, ...
             @() MatVisRender.rawSliceFromPlan(dsData, model, planF), ...
             @() MatVisRender.rawSliceFromPlan(dsData, model, planZ));
@@ -1079,17 +1186,28 @@ fprintf('\n');
             @() MatVisRender.normalizeChannels(raw_full, chanRange), ...
             @() MatVisRender.normalizeChannels(raw_zoom, chanRange));
 
+        % Colour-mapping and uploading a slice costs about 30 ms per megapixel,
+        % and it is spent on whatever the slice holds -- not on what the window
+        % can show.  A 1920x1920 slice drawn into a 391x391 axes is ~24x more
+        % samples than there are screen pixels.  Thinning it here, after the
+        % contrast bounds and the histogram have been taken from the full-
+        % resolution data, keeps those numbers exact while cutting the work.
+        stepF = displayStrideFor(imageWins{ds}, size(src_full), sprintf('img%d', ds));
+        stepZ = displayStrideFor(zoomWins{ds},  size(src_zoom), sprintf('zm%d', ds));
+
         if F.stretchOn
             % Whole RGB dimension colour-coded into one image; contrast/
             % gamma/filter are handled inside renderStretchImage.
-            rgb_full = MatVisRender.renderStretchImage(model, src_full, cmin_ds, cmax_ds, gamma_ds);
-            rgb_zoom = MatVisRender.renderStretchImage(model, src_zoom, cmin_ds, cmax_ds, gamma_ds);
+            rgb_full = MatVisRender.renderStretchImage(model, ...
+                shrinkForDisplay(src_full, stepF), cmin_ds, cmax_ds, gamma_ds);
+            rgb_zoom = MatVisRender.renderStretchImage(model, ...
+                shrinkForDisplay(src_zoom, stepZ), cmin_ds, cmax_ds, gamma_ds);
             if withAlpha
                 aLo   = model.AlphaContrastMins(ds);
                 aHi   = model.AlphaContrastMaxs(ds);
                 [aRawF, aRawZ] = cachedAlphaSlices(ds, planF, planZ);
-                aFull = stretchAlpha_(aRawF, aLo, aHi, model.AlphaGamma);
-                aZoom = stretchAlpha_(aRawZ, aLo, aHi, model.AlphaGamma);
+                aFull = stretchAlpha_(shrinkForDisplay(aRawF, stepF), aLo, aHi, model.AlphaGamma);
+                aZoom = stretchAlpha_(shrinkForDisplay(aRawZ, stepZ), aLo, aHi, model.AlphaGamma);
                 rgb_full = blendStretchAlpha_(rgb_full, aFull, model.AlphaBgWhite);
                 rgb_zoom = blendStretchAlpha_(rgb_zoom, aZoom, model.AlphaBgWhite);
             end
@@ -1103,8 +1221,13 @@ fprintf('\n');
                 @() MatVisRender.filterImage(src_full, model.FilterType, model.FilterPar), ...
                 @() MatVisRender.filterImage(src_zoom, model.FilterType, model.FilterPar));
 
-            norm_full = MatVisRender.normalizeData(disp_full, cmin_ds, cmax_ds);
-            norm_zoom = MatVisRender.normalizeData(disp_zoom, cmin_ds, cmax_ds);
+            % Thinned only now: the filter above still sees every pixel, so a
+            % filtered image is what it always was, just drawn at the
+            % resolution the window can actually show.
+            norm_full = MatVisRender.normalizeData( ...
+                shrinkForDisplay(disp_full, stepF), cmin_ds, cmax_ds);
+            norm_zoom = MatVisRender.normalizeData( ...
+                shrinkForDisplay(disp_zoom, stepZ), cmin_ds, cmax_ds);
 
             if withAlpha
                 % Slice the alpha map exactly like the data (zoom /
@@ -1112,8 +1235,8 @@ fprintf('\n');
                 aLo   = model.AlphaContrastMins(ds);
                 aHi   = model.AlphaContrastMaxs(ds);
                 [aRawF, aRawZ] = cachedAlphaSlices(ds, planF, planZ);
-                aFull = MatVisRender.renderAlphaSlice(aRawF, aLo, aHi, model.AlphaGamma);
-                aZoom = MatVisRender.renderAlphaSlice(aRawZ, aLo, aHi, model.AlphaGamma);
+                aFull = MatVisRender.renderAlphaSlice(shrinkForDisplay(aRawF, stepF), aLo, aHi, model.AlphaGamma);
+                aZoom = MatVisRender.renderAlphaSlice(shrinkForDisplay(aRawZ, stepZ), aLo, aHi, model.AlphaGamma);
                 rgb_full = MatVisRender.composeImageWithAlpha(norm_full, gamma_ds, ...
                     model.ColormapIdx, aFull, model.AlphaBgWhite);
                 rgb_zoom = MatVisRender.composeImageWithAlpha(norm_zoom, gamma_ds, ...
@@ -1201,6 +1324,8 @@ fprintf('\n');
                    'cmin', cmin_ds, 'cmax', cmax_ds, 'gamma', gamma_ds, ...
                    'chanRange', chanRange, 'srcFull', src_full, ...
                    'srcZoom', src_zoom, 'rawFull', raw_full, ...
+                   'extFull', shrinkExtent(MatVisRender.planExtent(planF, model), size(src_full), stepF), ...
+                   'extZoom', shrinkExtent(MatVisRender.planExtent(planZ, model), size(src_zoom), stepZ), ...
                    'profiles', {profiles});
     end
 
@@ -1212,9 +1337,225 @@ fprintf('\n');
         % existing image-panel height, so this does not depend on stretch state.
         imgPanelH = 3*rowH_dimSel + 4 + 2*4 + actualTitleH;
         figH      = posPanelH + imgPanelH + contrastPanelH + rowH_bottomBudget ...
-                  + 3*rowH_spacing + 12 + actualChromeH;
-        grid.RowHeight    = {posPanelH, imgPanelH, contrastPanelH, bottomH};
+                  + 3*rowH_spacing + 12 + actualChromeH ...
+                  + (statusH + rowH_spacing) * double(statusH > 0);
+        rh = {posPanelH, imgPanelH, contrastPanelH, bottomH};
+        if statusH > 0
+            rh{end+1} = statusH;
+        end
+        grid.RowHeight    = rh;
         fig.Position(3:4) = [figWidth, figH];
+    end
+
+    function ensureStretchBar()
+        if ~isempty(stretchBar), return; end
+        stretchBar = MatVisRGBStretchBar(barWrap, @onRGBStretchRangeChanged);
+        stretchBar.root.Layout.Row    = 1;
+        stretchBar.root.Layout.Column = 2;
+        stretchBar.SetValue(model.RGBStretchRange);
+    end
+
+    % ------------------------------------------------------------------
+    %  Exchanging the data in a running viewer
+    % ------------------------------------------------------------------
+    function onOpenData()
+        % File > Open data...: pick a workspace variable or file(s), then
+        % either swap them into this window or open a second one.
+        szTxt = strjoin(arrayfun(@(v) sprintf('%d', v), model.Size, ...
+            'UniformOutput', false), ' x ');
+        res = MatVisOpenDataDlg(nDatasets, nDims, szTxt);
+        if strcmp(res.action, 'cancel') || isempty(res.items), return; end
+
+        fm = [];
+        if strcmp(res.source, 'workspace')
+            sets = cell(1, numel(res.items));
+            for k = 1:numel(res.items)
+                sets{k} = evalin('base', res.items{k});
+            end
+            names = res.items;
+        else
+            % Same opening path as matVis2 itself -- same policy, same lazy
+            % handling -- so a file behaves identically whether it is opened
+            % here or from the command line.
+            [sets, fm] = matVisOpenDatasets(res.items, {'Mode', 'separate'}, 'auto');
+            names = fm.datasetNames;
+        end
+
+        if strcmp(res.action, 'replace') && canReplaceWith(sets)
+            try
+                loadNewData(sets);
+                applyNewNames(names, fm);
+                return;
+            catch err
+                uialert(fig, sprintf(['Could not replace the data in this window:' ...
+                    '\n\n%s\n\nOpening it in a new window instead.'], err.message), ...
+                    'Replace failed');
+            end
+        end
+        openInNewWindow(sets, names, fm);
+    end
+
+    function tf = canReplaceWith(sets)
+        tf = numel(sets) == nDatasets;
+        if ~tf, return; end
+        for k = 1:numel(sets)
+            if isa(sets{k}, 'MatVisDataSource'), sz = sets{k}.Size; else, sz = size(sets{k}); end
+            if numel(sz) ~= nDims, tf = false; return; end
+        end
+    end
+
+    function applyNewNames(names, fm)
+        if ~isempty(names) && numel(names) == nDatasets
+            model.DatasetNames = names;
+        end
+        if ~isempty(fm)
+            if ~isempty(fm.dimNames), model.DimNames = fm.dimNames; end
+            if ~isempty(fm.dimUnits), model.DimUnits = fm.dimUnits; end
+            if ~isempty(fm.dimScale), model.DimScale = fm.dimScale; end
+            if isfield(fm, 'fileMetadata') && ~isempty(fm.fileMetadata)
+                model.FileMetadata = fm.fileMetadata;
+            end
+        end
+        refreshTitles();
+        syncAfterDataChange();
+    end
+
+    function openInNewWindow(sets, names, fm)
+        args = sets;
+        if ~isempty(names), args = [args, {'datasetNames', names}]; end
+        if ~isempty(fm)
+            args = [args, {'dimNames', fm.dimNames, 'dimUnits', fm.dimUnits, ...
+                           'dimScale', fm.dimScale}];
+        end
+        try
+            matVis2(args{:});
+        catch err
+            uialert(fig, sprintf('Could not open the data:\n\n%s', err.message), 'Open failed');
+        end
+    end
+
+    function refreshTitles()
+        if isempty(model.DatasetNames)
+            base = 'matVis 2.0';
+        else
+            base = ['matVis 2.0: ' strjoin(model.DatasetNames, ', ')];
+        end
+        if model.StatsApproximate, base = [base '  [memory-efficient]']; end
+        fig.Name = base;
+        for dsT = 1:nDatasets
+            nm = model.DatasetNames{dsT};
+            imageWins{dsT}.fig.Name = sprintf('Image - %s', nm);
+            zoomWins{dsT}.fig.Name  = sprintf('Zoom - %s',  nm);
+            plotWins{dsT}.fig.Name  = sprintf('Plot - %s',  nm);
+        end
+    end
+
+    function loadNewData(d, mode, replaceIdx, varargin)
+        % loadNewData  Swap the data shown by this viewer, keeping the window.
+        %
+        %   loadNewData(d)                       replace the dataset(s)
+        %   loadNewData(d, 'replaceFrame', idx)  overwrite plane(s) idx
+        %   loadNewData(d, 'append')             append along dimension 3
+        %
+        % The number of datasets and of dimensions must stay the same -- they
+        % decide how many windows and sliders exist -- but the lengths may
+        % change, which is the case this exists for.  Restores the entry point
+        % matVis 1.x offered as handles.fctHandles.loadNewData.
+        if nargin < 2 || isempty(mode), mode = 'replaceData'; end
+        if ~iscell(d), d = {d}; end
+        if numel(d) ~= nDatasets
+            error('MatVisMainWindow:datasetCountMismatch', ...
+                'This viewer shows %d dataset(s); %d given.', nDatasets, numel(d));
+        end
+
+        switch lower(mode)
+            case 'replacedata'
+                newSets = d;
+            case 'replaceframe'
+                if nargin < 3 || isempty(replaceIdx)
+                    error('MatVisMainWindow:missingIndex', ...
+                        '''replaceFrame'' needs the index of the plane(s) to overwrite.');
+                end
+                newSets = cell(1, nDatasets);
+                for k = 1:nDatasets
+                    cur = materializeDataset(k, mode);
+                    cur(:, :, replaceIdx) = d{k};
+                    newSets{k} = cur;
+                end
+            case 'append'
+                if nDims < 3
+                    error('MatVisMainWindow:cannotAppend', ...
+                        'Cannot append to a 2-D dataset.');
+                end
+                newSets = cell(1, nDatasets);
+                for k = 1:nDatasets
+                    cur  = materializeDataset(k, mode);
+                    nNew = size(d{k}, 3);
+                    cur(:, :, end+1:end+nNew) = d{k};
+                    newSets{k} = cur;
+                end
+            otherwise
+                error('MatVisMainWindow:badMode', ...
+                    'mode must be ''replaceData'', ''replaceFrame'' or ''append''.');
+        end
+
+        model.ReplaceDatasets(newSets);
+        syncAfterDataChange();
+
+        if ~isempty(varargin)
+            model.applyStartPar(varargin);   % matVis 1.x took settings alongside
+            syncAfterDataChange();
+        end
+    end
+
+    function arr = materializeDataset(k, mode)
+        % 'replaceFrame' and 'append' build a new array from the old one, so
+        % the old one has to be in memory.  A file-backed dataset says so
+        % rather than quietly reading gigabytes to patch one plane.
+        src = model.Datasets{k};
+        if isa(src, 'MatVisLazySource')
+            error('MatVisMainWindow:lazyDatasetNotEditable', ...
+                ['''%s'' needs the dataset in memory, but it is being read from ' ...
+                 '"%s" on demand.  Press "Load full dataset" first, or use ' ...
+                 '''replaceData'' to swap the whole thing.'], mode, src.FilePath);
+        end
+        arr = src.readSub(repmat({':'}, 1, numel(model.Size)));
+    end
+
+    function syncAfterDataChange()
+        % Bring every control and cache back in step with the model after its
+        % data changed underneath them.
+        for d = 1:nDims
+            rs = rangeSliders{d};
+            rs.Limits      = [1, model.Size(d)];
+            rs.ScaleFactor = model.pixelSize(d);
+            rs.ScaleUnit   = model.dimUnit(d);
+            rs.DimLabel    = getDimLabel(model, d);
+            rs.Value       = model.CurrPos(d);
+            rs.ZoomMin     = model.ZoomRange(d, 1);
+            rs.ZoomMax     = model.ZoomRange(d, 2);
+        end
+
+        lo = model.DataMin;  hi = model.DataMax;
+        if ~(hi > lo), hi = lo + 1; end
+        edtHistMin.Limits = [lo, hi];
+        edtHistMax.Limits = [lo, hi];
+        edtHistMin.Value  = lo;
+        edtHistMax.Value  = hi;
+
+        % Every cached statistic describes the data that just left.
+        lastBoundsAds = [];
+        dispPxCache   = struct();
+        for k = 1:nDatasets
+            setappdata(fig, sprintf('RGBChanRangeKey_%d', k), []);
+            setappdata(fig, sprintf('RGBChanRange_%d', k),    []);
+            setappdata(fig, sprintf('GlobalPercentileCDF_%d', k), []);
+        end
+        setappdata(fig, 'GlobalHistKey',    []);
+        setappdata(fig, 'GlobalHistCounts', []);
+        model.ClearSliceCache();
+
+        doRender();
     end
 
     function syncStretchUI()
@@ -1237,7 +1578,8 @@ fprintf('\n');
         dimSelector.btnRGBLock.Value  = logical(model.RGBStretchZoomLock);
         % The bar's row is always reserved, so this only shows/hides it —
         % no figure resize or element repositioning.
-        stretchBar.SetVisible(shown);
+        if shown, ensureStretchBar(); end
+        if ~isempty(stretchBar), stretchBar.SetVisible(shown); end
 
         syncRGBIndicator(rgbOn, mode);
     end
@@ -1565,8 +1907,7 @@ fprintf('\n');
                 if isempty(tbl) || ~isequal(getappdata(fig, ckey), keyNow)
                     % One pass over the dataset, cached until the RGB
                     % dimension or the percentile cutoffs change.
-                    tbl = MatVisRender.channelRangeFromData( ...
-                        model.Datasets{ds}, rd, pLow, pHigh);
+                    tbl = model.Datasets{ds}.channelRange(rd, pLow, pHigh);
                     setappdata(fig, ckey, keyNow);
                     setappdata(fig, cval, tbl);
                 end
@@ -1632,7 +1973,7 @@ fprintf('\n');
             nBins  = 10000;
             edges  = linspace(dmin, dmax, nBins + 1);
             % Pass native-type data — double() would copy the whole dataset
-            counts = histcounts(dsData(:), edges);
+            counts = dsData.histCounts(edges);
             cumC   = cumsum(double(counts));
             cdf.frac  = cumC / max(cumC(end), 1);
             cdf.edges = edges;
@@ -1682,6 +2023,12 @@ fprintf('\n');
             'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', ...
             'FontSize', 12, 'Color', [0.45 0.45 0.45], 'FontAngle', 'italic', ...
             'HitTest', 'off', 'PickableParts', 'none');
+        % Marks the histogram as computed from a decimated overview rather
+        % than from every pixel (see MatVisDataSource.StatsApproximate).
+        histObjs.approxTxt = text(histAx, NaN, NaN, '', ...
+            'HorizontalAlignment', 'right', 'VerticalAlignment', 'top', ...
+            'FontSize', 12, 'Color', [0.72 0.45 0.10], 'FontAngle', 'italic', ...
+            'HitTest', 'off', 'PickableParts', 'none');
         hold(histAx, 'off');
         histAx.YDir = 'normal';
     end
@@ -1716,7 +2063,7 @@ fprintf('\n');
         else
             cacheKey = [ads, histXMin, histXMax];
             if ~isequal(getappdata(fig,'GlobalHistKey'), cacheKey)
-                countsG = histcounts(model.Data(:), binEdges);
+                countsG = model.Data.histCounts(binEdges);
                 setappdata(fig, 'GlobalHistKey',    cacheKey);
                 setappdata(fig, 'GlobalHistCounts', countsG);
             else
@@ -1796,6 +2143,13 @@ fprintf('\n');
 
         set(histObjs.scaleTxt, 'String', yScale, ...
             'Position', [histXMin + 0.015 * (histXMax - histXMin), yMax, 0]);
+
+        if model.StatsApproximate
+            set(histObjs.approxTxt, 'String', 'approx.', 'Visible', 'on', ...
+                'Position', [histXMax - 0.015 * (histXMax - histXMin), yMax, 0]);
+        else
+            set(histObjs.approxTxt, 'Visible', 'off');
+        end
 
         histAx.XLim = [histXMin, histXMax];
         if strcmp(yScale, 'linear')
@@ -1929,7 +2283,7 @@ fprintf('\n');
     % channel range, so neither round-trips through whole numbers.
     function tf = integerContrastScale()
         tf = ~MatVisRender.rgbActive(model) && ...
-             isinteger(model.Datasets{model.ActiveDataset});
+             model.IsInteger;
     end
 
     function v = snapContrastValue(v)
@@ -2061,8 +2415,8 @@ fprintf('\n');
         if plotFixX
             % Snapshot current XLim from first visible axis of first plotWin
             try
-                ax1 = plotWins{1}.axes{1};
-                if isvalid(ax1) && strcmp(ax1.Visible, 'on')
+                ax1 = plotWins{1}.AxesFor(1);
+                if ~isempty(ax1) && isvalid(ax1) && strcmp(ax1.Visible, 'on')
                     plotFixXLimits = ax1.XLim;
                 end
             catch
@@ -2077,8 +2431,8 @@ fprintf('\n');
         plotFixY = src.Value;
         if plotFixY
             try
-                ax1 = plotWins{1}.axes{1};
-                if isvalid(ax1) && strcmp(ax1.Visible, 'on')
+                ax1 = plotWins{1}.AxesFor(1);
+                if ~isempty(ax1) && isvalid(ax1) && strcmp(ax1.Visible, 'on')
                     plotFixYLimits = ax1.YLim;
                 end
             catch
@@ -2194,7 +2548,7 @@ fprintf('\n');
             return;
         end
         try
-            exportData = data(idx{:});
+            exportData = data.readSub(idx);
             assignin('base', varName, exportData);
             fprintf('[matVis2] Exported %s → workspace variable "%s"\n', ...
                 mat2str(size(exportData)), varName);
@@ -3259,6 +3613,139 @@ fprintf('\n');
     end
 
     % ------------------------------------------------------------------
+    %  Drawing at screen resolution
+    % ------------------------------------------------------------------
+    function s = displayStrideFor(win, sz, slot)
+        % Thinning factor that still leaves DISPLAY_SAMPLES_PER_PIXEL samples
+        % for every screen pixel of WIN's axes.  Returns 1 -- no thinning --
+        % whenever the slice is already no larger than that, which is the
+        % ordinary case and leaves the image byte-identical to before.
+        s = 1;
+        if numel(sz) < 2, return; end
+        px = [];
+        if isfield(dispPxCache, slot)
+            c = dispPxCache.(slot);
+            if toc(c.t) < 0.5, px = c.px; end
+        end
+        if isempty(px)
+            try
+                pp = getpixelposition(win.imgHandle.Parent);
+            catch
+                return;
+            end
+            px = [max(pp(3), 32), max(pp(4), 32)];
+            dispPxCache.(slot) = struct('px', px, 't', tic);
+        end
+        k = MatVisMainWindow_DisplaySamplesPerPixel();
+        s = max(1, floor(min(sz(1) / (k * px(2)), sz(2) / (k * px(1)))));
+    end
+
+    function A = shrinkForDisplay(A, s)
+        if s <= 1 || isempty(A) || ~isnumeric(A), return; end
+        A = A(1:s:end, 1:s:end, :);
+    end
+
+    function ext = shrinkExtent(ext, sz, s)
+        % Where the thinned image now ends.  Keeping every s-th sample drops
+        % up to s-1 of them off the far edge, and drawing the result into the
+        % untrimmed span would stretch it -- by only a couple of screen pixels,
+        % but enough to walk ROI outlines off their pixels.
+        if s <= 1, return; end
+        ext.x = trimEnd_(ext.x, sz(2), s);
+        ext.y = trimEnd_(ext.y, sz(1), s);
+    end
+
+    function e = trimEnd_(e, n, s)
+        if n < 2, return; end
+        step    = (e(2) - e(1)) / (n - 1);
+        lastIdx = 1 + s * floor((n - 1) / s);
+        e(2)    = e(1) + (lastIdx - 1) * step;
+    end
+
+    % ------------------------------------------------------------------
+    %  Memory-efficient mode: status strip
+    % ------------------------------------------------------------------
+    function onSourceProgress(done, total)
+        % Called from inside a run of plane reads.  drawnow is what actually
+        % gets the text on screen: MATLAB is single-threaded, so without it
+        % the label would not repaint until the read it describes is over.
+        if isempty(lblStatus) || ~isvalid(lblStatus), return; end
+        if isempty(done)
+            lblStatus.Text = 'Memory-efficient mode';
+        else
+            lblStatus.Text = sprintf('Loading... %d/%d planes', done, total);
+        end
+        drawnow limitrate;
+    end
+
+    function tf = allDatasetsLoadable()
+        tf = true;
+        for dsL = 1:model.NumDatasets
+            src = model.Datasets{dsL};
+            if isa(src, 'MatVisLazySource') && ~src.FullLoadFeasible
+                tf = false;
+                return;
+            end
+        end
+    end
+
+    function onLoadFullDataset()
+        % Read every dataset into memory and swap the sources out, so the
+        % window carries on with the same position, ROIs and contrast mode --
+        % only faster, and exact.
+        srcs  = model.Datasets;
+        paths = cell(1, numel(srcs));
+        for dsL = 1:numel(srcs)
+            if ~isa(srcs{dsL}, 'MatVisLazySource'), continue; end
+            paths{dsL} = srcs{dsL}.FilePath;
+        end
+
+        dlgP = uiprogressdlg(fig, 'Title', 'Loading full dataset', ...
+            'Message', 'Reading the file into memory...', 'Indeterminate', 'on');
+        try
+            loaded = model.Datasets;
+            for dsL = 1:numel(srcs)
+                if isempty(paths{dsL}), continue; end
+                dlgP.Message = sprintf('Reading %s ...', paths{dsL});
+                % The ordinary loader, not a plane-by-plane read through the
+                % source: it is the faster of the two by a wide margin.
+                arr = loadFiles(paths{dsL});
+                loaded{dsL} = MatVisMemorySource(arr);
+            end
+        catch e
+            delete(dlgP);
+            uialert(fig, sprintf('Could not load the full dataset:\n\n%s', e.message), ...
+                'Load failed');
+            return;
+        end
+        delete(dlgP);
+
+        for dsL = 1:numel(srcs)
+            if isa(srcs{dsL}, 'MatVisLazySource')
+                srcs{dsL}.ProgressFcn = [];
+                srcs{dsL}.closeSource();
+            end
+        end
+        model.Datasets = loaded;      % also clears every held slice
+        model.RefreshDataRanges();
+        edtHistMin.Limits = [model.DataMin, model.DataMax];
+        edtHistMax.Limits = [model.DataMin, model.DataMax];
+        edtHistMin.Value  = model.DataMin;
+        edtHistMax.Value  = model.DataMax;
+
+        if ~isempty(lblStatus) && isvalid(lblStatus)
+            lblStatus.Text      = 'Fully loaded';
+            lblStatus.Tooltip   = 'The whole dataset is in memory; all values are exact.';
+            lblStatus.FontColor = [0.30 0.50 0.25];
+        end
+        if ~isempty(btnLoadFull) && isvalid(btnLoadFull)
+            btnLoadFull.Enable = 'off';
+        end
+        fig.Name = strrep(fig.Name, '  [memory-efficient]', '');
+        doRender();
+    end
+
+    % ------------------------------------------------------------------
     %  Config save / load
     % ------------------------------------------------------------------
     function onSaveConfig()
@@ -3863,4 +4350,13 @@ mask     = lineMask | dotMask;
 for c = 1:3
     ch = cdata(:, :, c);  ch(mask) = fg;  cdata(:, :, c) = ch;
 end
+end
+
+function k = MatVisMainWindow_DisplaySamplesPerPixel()
+% Samples kept per screen pixel when a slice is drawn larger than its window.
+%
+% Two is deliberately generous: it keeps the displayed grid above the Nyquist
+% rate of the screen grid, so thinning by nearest-neighbour cannot alias
+% structure the window could otherwise have resolved.
+k = 2;
 end

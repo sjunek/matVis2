@@ -3,6 +3,8 @@
 *.tiff
 *.czi
 *.mat
+*.h5
+tests/LargeTestFiles/
 
 # --- MATLAB autosave / temp ---
 *.asv

@@ -84,9 +84,24 @@ if fileMode
         restArgs([mi, mi+1]) = [];
     end
 
+    % 'LoadMode': 'auto' (default) reads the file in full unless it is large
+    % or slow enough that matVisLoadPolicy recommends otherwise; 'lazy' and
+    % 'full' force the choice, which is what a script wants.
+    loadMode = 'auto';
+    lmIdx = find(cellfun(@(x) (ischar(x) || isstring(x)) && strcmpi(x, 'LoadMode'), restArgs));
+    if ~isempty(lmIdx) && lmIdx(1) < numel(restArgs)
+        li = lmIdx(1);
+        loadMode = lower(char(restArgs{li+1}));
+        restArgs([li, li+1]) = [];
+    end
+    if ~ismember(loadMode, {'auto', 'lazy', 'full'})
+        error('matVis2:badLoadMode', ...
+            'LoadMode must be ''auto'', ''lazy'' or ''full''.');
+    end
+
     t1a_ = tic;
-    [datasets, fm] = importMultiFile(filePathsArg, importNVs{:});
-    fprintf('[matVis2] importMultiFile: %.3f s\n', toc(t1a_));
+    [datasets, fm] = matVisOpenDatasets(filePathsArg, importNVs, loadMode);
+    fprintf('[matVis2] load:            %.3f s\n', toc(t1a_));
 
     nvPairs = mergeDefaultNV( ...
         {'dimNames', fm.dimNames, 'dimUnits', fm.dimUnits, 'dimScale', fm.dimScale, ...

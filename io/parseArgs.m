@@ -30,8 +30,8 @@ p = inputParser;
 p.FunctionName = 'parseArgs';
 p.CaseSensitive = false;
 
-p.addRequired('data', @(x) (isnumeric(x) && ~isempty(x)) || ...
-    (iscell(x) && ~isempty(x) && all(cellfun(@isnumeric, x(:)))));
+p.addRequired('data', @(x) isDataArg(x) || ...
+    (iscell(x) && ~isempty(x) && all(cellfun(@isDataArg, x(:)))));
 
 p.addParameter('dimNames',      {}, @(x) iscellstr(x) || isstring(x));
 p.addParameter('dimUnits',      {}, @(x) iscellstr(x) || isstring(x));
@@ -49,21 +49,21 @@ p.parse(data, varargin{:});
 r = p.Results;
 
 % Normalize data to cell array
-if isnumeric(r.data)
+if ~iscell(r.data)
     r.data = {r.data};
 end
 
 % Validate all datasets have identical dimensions
-refSz = size(r.data{1});
+refSz = dataSize(r.data{1});
 for k = 2:numel(r.data)
-    if ~isequal(size(r.data{k}), refSz)
+    if ~isequal(dataSize(r.data{k}), refSz)
         error('parseArgs:dimMismatch', ...
             'All datasets must have identical dimensions. Dataset %d has size [%s] but dataset 1 has size [%s].', ...
-            k, num2str(size(r.data{k})), num2str(refSz));
+            k, num2str(dataSize(r.data{k})), num2str(refSz));
     end
 end
 
-n = ndims(r.data{1});
+n = numel(refSz);
 K = numel(r.data);
 
 r.dimNames = padCellStr(r.dimNames, n, @(i) sprintf('Dim%d', i));
@@ -95,7 +95,7 @@ else
     end
     ok = numel(maps) == K;
     for k = 1:numel(maps)
-        ok = ok && isequal(size(maps{k}), refSz);
+        ok = ok && isequal(dataSize(maps{k}), refSz);
     end
     if ok
         r.alphaMap = maps;
@@ -128,6 +128,20 @@ for i = 1:n
 end
 end
 
+function tf = isDataArg(x)
+% A dataset may arrive as a numeric array or as a MatVisDataSource that reads
+% it from a file on demand; both describe the same thing downstream.
+tf = (isnumeric(x) && ~isempty(x)) || isa(x, 'MatVisDataSource');
+end
+
+function sz = dataSize(x)
+if isa(x, 'MatVisDataSource')
+    sz = x.Size;
+else
+    sz = size(x);
+end
+end
+
 function out = padCellVec(c, n, data)
 % Ensure c is a row cell of per-index coordinate vectors with exactly n
 % entries.  Each supplied entry may be either
@@ -135,7 +149,7 @@ function out = padCellVec(c, n, data)
 %   * a scalar per-index scaling factor (e.g. µm/pixel), expanded to the
 %     coordinate vector (0:size-1)*factor.
 % Missing or mismatched entries default to the plain index vector 1:size.
-sz = size(data);
+sz = dataSize(data);
 out = cell(1, n);
 for i = 1:n
     if i <= numel(c) && ~isempty(c{i})

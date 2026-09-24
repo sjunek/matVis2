@@ -83,7 +83,16 @@ selPatches  = cell(1, nDims);
 alphaColor  = [0.45 0.45 0.45]; % single-trace alpha line / right ruler color
 legendOn    = false(1, nDims);  % whether a legend is currently shown per axis
 
-for ii = 1:nDims
+% Axes are built on first use, not up front.  A uiaxes is among the most
+% expensive components in the uifigure stack, and PlotDims starts all-false --
+% so every one of these was created, realized and then hidden, paying for
+% itself at startup without ever being seen.  ensureAxes builds one the first
+% time its dimension is actually plotted.
+built = false(1, nDims);
+
+    function ensureAxes(ii)
+    if built(ii), return; end
+    built(ii) = true;
     ax = uiaxes(gridH);
     ax.Layout.Row    = ii;
     ax.Layout.Column = 1;
@@ -127,6 +136,26 @@ for ii = 1:nDims
     alphaLines{ii}  = gobjects(1, 0);
     posLines{ii}    = posLn;
     selPatches{ii}  = sp;
+    end
+
+    function tf = hasAxes(ii)
+    tf = built(ii) && ~isempty(axHandles{ii}) && isvalid(axHandles{ii});
+    end
+
+    function ax = axesFor(ii)
+    % Axes for dimension II, or an empty graphics array when that dimension
+    % has never been plotted.  A function rather than a field, because the
+    % handles come into existence after this struct is built.
+    if hasAxes(ii), ax = axHandles{ii}; else, ax = gobjects(1, 0); end
+    end
+
+% A dimension that has never been plotted contributes no row to the layout.
+for ii = 1:nDims
+    extraLines{ii} = gobjects(1, 0);
+    alphaLines{ii} = gobjects(1, 0);
+    if model.PlotDims(ii)
+        ensureAxes(ii);
+    end
 end
 
 %% ---- Mouse callbacks ---------------------------------------------------
@@ -137,7 +166,7 @@ fig.WindowButtonUpFcn     = @onMouseUp;
 %% ---- Output struct -----------------------------------------------------
 pw.fig            = fig;
 pw.grid           = gridH;
-pw.axes           = axHandles;
+pw.AxesFor        = @axesFor;   % axes for a dim, or empty if never plotted
 pw.lineHandles    = lineHandles;
 pw.Update         = @updateProfiles;
 pw.UpdatePos      = @updatePositions;
@@ -182,6 +211,10 @@ pw.SetFixY        = @setFixY;
 
         for jj = 1:nDims
             prof = profiles{jj};
+            % A dimension with nothing to draw and no axes yet stays that
+            % way -- building one only to hide it is the cost this defers.
+            if isempty(prof) && ~hasAxes(jj), continue; end
+            ensureAxes(jj);
             ax   = axHandles{jj};
             ln   = lineHandles{jj};
 
@@ -304,7 +337,7 @@ pw.SetFixY        = @setFixY;
     % -----------------------------------------------------------------
     function updatePositions()
         for jj = 1:nDims
-            if ~isvalid(axHandles{jj}), continue; end
+            if ~hasAxes(jj), continue; end
 
             if ~fixXScale
                 if model.PlotLock(jj)
@@ -330,8 +363,8 @@ pw.SetFixY        = @setFixY;
         % Keep the plot's X data in index coordinates (so mouse drag/zoom
         % stay index-based) but relabel the tick marks with the real-world
         % coordinate of each index when the dimension carries a scale.
+        if ~hasAxes(jj) || ~model.hasRealScale(jj), return; end
         ax = axHandles{jj};
-        if ~isvalid(ax) || ~model.hasRealScale(jj), return; end
         t = ax.XTick;
         if isempty(t), return; end
         rv = model.indexToReal(jj, t);
@@ -359,6 +392,7 @@ pw.SetFixY        = @setFixY;
 
     % -----------------------------------------------------------------
     function updateAlphaTraces(jj, xData, A, traceColors)
+        if ~hasAxes(jj), return; end
         % Draw mean-alpha traces dotted on a right y-axis (mirrors the
         % original matVis withAlpha plot style). Colors follow the data
         % traces in multi-trace (ROI) mode, neutral gray otherwise.
@@ -436,7 +470,7 @@ pw.SetFixY        = @setFixY;
         end
         if fixXScale
             for jj = 1:nDims
-                if isvalid(axHandles{jj})
+                if hasAxes(jj)
                     axHandles{jj}.XLim = fixXLimits;
                 end
             end
@@ -453,14 +487,14 @@ pw.SetFixY        = @setFixY;
         end
         if fixYScale
             for jj = 1:nDims
-                if isvalid(axHandles{jj})
+                if hasAxes(jj)
                     axHandles{jj}.YLim     = fixYLimits;
                     axHandles{jj}.YLimMode = 'manual';
                 end
             end
         else
             for jj = 1:nDims
-                if isvalid(axHandles{jj})
+                if hasAxes(jj)
                     axHandles{jj}.YLimMode = 'auto';
                 end
             end
@@ -469,6 +503,7 @@ pw.SetFixY        = @setFixY;
 
     % -----------------------------------------------------------------
     function syncSelPatchY(jj)
+        if ~hasAxes(jj), return; end
         sp = selPatches{jj};
         if ~isvalid(sp), return; end
         yl = axHandles{jj}.YLim;
@@ -490,8 +525,9 @@ pw.SetFixY        = @setFixY;
         try
             fcp = fig.CurrentPoint;
             for jj = 1:nDims
+                if ~hasAxes(jj), continue; end
                 ax = axHandles{jj};
-                if ~isvalid(ax) || strcmp(ax.Visible, 'off'), continue; end
+                if strcmp(ax.Visible, 'off'), continue; end
                 pp = getpixelposition(ax, true);
                 if fcp(1) >= pp(1) && fcp(1) <= pp(1)+pp(3) && ...
                    fcp(2) >= pp(2) && fcp(2) <= pp(2)+pp(4)

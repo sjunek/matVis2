@@ -1065,7 +1065,7 @@ classdef MatVisFrameComposer < handle
             if isempty(s.chanRange)
                 gk = {ds, lo, hi};
                 if ~isequal(gk, P.globKey)
-                    P.globCounts = histcounts(m.Datasets{ds}(:), edges);
+                    P.globCounts = m.Datasets{ds}.histCounts(edges);
                     P.globKey    = gk;
                 end
                 normG = P.globCounts / max([max(P.globCounts), 1]);

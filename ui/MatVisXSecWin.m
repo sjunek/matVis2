@@ -1165,7 +1165,7 @@ xw.Refresh           = @forceRefresh;
         idx      = num2cell(model.CurrPos);
         idx{xd}  = xi;
         idx{yd}  = yi;
-        val = model.Datasets{dsIdx}(idx{:});
+        val = model.Datasets{dsIdx}.readSub(idx);
         txt = sprintf('%s %d, %s %d  =  %g', dimLabel(xd), xi, dimLabel(yd), yi, val);
         if model.hasRealScale(xd) || model.hasRealScale(yd)
             txt = sprintf('%s   (%.4g %s, %.4g %s)', txt, ...

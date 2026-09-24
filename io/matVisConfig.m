@@ -183,9 +183,24 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
 end
 
 function configPath = GetConfigPath_()
-    [~, hostname] = system('hostname');
-    hostname = strtrim(hostname);
-    if isempty(hostname), hostname = 'Unknown'; end
+    % The host name never changes within a session, and finding it used to
+    % cost ~150 ms because system('hostname') spawns a shell -- paid twice on
+    % every startup.  COMPUTERNAME is the same NetBIOS name on Windows, and
+    % Windows paths are case-insensitive, so a config file written under
+    % either spelling is found by the other.
+    persistent cachedHost
+    if isempty(cachedHost)
+        cachedHost = '';
+        if ispc
+            cachedHost = strtrim(getenv('COMPUTERNAME'));
+        end
+        if isempty(cachedHost)
+            [~, h] = system('hostname');
+            cachedHost = strtrim(h);
+        end
+        if isempty(cachedHost), cachedHost = 'Unknown'; end
+    end
+    hostname = cachedHost;
 
     % Anchor to THIS checkout's repo root, not wherever which('matVis')
     % happens to resolve -- this machine has multiple sibling matVis/matVis2
