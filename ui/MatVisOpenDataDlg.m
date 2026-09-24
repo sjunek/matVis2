@@ -13,11 +13,18 @@ function res = MatVisOpenDataDlg(curNumDatasets, curNumDims, curSizeText)
 %     source : 'workspace' | 'files'
 %     items  : cellstr -- variable names, or full file paths
 %
-%   Workspace variables are checked against the current viewer immediately,
-%   because `whos` already knows their size.  Files are not: finding out
-%   costs a reader open, so the dialog says that replacing will happen only
-%   if the dimensions turn out to match, and the caller falls back to a new
-%   window when they do not.
+%   Both lists show what is on offer: name, shape, class and size.
+%
+%   Workspace variables and MAT-files are measured while the list is built,
+%   because `whos` reads a variable index rather than any data (3 ms even for
+%   a 5.9 GB file).  Other formats need a reader opened -- 0.24 to 2.5 s each
+%   -- so those are measured for the files actually selected, and cached.
+%
+%   Once a selection is measured it is judged exactly as a workspace variable
+%   is, and the buttons follow.  Two cases cannot be measured and keep the
+%   older, conditional wording: a format with no on-demand reader, and a
+%   selection too large to open one reader at a time.  There the caller falls
+%   back to a new window if the dimensions turn out not to match.
 %
 %   See also matVisOpenDatasets, MatVisMainWindow.
 
@@ -71,6 +78,7 @@ end
 % needs no controls of its own and sits directly in the layout -- the same
 % cell shape as the workspace list beside it.
 lstFiles = uilistbox(outer, 'Multiselect', 'on', 'FontSize', 11, 'Tag', 'mvFiles', ...
+    'FontName', 'monospaced', ...
     'ValueChangedFcn', @(~,~) onSelectionChanged('files'), ...
     'DoubleClickedFcn', @(~,~) onFileDoubleClick());
 lstFiles.Layout.Row = 2;  lstFiles.Layout.Column = 2;
@@ -144,13 +152,7 @@ uiwait(dlg);
         btnNew.Enable = 'on';
 
         if strcmp(activeSide, 'files')
-            % Dimensions are unknown until the file is opened, and finding
-            % out costs a reader open -- so offer both and let the caller
-            % fall back if it turns out not to fit.
-            lblVerdict.Text = sprintf(['%d file(s) selected.  Replacing works if they turn ' ...
-                'out to hold %d dataset(s) with %d dimensions; otherwise a new window opens.'], ...
-                nSets, curNumDatasets, curNumDims);
-            btnReplace.Enable = onOff(nSets == curNumDatasets);
+            describeFileSelection(names, nSets);
             return;
         end
 
@@ -162,6 +164,87 @@ uiwait(dlg);
             lblVerdict.Text = sprintf('%s -- %s  A new window will be opened.', ...
                 strjoin(names, ', '), why);
             btnReplace.Enable = 'off';
+        end
+    end
+
+    function describeFileSelection(names, nSets)
+        % Files are judged like workspace variables once their shape is
+        % known.  A MAT-file answers from its variable index in a few ms; an
+        % image file needs a reader opened, which is why it happens for the
+        % selection rather than for the whole listing.
+        paths = cellfun(@(f) fullfile(edtDir.Value, f), names, ...
+            'UniformOutput', false);
+        totalBytes = 0;
+        for k = 1:numel(paths)
+            dk = dir(paths{k});
+            if ~isempty(dk), totalBytes = totalBytes + dk(1).bytes; end
+        end
+
+        nDeep = sum(~endsWithExt(paths, '.mat'));
+        if nDeep > maxFilesToProbe()
+            % Opening this many readers would turn one click into a minute
+            % of waiting, so the count alone decides and the wording says
+            % the dimensions were not checked.
+            lblVerdict.Text = sprintf(['%d files, %s.  Too many to measure without ' ...
+                'opening them, so replacing works only if they turn out to hold ' ...
+                '%d dataset(s) with %d dimensions; otherwise a new window opens.'], ...
+                nSets, bytesText(totalBytes), curNumDatasets, curNumDims);
+            btnReplace.Enable = onOff(nSets == curNumDatasets);
+            return;
+        end
+
+        infos = probeWithProgress(paths);
+        known = cellfun(@(i) i.known, infos);
+        if ~all(known)
+            j = find(~known, 1);
+            lblVerdict.Text = sprintf(['%d file(s), %s.  "%s" cannot be measured ' ...
+                'without loading it -- %s.  Replacing works if the dimensions turn ' ...
+                'out to match; otherwise a new window opens.'], ...
+                nSets, bytesText(totalBytes), names{j}, infos{j}.why);
+            btnReplace.Enable = onOff(nSets == curNumDatasets);
+            return;
+        end
+
+        szs       = cellfun(@(i) i.size, infos, 'UniformOutput', false);
+        totalSets = sum(cellfun(@(i) i.nSets, infos));
+        nd        = numel(szs{1});
+        shape     = sprintf('%s %s', dimsText(szs{1}), infos{1}.class);
+
+        whyNot = '';
+        if ~allSameVec(szs)
+            whyNot = 'the selected files do not all have the same size.';
+        elseif totalSets ~= curNumDatasets
+            whyNot = sprintf('this viewer holds %d dataset(s), these give %d.', ...
+                curNumDatasets, totalSets);
+        elseif nd ~= curNumDims
+            whyNot = sprintf('this viewer shows %d dimensions.', curNumDims);
+        end
+
+        if isempty(whyNot)
+            lblVerdict.Text = sprintf('%s -- %s, %s.  Matches this viewer.', ...
+                strjoin(names, ', '), shape, bytesText(totalBytes));
+            btnReplace.Enable = 'on';
+        else
+            lblVerdict.Text = sprintf('%s -- %s, %s.  %s  A new window will be opened.', ...
+                strjoin(names, ', '), shape, bytesText(totalBytes), capitalise(whyNot));
+            btnReplace.Enable = 'off';
+        end
+    end
+
+    function infos = probeWithProgress(paths)
+        % Opening a reader takes up to a couple of seconds, and MATLAB
+        % cannot repaint while it does, so the label says what is happening
+        % before each one rather than after all of them.
+        infos = cell(1, numel(paths));
+        for k = 1:numel(paths)
+            if numel(paths) > 1
+                lblVerdict.Text = sprintf('Reading file information... (%d/%d)', ...
+                    k, numel(paths));
+            else
+                lblVerdict.Text = 'Reading file information...';
+            end
+            drawnow;
+            infos{k} = fileDatasetInfo(paths{k});
         end
     end
 
@@ -270,9 +353,9 @@ end
 for k = 1:numel(w)
     if ~isMatrixVar(w(k).class, w(k).size), continue; end
     v(end+1) = struct('name', w(k).name, 'size', w(k).size, ...
-        'label', sprintf('%-20s %-18s %s', w(k).name, ...
-                         ['[' strjoin(arrayfun(@(d) sprintf('%d', d), w(k).size, ...
-                          'UniformOutput', false), 'x') ']'], w(k).class)); %#ok<AGROW>
+        'label', sprintf('%-16s %-17s %-8s %9s', w(k).name, ...
+                         dimsText(w(k).size), w(k).class, ...
+                         bytesText(w(k).bytes))); %#ok<AGROW>
 end
 end
 
@@ -287,7 +370,7 @@ end
 
 % =============================================================================
 function e = emptyEntries()
-e = struct('name', {}, 'isdir', {}, 'label', {}, 'target', {});
+e = struct('name', {}, 'isdir', {}, 'label', {}, 'target', {}, 'bytes', {});
 end
 
 % =============================================================================
@@ -299,7 +382,8 @@ if isempty(folder) || ~isfolder(folder), return; end
 
 parent = fileparts(folder);
 if ~isempty(parent) && ~strcmp(parent, folder)
-    e(end+1) = struct('name', '..', 'isdir', true, 'label', '[..]', 'target', parent);
+    e(end+1) = struct('name', '..', 'isdir', true, 'label', '[..]', ...
+        'target', parent, 'bytes', 0);
 end
 
 d = dir(folder);
@@ -311,16 +395,34 @@ subs = sortNoCase({d([d.isdir]).name});
 subs = subs(~isHiddenOrSystem(folder, subs));
 for k = 1:numel(subs)
     e(end+1) = struct('name', subs{k}, 'isdir', true, ...
-        'label', ['[' subs{k} ']'], 'target', fullfile(folder, subs{k})); %#ok<AGROW>
+        'label', ['[' subs{k} ']'], 'target', fullfile(folder, subs{k}), ...
+        'bytes', 0); %#ok<AGROW>
 end
 
-files = sortNoCase({d(~[d.isdir]).name});
-for k = 1:numel(files)
-    if isSupportedFile(fullfile(folder, files{k}))
-        e(end+1) = struct('name', files{k}, 'isdir', false, ...
-            'label', files{k}, 'target', ''); %#ok<AGROW>
+df    = d(~[d.isdir]);
+[~, ord] = sort(lower({df.name}));
+df    = df(ord);
+for k = 1:numel(df)
+    if isSupportedFile(fullfile(folder, df(k).name))
+        e(end+1) = struct('name', df(k).name, 'isdir', false, ...
+            'label', sprintf('%-40s %9s', fitName(df(k).name, 40), ...
+                             bytesText(df(k).bytes)), ...
+            'target', '', 'bytes', df(k).bytes); %#ok<AGROW>
     end
 end
+end
+
+% =============================================================================
+function s = fitName(n, w)
+% Keep the extension visible when a name is too long for the column: the
+% middle is what a reader can most afford to lose.
+if numel(n) <= w, s = n; return; end
+[~, base, ext] = fileparts(n);
+keep = w - numel(ext) - 1;
+if keep < 4, s = [n(1:w-1) char(8230)]; return; end
+head = ceil(keep / 2);
+tail = keep - head;
+s = [base(1:head) char(8230) base(end-tail+1:end) ext];
 end
 
 % =============================================================================
@@ -365,46 +467,157 @@ exts = {'.mat','.tif','.tiff','.jpg','.jpeg','.png','.bmp','.czi','.lsm', ...
 [~, ~, ext] = fileparts(lower(p));
 tf = ismember(ext, exts);
 if tf && strcmp(ext, '.mat')
-    tf = matHoldsDisplayableData(p);
+    info = matDatasetInfo(p);
+    tf   = info.known;
 end
 end
 
 % =============================================================================
-function tf = matHoldsDisplayableData(p)
-% Same rule as the workspace list: matrices only, and if there is more than
-% one they have to share a size.  `whos -file` reads the variable index, not
-% the data, so this costs a few ms even for a multi-GB file -- measured at
-% 2.8 ms for a 5.9 GB v7.3 file and 6.6 ms for 126 MB of incompressible v7.
-% Cached on size and timestamp so re-listing a folder is free.
+function info = matDatasetInfo(p)
+% What a MAT-file holds, by the same rule as the workspace list: matrices
+% only, and if there is more than one they have to share a size.
+%
+% `whos -file` reads the variable index, not the data, so this costs a few
+% ms even for a multi-GB file -- measured at 3 ms for a 5.9 GB v7.3 file and
+% 6.6 ms for 126 MB of incompressible v7.  Cheap enough to run while listing
+% a folder, which is why .mat dimensions can be shown without being asked
+% for.  Cached on size and timestamp so re-listing is free.
 persistent cache
 if isempty(cache)
     cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
 end
+info = struct('known', false, 'size', [], 'class', '', 'nSets', 0, 'why', '');
 d = dir(p);
-if isempty(d), tf = false; return; end
+if isempty(d), info.why = 'the file is gone'; return; end
 key = sprintf('%s|%.10f|%d', p, d(1).datenum, d(1).bytes);
-if isKey(cache, key), tf = cache(key); return; end
+if isKey(cache, key), info = cache(key); return; end
 
-tf = false;
 try
     w = whos('-file', p);
     keep = arrayfun(@(x) isMatrixVar(x.class, x.size), w);
     w = w(keep);
-    if ~isempty(w)
-        tf = true;
-        for k = 2:numel(w)
-            if ~isequal(w(k).size, w(1).size), tf = false; break; end
-        end
+    if isempty(w)
+        info.why = 'it holds no matrices';
+    elseif ~allSameSize(w)
+        info.why = 'its matrices differ in size';
+    else
+        info.known = true;
+        info.size  = w(1).size;
+        info.class = w(1).class;
+        info.nSets = numel(w);
     end
 catch
-    tf = false;   % unreadable, or not really a MAT-file
+    info.why = 'it could not be read';
 end
-cache(key) = tf;
+cache(key) = info;
+end
+
+% =============================================================================
+function info = fileDatasetInfo(p)
+% The shape of one file, whatever its format.
+%
+% A MAT-file answers from its variable index in milliseconds.  Everything
+% else needs a reader opened, which measured 0.24-2.5 s per file (plus a
+% one-off ~4 s the first time Bio-Formats loads), so this is called for the
+% files the user actually selected, never for a whole listing.  Results are
+% cached, so re-selecting is instant.
+persistent cache
+if isempty(cache)
+    cache = containers.Map('KeyType', 'char', 'ValueType', 'any');
+end
+[~, ~, ext] = fileparts(lower(p));
+if strcmp(ext, '.mat')
+    info = matDatasetInfo(p);
+    return;
+end
+
+info = struct('known', false, 'size', [], 'class', '', 'nSets', 1, 'why', '');
+d = dir(p);
+if isempty(d), info.why = 'the file is gone'; return; end
+key = sprintf('%s|%.10f|%d', p, d(1).datenum, d(1).bytes);
+if isKey(cache, key), info = cache(key); return; end
+
+src = [];
+try
+    [src, ~, why] = matVisOpenSource(p);
+    if isempty(src)
+        % No on-demand reader, so the shape is not knowable without loading
+        % the whole file -- which is exactly what the user has not asked for
+        % yet.  Say so rather than pay for it here.
+        if isempty(why), why = 'it has no on-demand reader'; end
+        info.why = why;
+    else
+        info.known = true;
+        info.size  = src.Size;
+        info.class = src.ClassName;
+    end
+catch ME
+    info.why = ME.message;
+end
+if ~isempty(src) && isa(src, 'MatVisLazySource')
+    try
+        src.closeSource();
+    catch
+    end
+end
+cache(key) = info;
 end
 
 % =============================================================================
 function s = onOff(tf)
 if tf, s = 'on'; else, s = 'off'; end
+end
+
+% =============================================================================
+function n = maxFilesToProbe()
+% How many files needing a reader open may be measured before the dialog
+% gives up and judges on count alone.  A reader open measured 0.24-2.5 s, so
+% six is a couple of seconds in the ordinary case and bounded in the worst.
+n = 6;
+end
+
+% =============================================================================
+function tf = endsWithExt(paths, ext)
+tf = false(1, numel(paths));
+for k = 1:numel(paths)
+    [~, ~, e] = fileparts(lower(paths{k}));
+    tf(k) = strcmp(e, ext);
+end
+end
+
+% =============================================================================
+function tf = allSameVec(c)
+tf = true;
+for k = 2:numel(c)
+    if ~isequal(c{k}, c{1}), tf = false; return; end
+end
+end
+
+% =============================================================================
+function s = capitalise(s)
+% The reasons read as clauses after a dash in the workspace panel, but as
+% sentences after the file size here.
+if ~isempty(s), s(1) = upper(s(1)); end
+end
+
+% =============================================================================
+function s = dimsText(sz)
+s = ['[' strjoin(arrayfun(@(d) sprintf('%d', d), sz, ...
+     'UniformOutput', false), 'x') ']'];
+end
+
+% =============================================================================
+function s = bytesText(n)
+u = {'B', 'kB', 'MB', 'GB', 'TB'};
+k = 1;
+while n >= 1024 && k < numel(u)
+    n = n / 1024;  k = k + 1;
+end
+if n >= 100 || k == 1
+    s = sprintf('%.0f %s', n, u{k});
+else
+    s = sprintf('%.1f %s', n, u{k});
+end
 end
 
 % =============================================================================
