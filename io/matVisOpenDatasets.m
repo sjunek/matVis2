@@ -50,7 +50,7 @@ end
 srcs = cell(1, numel(paths));
 metas = cell(1, numel(paths));
 for k = 1:numel(paths)
-    [srcs{k}, metas{k}] = matVisOpenSource(paths{k});
+    [srcs{k}, metas{k}, whyNot] = matVisOpenSource(paths{k});
     if isempty(srcs{k})
         % This one has no on-demand reader (a .mat, a Zstandard TIFF, a format
         % Bio-Formats cannot open). The others may still be readable, but a
@@ -59,6 +59,7 @@ for k = 1:numel(paths)
         % the selection falls back together -- and importMultiFile reports
         % whichever file is the real problem.
         cellfun(@(s) closeIfSource(s), srcs);
+        warnFullLoadOnly(paths, paths{k}, whyNot);
         [datasets, fm] = importMultiFile(paths, importNVs{:});
         return;
     end
@@ -151,6 +152,55 @@ end
 function closeIfSource(s)
 if ~isempty(s) && isa(s, 'MatVisLazySource')
     s.closeSource();
+end
+end
+
+% =============================================================================
+function warnFullLoadOnly(paths, badPath, why)
+% This format has no on-demand reader, so the whole dataset is about to be
+% read into memory.  Say so before it happens rather than after: for a large
+% file that is a long wait during which MATLAB cannot respond at all.
+%
+% The size on disk is a lower bound -- a compressed file expands in memory --
+% so this errs towards staying quiet rather than crying wolf.  The same two
+% thresholds the load dialog uses decide whether it is worth a word, so a
+% small TIFF is never held up.
+if ~usejava('desktop')
+    return;                          % non-interactive: the policy decides
+end
+bytes = 0;
+for k = 1:numel(paths)
+    d = dir(paths{k});
+    if ~isempty(d), bytes = bytes + d(1).bytes; end
+end
+p = matVisLoadPolicy(struct('bytes', bytes, 'estSeconds', NaN));
+if ~p.shouldAsk
+    return;
+end
+if isempty(why), why = 'it has no on-demand reader'; end
+
+msg = sprintf(['"%s" cannot be read a plane at a time:\n%s.\n\n' ...
+    'The whole dataset will be loaded now -- at least %s, and more once ' ...
+    'decompressed. MATLAB cannot respond while it reads.\n\n%s'], ...
+    nameOf(badPath), why, bytesText_(bytes), strjoin(p.reasons, ' '));
+choice = questdlg(msg, 'Memory-efficient reading not available', ...
+    'Load it', 'Cancel', 'Load it');
+if ~strcmp(choice, 'Load it')
+    error('matVis2:cancelled', 'Opening cancelled.');
+end
+end
+
+% =============================================================================
+function s = bytesText_(n)
+u = {'B', 'kB', 'MB', 'GB', 'TB'};
+k = 1;
+while n >= 1024 && k < numel(u)
+    n = n / 1024;  k = k + 1;
+end
+if n >= 100 || k == 1
+    s = sprintf('%.0f %s', n, u{k});
+else
+    s = sprintf('%.1f %s', n, u{k});
 end
 end
 

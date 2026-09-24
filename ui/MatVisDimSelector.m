@@ -259,7 +259,9 @@ else
     dropProjDim.Value = avail(1);
     model.ProjDim     = avail(1);
 end
-dropProjDim.Enable = onoff_(~strcmp(model.ProjFun, 'none'));
+% Stays enabled whether or not a projection is running, so the dimension can
+% be chosen before the projection is engaged rather than after.
+dropProjDim.Enable = 'on';
 end
 
 % ---------------------------------------------------------------------------
@@ -340,8 +342,7 @@ model.ProjFun = dropProjFun.Value;
 % Activating/deactivating the projection changes which dims the RGB
 % dropdown may offer.
 populateRGBDimDropdown(model, dropRGBDim);
-active = ~strcmp(model.ProjFun, 'none');
-dropProjDim.Enable = onoff_(active && model.ProjDim > 0);
+dropProjDim.Enable = onoff_(model.ProjDim > 0);
 renderFcn();
 end
 

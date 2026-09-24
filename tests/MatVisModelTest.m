@@ -38,10 +38,15 @@ classdef MatVisModelTest < matlab.unittest.TestCase
             tc.verifyEqual(m.DimUnits, {'', ''});
         end
 
-        function testConstructor2D_CurrPosCenter(tc)
+        function testConstructor2D_CurrPosAtBrightestPixel(tc)
+            % CurrPos starts at the brightest pixel of the first dataset, not
+            % at the geometric centre: opening a stack should land on
+            % something worth looking at.  SmallData2D is reshape(1:24,4,6),
+            % so its maximum sits in the far corner.
             m = MatVisModel(tc.SmallData2D);
-            % round([4,6]/2) = [2,3]
-            tc.verifyEqual(m.CurrPos, [2, 3]);
+            [r, c] = ind2sub(size(tc.SmallData2D), ...
+                find(tc.SmallData2D == max(tc.SmallData2D(:)), 1));
+            tc.verifyEqual(m.CurrPos, [r, c]);
         end
 
         function testConstructor2D_ZoomRangeFullExtent(tc)
@@ -86,11 +91,12 @@ classdef MatVisModelTest < matlab.unittest.TestCase
             tc.verifyEqual(m.DimNames, {'Dim1', 'Dim2', 'Dim3'});
         end
 
-        function testConstructor3D_CurrPos(tc)
+        function testConstructor3D_CurrPosAtBrightestPixel(tc)
             m = MatVisModel(tc.SmallData3D);
-            % round([3,4,5]/2) = [2,2,3] (using MATLAB round-half-away)
-            expected = max(1, round([3, 4, 5] / 2));
-            tc.verifyEqual(m.CurrPos, expected);
+            sub = cell(1, 3);
+            [sub{:}] = ind2sub(size(tc.SmallData3D), ...
+                find(tc.SmallData3D == max(tc.SmallData3D(:)), 1));
+            tc.verifyEqual(m.CurrPos, [sub{:}]);
         end
 
         function testConstructor3D_ZoomRange(tc)
@@ -141,8 +147,14 @@ classdef MatVisModelTest < matlab.unittest.TestCase
         end
 
         function testSetYDimOutOfRangeErrors(tc)
+            % Zero is rejected by the property's own validateattributes,
+            % which fires before the range check and carries its own
+            % identifier; an in-range-but-too-large dim gets
+            % MatVisModel:invalidDim (see testSetXDimOutOfRangeErrors).
             m = MatVisModel(tc.SmallData3D);
-            tc.verifyError(@() setYDim(m, 0), 'MatVisModel:invalidDim');
+            tc.verifyError(@() setYDim(m, 0), ...
+                'MATLAB:MatVisModel:set:YDim:expectedPositive');
+            tc.verifyError(@() setYDim(m, 4), 'MatVisModel:invalidDim');
         end
     end
 
@@ -227,19 +239,28 @@ classdef MatVisModelTest < matlab.unittest.TestCase
     %  Data setter (resets Size and Contrast)
     % ==================================================================
     methods (Test)
-        function testSetDataUpdatesSize(tc)
+        % Data is a read-only dependent property (it hands out the active
+        % dataset's source).  Swapping the data goes through ReplaceDatasets,
+        % which is what keeps Size and the navigation state in step with it.
+        function testReplaceDatasetsUpdatesSize(tc)
             m = MatVisModel(tc.SmallData2D);
-            newData = zeros(10, 20);
-            m.Data = newData;
+            m.ReplaceDatasets(zeros(10, 20));
             tc.verifyEqual(m.Size, [10, 20]);
         end
 
-        function testSetDataUpdatesContrast(tc)
+        function testReplaceDatasetsUpdatesContrast(tc)
             m = MatVisModel(tc.SmallData2D);
-            newData = ones(5, 5) * 42;
-            m.Data = newData;
-            tc.verifyEqual(m.ContrastMin, 42.0);
-            tc.verifyEqual(m.ContrastMax, 42.0);
+            m.ReplaceDatasets(ones(5, 5) * 42);
+            tc.verifyEqual(m.DataMin, 42.0);
+            tc.verifyEqual(m.DataMax, 42.0);
+        end
+
+        function testAssigningDataDirectlyIsRejected(tc)
+            % The old API allowed m.Data = newArray, which left Size
+            % describing the previous array.  It is read-only now.
+            m = MatVisModel(tc.SmallData2D);
+            tc.verifyError(@() setData(m, zeros(10, 20)), ...
+                'MATLAB:class:noSetMethod');
         end
     end
 
@@ -311,5 +332,6 @@ end
 % ------------------------------------------------------------------
 function setXDim(m, v),    m.XDim    = v; end
 function setYDim(m, v),    m.YDim    = v; end
+function setData(m, v),    m.Data    = v; end
 function setCurrPos(m, v), m.CurrPos = v; end
 function setZoomRange(m,v),m.ZoomRange = v; end

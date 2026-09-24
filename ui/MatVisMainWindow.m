@@ -37,6 +37,12 @@ mvT0_     = tic;
 % a second and a stale value costs at worst one frame at the wrong sampling.
 dispPxCache = struct();
 
+% Signatures of display settings already warned about as expensive reads.  A
+% projection or an RGB stretch over a file-backed dataset turns one
+% navigation step into a run of plane reads; the warning belongs to the
+% *setting*, not the step, so scrubbing after it does not nag.
+expensiveWarned = {};
+
 %% Figure setup
 % Window title shows the dataset name(s). The live playback framerate is shown
 % in a label next to the play-speed control (see updateFrameRateDisplay).
@@ -673,10 +679,13 @@ btnH = 24;
 % The narrow sixth column holds the Video toggle without stealing enough
 % width from the others to clip their labels, and without a third row (which
 % would change the window height the comment above depends on).
-bottomGrid = uigridlayout(grid, [2, 6]);
+% Five equal columns, two rows.  Save/Load configuration moved to the
+% Settings menu, which freed the two cells Video and 3-D now sit in -- and
+% with them the narrow sixth column those two used to share.
+bottomGrid = uigridlayout(grid, [2, 5]);
 bottomGrid.Layout.Row    = 4;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x', 52};
+bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x'};
 bottomGrid.RowHeight     = {btnH, btnH};
 bottomGrid.RowSpacing    = rowH_bottom - 2*btnH - 4;
 bottomGrid.Padding       = [0 2 0 2];
@@ -726,21 +735,13 @@ btnToggleXSec = uibutton(bottomGrid, 'state', 'Text', 'XSec', 'Value', false, ..
     'ValueChangedFcn', @(src, ~) toggleXSecWindows(src.Value));
 btnToggleXSec.Layout.Row = 2;  btnToggleXSec.Layout.Column = 3;
 
-btnSaveConfig = uibutton(bottomGrid, 'Text', 'Save Config', 'FontSize', btnFS, ...
-    'ButtonPushedFcn', @(~,~) onSaveConfig());
-btnSaveConfig.Layout.Row = 2;  btnSaveConfig.Layout.Column = 4;
-
-btnLoadConfig = uibutton(bottomGrid, 'Text', 'Load Config', 'FontSize', btnFS, ...
-    'ButtonPushedFcn', @(~,~) onLoadConfig());
-btnLoadConfig.Layout.Row = 2;  btnLoadConfig.Layout.Column = 5;
-
 btnToggleVideo = uibutton(bottomGrid, 'state', 'Text', 'Video', 'Value', false, ...
     'FontSize', btnFS, ...
     'Tooltip', sprintf(['Show/hide the Video Generator: combine several\n' ...
         'windows into one movie frame and record a sweep\n' ...
         'through a dimension.']), ...
     'ValueChangedFcn', @(src, ~) toggleVideoWindow(src.Value));
-btnToggleVideo.Layout.Row = 1;  btnToggleVideo.Layout.Column = 6;
+btnToggleVideo.Layout.Row = 2;  btnToggleVideo.Layout.Column = 4;
 
 btnToggle3D = uibutton(bottomGrid, 'state', 'Text', '3D', 'Value', false, ...
     'FontSize', btnFS, ...
@@ -748,7 +749,7 @@ btnToggle3D = uibutton(bottomGrid, 'state', 'Text', '3D', 'Value', false, ...
         'rendering of three selectable dimensions, with its own\n' ...
         'extent, rendering style and camera controls.']), ...
     'ValueChangedFcn', @(src, ~) toggle3DWindows(src.Value));
-btnToggle3D.Layout.Row = 2;  btnToggle3D.Layout.Column = 6;
+btnToggle3D.Layout.Row = 2;  btnToggle3D.Layout.Column = 5;
 
 setappdata(fig, 'OverlayVisible', true);
 
@@ -758,12 +759,13 @@ setappdata(fig, 'OverlayVisible', true);
 % has.  The strip says which mode is running, reports what is being read while
 % it happens, and offers the way out.
 lblStatus   = [];
-btnLoadFull = [];
+btnLoadFull   = [];
+btnCancelRead = [];
 if statusH > 0
-    statusGrid = uigridlayout(grid, [1, 2]);
+    statusGrid = uigridlayout(grid, [1, 3]);
     statusGrid.Layout.Row    = 5;
     statusGrid.Layout.Column = 1;
-    statusGrid.ColumnWidth   = {'1x', 130};
+    statusGrid.ColumnWidth   = {'1x', 70, 130};
     statusGrid.RowHeight     = {22};
     statusGrid.Padding       = [2 0 0 0];
     statusGrid.ColumnSpacing = 6;
@@ -775,9 +777,18 @@ if statusH > 0
                     'histogram) come from a reduced-resolution overview.']);
     lblStatus.Layout.Row = 1;  lblStatus.Layout.Column = 1;
 
+    % Shown only while a run of plane reads is in flight.  It works because
+    % the progress callback calls drawnow, which is the one moment MATLAB
+    % processes this button's click during an otherwise blocking read.
+    btnCancelRead = uibutton(statusGrid, 'Text', 'Cancel', 'FontSize', 10, ...
+        'Visible', 'off', 'Tag', 'mvCancelRead', ...
+        'ButtonPushedFcn', @(~,~) onCancelRead(), ...
+        'Tooltip', 'Stop this read and keep the previous display.');
+    btnCancelRead.Layout.Row = 1;  btnCancelRead.Layout.Column = 2;
+
     btnLoadFull = uibutton(statusGrid, 'Text', 'Load full dataset', 'FontSize', 10, ...
         'ButtonPushedFcn', @(~,~) onLoadFullDataset());
-    btnLoadFull.Layout.Row = 1;  btnLoadFull.Layout.Column = 2;
+    btnLoadFull.Layout.Row = 1;  btnLoadFull.Layout.Column = 3;
     if ~allDatasetsLoadable()
         btnLoadFull.Enable  = 'off';
         btnLoadFull.Tooltip = ['This file cannot be held in one array at all ' ...
@@ -872,9 +883,20 @@ mw.fctHandles.loadNewData = @loadNewData;
 
 % A menu bar costs no room in the layout, which the bottom button grid has
 % none of -- and File > Open is where this belongs anyway.
-mFile = uimenu(fig, 'Text', '&File');
-uimenu(mFile, 'Text', '&Open data...', 'Accelerator', 'O', ...
+mData = uimenu(fig, 'Text', '&Data');
+uimenu(mData, 'Text', '&Open data...', 'Accelerator', 'O', ...
     'MenuSelectedFcn', @(~,~) onOpenData());
+
+% Settings live in the menu bar rather than the button grid: they are chosen
+% once in a while, unlike the window toggles, and moving them here frees two
+% cells at the bottom.
+mSettings = uimenu(fig, 'Text', '&Settings');
+uimenu(mSettings, 'Text', '&Save configuration', ...
+    'MenuSelectedFcn', @(~,~) onSaveConfig());
+uimenu(mSettings, 'Text', '&Load configuration', ...
+    'MenuSelectedFcn', @(~,~) onLoadConfig());
+uimenu(mSettings, 'Text', 'Loading &large files...', 'Separator', 'on', ...
+    'MenuSelectedFcn', @(~,~) onLoadPolicyPref());
 
 fig.CloseRequestFcn       = @(~,~) onMainWindowClosing();
 fig.WindowButtonDownFcn   = @(~,~) onFigureButtonDown();
@@ -967,6 +989,23 @@ fprintf('\n');
         try; if ~isempty(videoWin) && isvalid(videoWin.fig), delete(videoWin.fig); end; catch; end
         try; if ~isempty(roiMgr) && isvalid(roiMgr.fig), delete(roiMgr.fig); end; catch; end
         try; if ~isempty(hist2DFig) && isvalid(hist2DFig), delete(hist2DFig); end; catch; end
+        % A file-backed source holds its reader, and so a file handle, open.
+        % Waiting for garbage collection to notice means the file can stay
+        % locked well after the window is gone -- on Windows that blocks
+        % moving or deleting it.
+        try
+            % dsQ, not ds: nested functions share the parent workspace, so a
+            % loop variable named ds here would clobber the one the render
+            % loop uses.
+            for dsQ = 1:numel(model.Datasets)
+                sQ = model.Datasets{dsQ};
+                if isa(sQ, 'MatVisLazySource') && isvalid(sQ)
+                    sQ.ProgressFcn = [];
+                    sQ.closeSource();
+                end
+            end
+        catch
+        end
         delete(fig);
     end
 
@@ -1016,7 +1055,15 @@ fprintf('\n');
         rfRaw_ads   = [];
         chanRng_ads = [];
         for ds = 1:nDatasets
-            s = computeDatasetDisplay(ds, dispFlags);
+            try
+                s = computeDatasetDisplay(ds, dispFlags);
+            catch err
+                if ~strcmp(err.identifier, 'MatVisLazySource:cancelled')
+                    rethrow(err);
+                end
+                onReadCancelled();   % keeps whatever was already on screen
+                return;
+            end
             cmin_arr(ds) = s.cmin;
             cmax_arr(ds) = s.cmax;
 
@@ -1146,6 +1193,56 @@ fprintf('\n');
             @() MatVisRender.rawSliceFromPlan(aData, model, planZ));
     end
 
+    function warnIfExpensivePlan(ds, plan)
+        % A projection or an RGB stretch spanning many planes turns one
+        % navigation step into a run of plane reads.  MATLAB is
+        % single-threaded, so that run blocks everything -- say so before it
+        % starts rather than leaving the window looking hung.
+        %
+        % Warned once per distinct display setting, not once per step: the
+        % cost belongs to engaging the projection, and scrubbing afterwards
+        % must not nag.  uialert rather than a blocking confirm, because this
+        % runs inside a render and a modal dialog there would let a playback
+        % timer re-enter it.
+        src = model.Datasets{ds};
+        if ~isa(src, 'MatVisLazySource'),      return; end
+        if ~plan.doProj && ~plan.doStretch,    return; end
+        [nPlanes, secs] = src.estimateReadCost(plan.idx);
+        if nPlanes < 2 || secs < MatVisMainWindow_ExpensiveReadSeconds()
+            return;
+        end
+
+        sig = sprintf('%d|%d|%d|%d|%d|%d', ds, plan.doProj, plan.pd, ...
+            plan.doStretch, plan.rd, nPlanes);
+        if any(strcmp(sig, expensiveWarned)), return; end
+        expensiveWarned{end+1} = sig;
+
+        if plan.doStretch
+            what = sprintf('The RGB stretch spans %d planes along "%s"', ...
+                nPlanes, getDimLabel(model, plan.rd));
+        else
+            what = sprintf('This "%s" projection spans %d planes along "%s"', ...
+                model.ProjFun, nPlanes, getDimLabel(model, plan.pd));
+        end
+        msg = sprintf(['%s.\n\nEvery step reads them from the file -- ' ...
+            'roughly %s each time, and matVis cannot respond while it does. ' ...
+            'The status strip shows progress.\n\nNarrowing the zoom on that ' ...
+            'dimension reads fewer planes; "Load full dataset" removes the ' ...
+            'wait altogether.'], what, secondsText_(secs));
+        setappdata(fig, 'MatVisLastReadWarning', msg);
+
+        % uialert refuses a hidden figure, and a diagnostic must never be the
+        % thing that breaks the render it was diagnosing.
+        if strcmp(fig.Visible, 'on')
+            try
+                uialert(fig, msg, 'This view reads a lot of data', ...
+                    'Icon', 'warning');
+                drawnow;      % paint it before the read blocks the app
+            catch
+            end
+        end
+    end
+
     function s = computeDatasetDisplay(ds, F)
         xd = model.XDim;
         yd = model.YDim;
@@ -1163,6 +1260,7 @@ fprintf('\n');
         budget = MatVisRender.DISPLAY_PIXEL_BUDGET;
         planF  = MatVisRender.rawFullSlicePlan(model, budget);
         planZ  = MatVisRender.rawZoomSlicePlan(model, budget);
+        warnIfExpensivePlan(ds, planF);
         [raw_full, raw_zoom] = memoPair('raw', ds, planF.key, planZ.key, ...
             @() MatVisRender.rawSliceFromPlan(dsData, model, planF), ...
             @() MatVisRender.rawSliceFromPlan(dsData, model, planZ));
@@ -3672,10 +3770,84 @@ fprintf('\n');
         if isempty(lblStatus) || ~isvalid(lblStatus), return; end
         if isempty(done)
             lblStatus.Text = 'Memory-efficient mode';
+            showCancelRead(false);
         else
             lblStatus.Text = sprintf('Loading... %d/%d planes', done, total);
+            showCancelRead(true);
         end
-        drawnow limitrate;
+        % A full drawnow, not limitrate: limitrate may drop the update that
+        % puts the Cancel button on screen, and a button nobody can see is
+        % worse than none.  Reports come every fourth plane -- about three a
+        % second here -- so the cost is noise against the read itself.
+        drawnow;
+    end
+
+    function showCancelRead(tf)
+        if isempty(btnCancelRead) || ~isvalid(btnCancelRead), return; end
+        want = matlab.lang.OnOffSwitchState(tf);
+        if btnCancelRead.Visible ~= want
+            btnCancelRead.Visible = want;
+        end
+    end
+
+    function onCancelRead()
+        % Ask every lazy source to stop at its next progress report.  The
+        % read throws MatVisLazySource:cancelled, which doRender catches.
+        for dsC = 1:model.NumDatasets
+            s = model.Datasets{dsC};
+            if isa(s, 'MatVisLazySource') && isvalid(s)
+                s.CancelRequested = true;
+            end
+        end
+        if ~isempty(lblStatus) && isvalid(lblStatus)
+            lblStatus.Text = 'Cancelling...';
+        end
+        drawnow;
+    end
+
+    function onReadCancelled()
+        % Back out of whatever made the read expensive.  Leaving the setting
+        % on would start the same long read at the next interaction, and
+        % Cancel would become a treadmill rather than a way out.
+        what = '';
+        if ~strcmp(model.RGBStretchMode, 'none')
+            model.RGBStretchMode = 'none';
+            what = 'RGB stretch';
+            trySet(@() set(dimSelector.btnRGBMean, 'Value', false));
+            trySet(@() set(dimSelector.btnRGBMax,  'Value', false));
+        elseif ~strcmp(model.ProjFun, 'none')
+            model.ProjFun = 'none';
+            what = 'projection';
+            trySet(@() set(dimSelector.dropProjFun, 'Value', 'none'));
+        end
+        showCancelRead(false);
+        if ~isempty(lblStatus) && isvalid(lblStatus)
+            if isempty(what)
+                lblStatus.Text = 'Read cancelled';
+            else
+                lblStatus.Text = sprintf('Read cancelled -- %s off', what);
+            end
+        end
+        setappdata(fig, 'MatVisLastReadCancelled', what);
+        drawnow;
+    end
+
+    function trySet(fcn)
+        % The control may not exist yet, or at all; a failed re-sync must not
+        % turn a cancelled read into an error.
+        try
+            fcn();
+        catch
+        end
+    end
+
+    function onLoadPolicyPref()
+        % The standing rule for files large enough that loading them whole is
+        % slow or risky.  Kept in setpref rather than the window-layout
+        % config: it is a preference about behaviour, not about this window.
+        sel = MatVisLoadPrefDlg(getpref('matVis2', 'LoadPolicy', 'ask'));
+        if isempty(sel), return; end
+        setpref('matVis2', 'LoadPolicy', sel);
     end
 
     function tf = allDatasetsLoadable()
@@ -4349,6 +4521,24 @@ dotMask  = (X - mid).^2 + (Y - mid).^2 <= 3.3^2;          % centred dot
 mask     = lineMask | dotMask;
 for c = 1:3
     ch = cdata(:, :, c);  ch(mask) = fg;  cdata(:, :, c) = ch;
+end
+end
+
+function s = MatVisMainWindow_ExpensiveReadSeconds()
+% Estimated read time per navigation step above which the user is told, once,
+% that this display setting is expensive.
+%
+% Three seconds is chosen to sit above the ordinary cost of a modest
+% projection (a 30-plane stack on a CZI measures about 1.3 s) and below the
+% point where a frozen window looks broken rather than busy.
+s = 3;
+end
+
+function s = secondsText_(n)
+if n < 90
+    s = sprintf('%.0f s', n);
+else
+    s = sprintf('%.0f min', n / 60);
 end
 end
 

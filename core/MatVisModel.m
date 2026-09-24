@@ -663,6 +663,12 @@ classdef MatVisModel < handle
                     numel(newSz), numel(obj.Size));
             end
 
+            % A reader being dropped holds a file handle open.  Leaving it to
+            % garbage collection can keep a file locked long after it stopped
+            % being displayed, so close it here.  Sources carried over into
+            % the new set are left alone.
+            obj.closeDroppedSources_(datasets);
+
             oldSz    = obj.Size;
             obj.Size = newSz;                % before Datasets: the setter checks it
             obj.Datasets = datasets(:)';     % setter clears the slice cache
@@ -1307,6 +1313,27 @@ classdef MatVisModel < handle
     end
 
     methods (Access = private)
+        function closeDroppedSources_(obj, newSets)
+            % Close every file-backed source that the incoming set does not
+            % carry over.  Handle identity decides: two sources reading the
+            % same file are still two readers, and one of them may still be
+            % in use.
+            for k = 1:numel(obj.Datasets)
+                s = obj.Datasets{k};
+                if ~isa(s, 'MatVisLazySource') || ~isvalid(s), continue; end
+                kept = false;
+                for j = 1:numel(newSets)
+                    if isa(newSets{j}, 'MatVisLazySource') && newSets{j} == s
+                        kept = true;  break;
+                    end
+                end
+                if ~kept
+                    s.ProgressFcn = [];
+                    s.closeSource();
+                end
+            end
+        end
+
         function roi = buildRoi_(obj, corners)
             % Build a complete ROI struct from polygon corners (2×N [x;y],
             % pixel coords).  Returns [] if the polygon covers no pixels.

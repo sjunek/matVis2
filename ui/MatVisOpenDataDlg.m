@@ -29,17 +29,31 @@ W = 720;  H = 460;
 dlg = uifigure('Name', 'Open data', 'Position', [100 100 W H], ...
     'WindowStyle', 'modal');
 centerOn(dlg);
-cleanup = onCleanup(@() closeIfValid(dlg)); %#ok<NASGU>
+cleanup = onCleanup(@() closeIfValid(dlg));
 
 outer = uigridlayout(dlg, [3, 2]);
-outer.RowHeight   = {22, '1x', 92};
+outer.RowHeight   = {24, '1x', 92};
 outer.ColumnWidth = {'1x', '1x'};
 outer.Padding     = [12 10 12 10];
 
 lblW = uilabel(outer, 'Text', 'Workspace variables', 'FontWeight', 'bold');
 lblW.Layout.Row = 1;  lblW.Layout.Column = 1;
-lblF = uilabel(outer, 'Text', 'Files', 'FontWeight', 'bold');
-lblF.Layout.Row = 1;  lblF.Layout.Column = 2;
+% The folder path takes the place of a "Files" caption: it says what is
+% listed better than the word would, and keeping it in the header row leaves
+% the two lists exactly the same rectangle.
+headRight = uigridlayout(outer, [1, 2]);
+headRight.Layout.Row = 1;  headRight.Layout.Column = 2;
+headRight.ColumnWidth   = {'1x', 78};
+headRight.Padding       = [0 0 0 0];
+headRight.ColumnSpacing = 4;
+
+edtDir = uieditfield(headRight, 'text', 'Value', pwd, ...
+    'ValueChangedFcn', @(~,~) refreshFiles());
+edtDir.Layout.Row = 1;  edtDir.Layout.Column = 1;
+
+btnBrowse = uibutton(headRight, 'Text', 'Browse...', 'FontSize', 11, ...
+    'ButtonPushedFcn', @(~,~) onBrowse());
+btnBrowse.Layout.Row = 1;  btnBrowse.Layout.Column = 2;
 
 % ---- left: workspace ----------------------------------------------------
 lstVars = uilistbox(outer, 'Multiselect', 'on', 'FontName', 'monospaced', 'Tag', 'mvVars', ...
@@ -53,29 +67,13 @@ if isempty(vars)
 end
 
 % ---- right: files -------------------------------------------------------
-right = uigridlayout(outer, [3, 2]);
-right.Layout.Row = 2;  right.Layout.Column = 2;
-right.RowHeight   = {24, '1x', 24};
-right.ColumnWidth = {'1x', 78};
-right.Padding     = [0 0 0 0];
-right.RowSpacing  = 4;
-
-edtDir = uieditfield(right, 'text', 'Value', pwd, ...
-    'ValueChangedFcn', @(~,~) refreshFiles());
-edtDir.Layout.Row = 1;  edtDir.Layout.Column = 1;
-
-btnBrowse = uibutton(right, 'Text', 'Browse...', 'FontSize', 11, ...
-    'ButtonPushedFcn', @(~,~) onBrowse());
-btnBrowse.Layout.Row = 1;  btnBrowse.Layout.Column = 2;
-
-lstFiles = uilistbox(right, 'Multiselect', 'on', 'FontSize', 11, 'Tag', 'mvFiles', ...
+% Navigating up is the [..] entry at the top of the list, so the file list
+% needs no controls of its own and sits directly in the layout -- the same
+% cell shape as the workspace list beside it.
+lstFiles = uilistbox(outer, 'Multiselect', 'on', 'FontSize', 11, 'Tag', 'mvFiles', ...
     'ValueChangedFcn', @(~,~) onSelectionChanged('files'), ...
     'DoubleClickedFcn', @(~,~) onFileDoubleClick());
-lstFiles.Layout.Row = 2;  lstFiles.Layout.Column = [1 2];
-
-btnUp = uibutton(right, 'Text', 'Parent folder', 'FontSize', 10, ...
-    'ButtonPushedFcn', @(~,~) onUp());
-btnUp.Layout.Row = 3;  btnUp.Layout.Column = [1 2];
+lstFiles.Layout.Row = 2;  lstFiles.Layout.Column = 2;
 
 % ---- bottom: verdict + actions -----------------------------------------
 bottom = uigridlayout(outer, [2, 3]);
@@ -219,10 +217,6 @@ uiwait(dlg);
         if ~isequal(d, 0), setFolder(d); end
     end
 
-    function onUp()
-        setFolder(fileparts(edtDir.Value));
-    end
-
     function onFileDoubleClick()
         % Folders navigate.  Files deliberately do not: "replace" and "open
         % in a new window" are both plausible, and picking one silently
@@ -340,6 +334,10 @@ function mask = isHiddenOrSystem(folder, names)
 % a drive root.  One path at a time costs ~0.2 ms, measured at 56 ms for all
 % 22 folders of C:\.  On platforms that do not report these attributes the
 % fields come back as -1 and nothing is hidden.
+%
+% Code Analyzer suggests filePermissions instead.  It cannot be used here:
+% matlab.io.WindowsPermissions carries only AbsolutePath, Readable, Writable
+% and Type -- neither the hidden nor the system attribute this needs.
 mask = false(1, numel(names));
 for k = 1:numel(names)
     try

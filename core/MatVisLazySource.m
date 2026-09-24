@@ -44,6 +44,13 @@ classdef MatVisLazySource < MatVisDataSource
         % anything: without it a projection over 57 planes is an unexplained
         % three-second pause.
         ProgressFcn = []
+
+        % Set from a Cancel button while a run of reads is in flight.  The
+        % read checks it at each progress report, clears it, and throws
+        % MatVisLazySource:cancelled; the caller keeps whatever it was
+        % showing before.  It is cleared by whoever acts on it, so a stale
+        % request cannot abort the next read.
+        CancelRequested = false
     end
 
     methods
@@ -153,6 +160,15 @@ classdef MatVisLazySource < MatVisDataSource
             for q = 1:nP
                 if report && mod(q, 4) == 1
                     obj.ProgressFcn(q, nP);
+                    % The progress callback is the only moment MATLAB
+                    % processes events during a run of reads, so it is also
+                    % the only moment a Cancel button can have been pressed.
+                    if obj.CancelRequested
+                        obj.CancelRequested = false;
+                        obj.ProgressFcn([], []);
+                        error('MatVisLazySource:cancelled', ...
+                            'Reading cancelled after %d of %d planes.', q - 1, nP);
+                    end
                 end
                 c    = MatVisLazySource.ind2subVec_(cnt, q);
                 subs = zeros(1, numel(sel));
@@ -263,6 +279,30 @@ classdef MatVisLazySource < MatVisDataSource
 
         function s = cacheStats(obj)
             s = obj.Cache.stats();
+        end
+
+        function [nPlanes, secs] = estimateReadCost(obj, idx)
+            % What a slice plan is about to cost, before any of it is done:
+            % one plane read per combination of the non-display indices,
+            % times the measured per-plane cost.
+            %
+            % Planes already in the cache are not discounted, so this is an
+            % upper bound.  That is the right way round for a warning shown
+            % before the work starts -- and the first, uncached, read is the
+            % one that actually hurts.
+            nPlanes = 1;
+            for d = 3:numel(obj.Size)
+                if d > numel(idx) || (ischar(idx{d}) && isequal(idx{d}, ':'))
+                    nPlanes = nPlanes * obj.Size(d);
+                else
+                    nPlanes = nPlanes * numel(idx{d});
+                end
+            end
+            cost = 0;
+            if isfield(obj.Capabilities, 'PlaneReadCost')
+                cost = obj.Capabilities.PlaneReadCost;
+            end
+            secs = nPlanes * cost;
         end
     end
 

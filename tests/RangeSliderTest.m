@@ -2,217 +2,207 @@ classdef RangeSliderTest < matlab.unittest.TestCase
 % RangeSliderTest  Unit tests for ui/RangeSlider.m
 %
 %   Run with:
-%       cd('D:\Matlab\GitRepositories\matVis2_Claude\Claude')
 %       results = runtests('tests/RangeSliderTest.m');
-%       disp(results)
+%
+%   RangeSlider is a matlab.ui.componentcontainer.ComponentContainer: it is
+%   driven by properties and reports user interaction through events, rather
+%   than handing back a struct of handles as the original implementation did.
+%
+%   Its internal controls are deliberately not reachable -- findall inside
+%   the component returns nothing, by design of ComponentContainer -- so
+%   these tests exercise the public contract: property round-trips, the
+%   defaults the main window relies on, and the rule that pushing state in
+%   does not raise events back out.  Driving the spinner and the drag
+%   handles needs the real pointer and belongs in an interaction test, not
+%   here.
 
     properties
-        Fig     % test uifigure
-        RS      % RangeSlider handles struct
-        NSteps  % number of steps used in tests
+        Fig
+        Grid
+        RS
+        NSteps
     end
 
-    % ------------------------------------------------------------------ %
-    %  Setup / Teardown                                                    %
-    % ------------------------------------------------------------------ %
     methods (TestMethodSetup)
         function createFixture(tc)
             tc.NSteps = 20;
-            tc.Fig = uifigure('Visible', 'off');
-            tc.RS  = RangeSlider( ...
-                tc.Fig, ...       % parent
-                1, ...            % dimIdx
-                tc.NSteps, ...    % nSteps
-                'X', ...          % label
-                @(~) [], ...      % onPositionChanged (no-op for setup)
-                @(~,~) []);       % onZoomChanged     (no-op for setup)
+            tc.Fig  = uifigure('Visible', 'off');
+            tc.Grid = uigridlayout(tc.Fig, [1 1]);
+            tc.RS   = RangeSlider(tc.Grid);
+            tc.RS.Limits   = [1 tc.NSteps];
+            tc.RS.DimLabel = 'X';
         end
     end
 
     methods (TestMethodTeardown)
         function destroyFixture(tc)
-            if isvalid(tc.Fig)
-                close(tc.Fig);
-            end
+            if isvalid(tc.Fig), delete(tc.Fig); end
         end
     end
 
     % ------------------------------------------------------------------ %
-    %  Construction tests                                                  %
+    %  Construction and defaults                                          %
     % ------------------------------------------------------------------ %
     methods (Test)
 
-        function testReturnedStructHasRequiredFields(tc)
-            requiredFields = {'panel','label','editPos','sliderPos', ...
-                              'editZoomMin','editZoomMax','btnPlay','plotCheck', ...
-                              'SetValue','GetZoomRange','SetZoomRange','GetPlotChecked'};
-            for k = 1:numel(requiredFields)
-                tc.assertTrue(isfield(tc.RS, requiredFields{k}), ...
-                    sprintf('Missing field: %s', requiredFields{k}));
+        function testIsAComponentContainer(tc)
+            tc.verifyClass(tc.RS, 'RangeSlider');
+            tc.verifyTrue(isa(tc.RS, ...
+                'matlab.ui.componentcontainer.ComponentContainer'));
+        end
+
+        function testExposesTheExpectedProperties(tc)
+            required = {'Value', 'ZoomMin', 'ZoomMax', 'Limits', 'DimLabel', ...
+                        'ShowPlot', 'PlotLock', 'PlayMode', 'IsPlaying', ...
+                        'ScaleFactor', 'ScaleUnit', 'RGBIndicatorMode', ...
+                        'RGBTriadPos', 'RGBStretchSpan', 'RGBStretchColors'};
+            have = properties(tc.RS);
+            for k = 1:numel(required)
+                tc.verifyTrue(ismember(required{k}, have), ...
+                    sprintf('Missing property: %s', required{k}));
+            end
+        end
+
+        function testExposesTheExpectedCallbacks(tc)
+            required = {'ValueChangedFcn', 'ZoomChangedFcn', ...
+                        'PlayModeChangedFcn', 'PlotToggledFcn', ...
+                        'PlotLockToggledFcn'};
+            have = properties(tc.RS);
+            for k = 1:numel(required)
+                tc.verifyTrue(ismember(required{k}, have), ...
+                    sprintf('Missing callback: %s', required{k}));
             end
         end
 
         function testDefaultPositionIsOne(tc)
-            tc.assertEqual(tc.RS.sliderPos.Value, 1, 'AbsTol', 1e-9);
-            tc.assertEqual(tc.RS.editPos.Value,   1, 'AbsTol', 1e-9);
+            rs = RangeSlider(tc.Grid);
+            tc.verifyEqual(rs.Value, 1, 'AbsTol', 1e-9);
         end
 
-        function testDefaultZoomRangeIsFullExtent(tc)
-            range = tc.RS.GetZoomRange();
-            tc.assertEqual(range(1), 1,          'AbsTol', 1e-9);
-            tc.assertEqual(range(2), tc.NSteps,  'AbsTol', 1e-9);
+        function testDefaultPlotFlagsAreFalse(tc)
+            rs = RangeSlider(tc.Grid);
+            tc.verifyFalse(rs.ShowPlot);
+            tc.verifyFalse(rs.PlotLock);
+            tc.verifyFalse(rs.IsPlaying);
         end
 
-        function testDefaultPlotCheckIsFalse(tc)
-            tc.assertFalse(tc.RS.GetPlotChecked());
+        function testDefaultPlayModeIsNone(tc)
+            rs = RangeSlider(tc.Grid);
+            tc.verifyEqual(rs.PlayMode, 'none');
+        end
+    end
+
+    % ------------------------------------------------------------------ %
+    %  Property round-trips                                               %
+    % ------------------------------------------------------------------ %
+    methods (Test)
+
+        function testValueRoundTrips(tc)
+            tc.RS.Value = 7;
+            tc.verifyEqual(tc.RS.Value, 7, 'AbsTol', 1e-9);
         end
 
-        function testLabelText(tc)
-            tc.assertEqual(tc.RS.label.Text, 'X');
+        function testZoomRangeRoundTrips(tc)
+            tc.RS.ZoomMin = 4;
+            tc.RS.ZoomMax = 15;
+            tc.verifyEqual([tc.RS.ZoomMin, tc.RS.ZoomMax], [4 15], 'AbsTol', 1e-9);
         end
 
-        % ---------------------------------------------------------------- %
-        %  SetValue                                                          %
-        % ---------------------------------------------------------------- %
-        function testSetValueUpdatesSliderAndEditField(tc)
-            tc.RS.SetValue(10);
-            tc.assertEqual(tc.RS.sliderPos.Value, 10, 'AbsTol', 1e-9);
-            tc.assertEqual(tc.RS.editPos.Value,   10, 'AbsTol', 1e-9);
+        function testLabelRoundTrips(tc)
+            tc.RS.DimLabel = 'Time';
+            tc.verifyEqual(tc.RS.DimLabel, 'Time');
         end
 
-        function testSetValueClampsToLowerBound(tc)
-            tc.RS.SetValue(0);
-            tc.assertEqual(tc.RS.sliderPos.Value, 1, 'AbsTol', 1e-9);
+        function testScaleRoundTrips(tc)
+            tc.RS.ScaleFactor = 0.25;
+            tc.RS.ScaleUnit   = 'um';
+            tc.verifyEqual(tc.RS.ScaleFactor, 0.25, 'AbsTol', 1e-12);
+            tc.verifyEqual(tc.RS.ScaleUnit, 'um');
         end
 
-        function testSetValueClampsToUpperBound(tc)
-            tc.RS.SetValue(tc.NSteps + 5);
-            tc.assertEqual(tc.RS.sliderPos.Value, tc.NSteps, 'AbsTol', 1e-9);
+        function testPlotFlagsRoundTrip(tc)
+            tc.RS.ShowPlot = true;
+            tc.RS.PlotLock = true;
+            tc.verifyTrue(tc.RS.ShowPlot);
+            tc.verifyTrue(tc.RS.PlotLock);
+            tc.RS.ShowPlot = false;
+            tc.verifyFalse(tc.RS.ShowPlot);
         end
 
-        function testSetValueRoundsFractional(tc)
-            tc.RS.SetValue(7.6);
-            tc.assertEqual(tc.RS.sliderPos.Value, 8, 'AbsTol', 1e-9);
+        function testRgbIndicatorRoundTrips(tc)
+            tc.RS.RGBIndicatorMode = 'triad';
+            tc.RS.RGBTriadPos      = [3 9];
+            tc.verifyEqual(tc.RS.RGBIndicatorMode, 'triad');
+            tc.verifyEqual(tc.RS.RGBTriadPos, [3 9]);
+
+            tc.RS.RGBIndicatorMode = 'stretch';
+            tc.RS.RGBStretchSpan   = [2 11];
+            tc.RS.RGBStretchColors = [1 0 0; 0 1 0];
+            tc.verifyEqual(tc.RS.RGBStretchSpan, [2 11]);
+            tc.verifyEqual(size(tc.RS.RGBStretchColors), [2 3]);
+        end
+    end
+
+    % ------------------------------------------------------------------ %
+    %  Contracts the main window depends on                               %
+    % ------------------------------------------------------------------ %
+    methods (Test)
+
+        function testPushingStateRaisesNoEvents(tc)
+            % The main window writes model state into every slider on each
+            % render.  If those writes came back as events the render would
+            % re-enter itself, so programmatic assignment must stay silent;
+            % only real interaction reports back.
+            fired = {};
+            lh = [addlistener(tc.RS, 'ValueChanged', @(~,~) note('ValueChanged')), ...
+                  addlistener(tc.RS, 'ZoomChanged',  @(~,~) note('ZoomChanged')), ...
+                  addlistener(tc.RS, 'PlotToggled',  @(~,~) note('PlotToggled'))];
+            cleanup = onCleanup(@() delete(lh)); %#ok<NASGU>
+
+            tc.RS.Value    = 6;
+            tc.RS.ZoomMin  = 3;
+            tc.RS.ZoomMax  = 12;
+            tc.RS.ShowPlot = true;
+            drawnow;
+
+            tc.verifyEmpty(fired, sprintf('unexpected event(s): %s', ...
+                strjoin(fired, ', ')));
+
+            function note(n), fired{end+1} = n; end %#ok<AGROW>
         end
 
-        % ---------------------------------------------------------------- %
-        %  SetZoomRange / GetZoomRange                                       %
-        % ---------------------------------------------------------------- %
-        function testSetZoomRangeUpdatesEditFields(tc)
-            tc.RS.SetZoomRange(3, 15);
-            range = tc.RS.GetZoomRange();
-            tc.assertEqual(range(1), 3,  'AbsTol', 1e-9);
-            tc.assertEqual(range(2), 15, 'AbsTol', 1e-9);
-        end
-
-        function testSetZoomRangeClampsLo(tc)
-            tc.RS.SetZoomRange(0, 10);
-            range = tc.RS.GetZoomRange();
-            tc.assertEqual(range(1), 1, 'AbsTol', 1e-9);
-        end
-
-        function testSetZoomRangeClampsHi(tc)
-            tc.RS.SetZoomRange(5, tc.NSteps + 10);
-            range = tc.RS.GetZoomRange();
-            tc.assertEqual(range(2), tc.NSteps, 'AbsTol', 1e-9);
-        end
-
-        function testSetZoomRangeSwapsIfLoGtHi(tc)
-            tc.RS.SetZoomRange(15, 5);
-            range = tc.RS.GetZoomRange();
-            tc.assertEqual(range(1), 5,  'AbsTol', 1e-9);
-            tc.assertEqual(range(2), 15, 'AbsTol', 1e-9);
-        end
-
-        % ---------------------------------------------------------------- %
-        %  Callbacks fire                                                    %
-        % ---------------------------------------------------------------- %
-        function testOnPositionChangedFiresOnSliderMove(tc)
-            fired   = false;
-            firedVal = 0;
-            fig2 = uifigure('Visible', 'off');
-            cleanFig = onCleanup(@() close(fig2));
-            rs2 = RangeSlider(fig2, 2, 30, 'Y', ...
-                @(v) setFlag(v), @(~,~) []);
-
-            rs2.sliderPos.Value = 12;
-            % Manually trigger callback (simulates user interaction)
-            rs2.sliderPos.ValueChangedFcn(rs2.sliderPos, ...
-                struct('Value', 12, 'PreviousValue', 1, 'Source', rs2.sliderPos, 'EventName', 'ValueChanged'));
-
-            tc.assertTrue(fired,       'onPositionChanged was not called');
-            tc.assertEqual(firedVal, 12, 'AbsTol', 1e-9);
-
-            function setFlag(v)
-                fired    = true;
-                firedVal = v;
-            end
-        end
-
-        function testOnZoomChangedFiresOnEditChange(tc)
-            loFired = 0;
-            hiFired = 0;
-            fig3 = uifigure('Visible', 'off');
-            cleanFig = onCleanup(@() close(fig3));
-            rs3 = RangeSlider(fig3, 3, 50, 'Z', ...
-                @(~) [], @(lo, hi) captureZoom(lo, hi));
-
-            rs3.editZoomMin.Value = 5;
-            rs3.editZoomMax.Value = 40;
-            rs3.editZoomMin.ValueChangedFcn(rs3.editZoomMin, ...
-                struct('Value', 5, 'PreviousValue', 1, 'Source', rs3.editZoomMin, 'EventName', 'ValueChanged'));
-
-            tc.assertEqual(loFired, 5,  'AbsTol', 1e-9);
-            tc.assertEqual(hiFired, 40, 'AbsTol', 1e-9);
-
-            function captureZoom(lo, hi)
-                loFired = lo;
-                hiFired = hi;
-            end
-        end
-
-        function testOnPositionChangedFiresOnEditPosChange(tc)
-            firedVal = 0;
-            fig4 = uifigure('Visible', 'off');
-            cleanFig = onCleanup(@() close(fig4));
-            rs4 = RangeSlider(fig4, 1, 20, 'W', @(v) capture(v), @(~,~) []);
-
-            rs4.editPos.Value = 7;
-            rs4.editPos.ValueChangedFcn(rs4.editPos, ...
-                struct('Value', 7, 'PreviousValue', 1, 'Source', rs4.editPos, 'EventName', 'ValueChanged'));
-
-            tc.assertEqual(firedVal, 7, 'AbsTol', 1e-9);
-
-            function capture(v)
-                firedVal = v;
-            end
-        end
-
-        % ---------------------------------------------------------------- %
-        %  PlotCheck                                                         %
-        % ---------------------------------------------------------------- %
-        function testPlotCheckCanBeToggled(tc)
-            tc.RS.plotCheck.Value = true;
-            tc.assertTrue(tc.RS.GetPlotChecked());
-            tc.RS.plotCheck.Value = false;
-            tc.assertFalse(tc.RS.GetPlotChecked());
-        end
-
-        % ---------------------------------------------------------------- %
-        %  Multiple instances are independent                                %
-        % ---------------------------------------------------------------- %
         function testTwoInstancesAreIndependent(tc)
-            fig5 = uifigure('Visible', 'off');
-            cleanFig = onCleanup(@() close(fig5));
-            rs5 = RangeSlider(fig5, 2, 10, 'T', @(~) [], @(~,~) []);
+            rs2 = RangeSlider(tc.Grid);
+            rs2.Limits = [1 tc.NSteps];
 
-            tc.RS.SetValue(5);
-            rs5.SetValue(3);
+            tc.RS.Value = 9;   tc.RS.ZoomMin = 2;  tc.RS.ZoomMax = 11;
+            rs2.Value   = 4;   rs2.ZoomMin   = 6;  rs2.ZoomMax   = 18;
 
-            tc.assertEqual(tc.RS.sliderPos.Value, 5, 'AbsTol', 1e-9);
-            tc.assertEqual(rs5.sliderPos.Value,   3, 'AbsTol', 1e-9);
+            tc.verifyEqual(tc.RS.Value, 9, 'AbsTol', 1e-9);
+            tc.verifyEqual(rs2.Value,   4, 'AbsTol', 1e-9);
+            tc.verifyEqual([tc.RS.ZoomMin tc.RS.ZoomMax], [2 11], 'AbsTol', 1e-9);
+            tc.verifyEqual([rs2.ZoomMin   rs2.ZoomMax],   [6 18], 'AbsTol', 1e-9);
         end
 
-    end % methods (Test)
+        function testLimitsAcceptsAPairOnly(tc)
+            tc.verifyError(@() setLimits(tc.RS, [1 2 3]), ...
+                'MATLAB:validation:IncompatibleSize');
+        end
 
+        function testSurvivesRepeatedUpdates(tc)
+            % Every render pushes new state; doing it many times must not
+            % leak handles or throw.
+            for k = 1:25
+                tc.RS.Value   = mod(k, tc.NSteps) + 1;
+                tc.RS.ZoomMin = 1;
+                tc.RS.ZoomMax = tc.NSteps;
+            end
+            drawnow;
+            tc.verifyTrue(isvalid(tc.RS));
+            tc.verifyEqual(tc.RS.Value, mod(25, tc.NSteps) + 1, 'AbsTol', 1e-9);
+        end
+    end
 end
+
+% ------------------------------------------------------------------
+function setLimits(rs, v), rs.Limits = v; end

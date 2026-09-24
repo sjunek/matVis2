@@ -463,7 +463,8 @@ classdef MatVisFrameComposer < handle
                        ... % 'histogram'
                        'fillG', [], 'fillI', [], 'fillZ', [], ...
                        'lineMin', [], 'lineMax', [], 'gammaLine', [], ...
-                       'cbImg', [], 'globKey', [], 'globCounts', []);
+                       'cbImg', [], 'globKey', [], 'globCounts', [], ...
+                       'approxTxt', []);
             pos = spec.pos;
 
             switch spec.type
@@ -538,6 +539,19 @@ classdef MatVisFrameComposer < handle
                         'Color', [0.25 0.45 0.95], 'LineWidth', 1.8);
                     P.gammaLine = line(P.ax, NaN, NaN, 'Color', fg, ...
                         'LineWidth', 1.2, 'LineStyle', '-');
+                    % The same amber 'approx.' the main window puts on its
+                    % histogram when the counts came from a sample, lightened
+                    % on a dark background like every other mark here.
+                    if mean(obj.BackColor) < 0.5
+                        approxC = [0.95 0.72 0.30];
+                    else
+                        approxC = [0.72 0.45 0.10];
+                    end
+                    P.approxTxt = text(P.ax, NaN, NaN, '', ...
+                        'HorizontalAlignment', 'right', 'VerticalAlignment', 'top', ...
+                        'FontSize', max(7, round(spec.fontSize * 0.7)), ...
+                        'Color', approxC, 'FontAngle', 'italic', ...
+                        'HitTest', 'off', 'PickableParts', 'none');
 
                 case 'plot'
                     P.ax = axes('Parent', obj.Fig, 'Units', 'normalized', ...
@@ -1136,6 +1150,17 @@ classdef MatVisFrameComposer < handle
             P.ax.XTick = MatVisRender.niceTicks(lo, hi, max(2, floor(wPix / 90)));
             P.ax.XColor = obj.foreColor();
             box(P.ax, 'off');
+
+            % The whole-dataset fill is the one that can be sampled rather
+            % than counted, so it is marked exactly as the main window marks
+            % it.  Without the global fill the remaining two are read from
+            % real planes and are exact, so nothing is claimed either way.
+            if m.StatsApproximate && ~isempty(normG)
+                set(P.approxTxt, 'String', 'approx.', 'Visible', 'on', ...
+                    'Position', [hi - 0.015 * (hi - lo), yMax, 0]);
+            else
+                set(P.approxTxt, 'Visible', 'off');
+            end
         end
 
         function [lo, hi] = histLimits(obj, spec, s, ds)

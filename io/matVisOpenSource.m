@@ -1,4 +1,4 @@
-function [src, meta] = matVisOpenSource(filepath)
+function [src, meta, why] = matVisOpenSource(filepath)
 %matVisOpenSource  Open a file as a lazy, plane-on-demand data source.
 %
 %   [src, meta] = matVisOpenSource(filepath)
@@ -23,14 +23,21 @@ function [src, meta] = matVisOpenSource(filepath)
 
 src  = [];
 meta = [];
+why  = '';
 
 if nargin < 1 || isempty(filepath) || ~isfile(filepath)
+    why = 'the file does not exist';
     return;
 end
 
 [~, ~, ext] = fileparts(lower(filepath));
 
 if strcmp(ext, '.mat')
+    % Not an oversight: a plane read out of a typical `save -v7.3` file
+    % measured 3.9 s, because the default chunk shape spans every dimension.
+    % Reading such a file plane by plane is far worse than loading it whole.
+    why = ['MAT-files are chunked across all dimensions, so reading one ' ...
+           'plane at a time is slower than loading the whole array'];
     return;
 end
 
@@ -38,15 +45,21 @@ end
 % which exposes a single page; route them to the full loader untouched.
 if ismember(ext, {'.tif', '.tiff'})
     try
-        if isZstdTiff(filepath) || isScanImageTiff(filepath)
+        if isZstdTiff(filepath)
+            why = 'no reader can decode a single page of a Zstandard TIFF';
+            return;
+        elseif isScanImageTiff(filepath)
+            why = 'the ScanImage TIFF reader only returns the whole file';
             return;
         end
     catch
+        why = 'the file could not be identified';
         return;
     end
 end
 
 if ~ensureBioFormats()
+    why = 'Bio-Formats is not set up';
     return;
 end
 
@@ -61,5 +74,6 @@ catch e
         filepath, e.message);
     src  = [];
     meta = [];
+    why  = sprintf('Bio-Formats could not open it (%s)', e.message);
 end
 end
