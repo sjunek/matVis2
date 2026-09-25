@@ -204,10 +204,33 @@ same 23 pre-existing failures as the baseline.
 
 **Gaps still open in M2:**
 
-- **Zstandard TIFFs have no lazy path.**  Bio-Formats fails on them
-  (`NegativeArraySizeException`) and `io/loadZstdTiff` decodes whole-file only.
-  Its `readPage` would have to be split out the way `bfReadMetadata` was.
-  Such files fall back to a full load, which still works.
+- **Zstandard TIFFs** *(done)*.  `readPage` was split out the way
+  `bfReadMetadata` was: `io/zstdTiffOpen` reads the tag chain and builds the
+  metadata without touching a pixel, `io/zstdTiffReadPage` decodes one
+  directory, and `loadZstdTiff` is now that decode in a loop.
+  `core/MatVisZstdTiffSource` reads a page per displayed plane.
+
+  Every directory is compressed independently, which is what makes this
+  possible at all.  Measured on a 735-page 2048x2048 16-bit BigTIFF
+  (2.4 GB on disk, 5.7 GB in memory, 93 % Zstandard pages and 7 % PackBits --
+  a file may mix schemes):
+
+  | | cost |
+  |---|---|
+  | parse the whole directory chain | 0.36 s |
+  | open as a source (tags + 8 range-probe planes) | 3.7 s |
+  | overview, built on first need | 3.9 s |
+  | decode one page | 62 ms median, 206 ms worst |
+  | navigation, per step | 106 ms |
+  | read the file in full, for comparison | 32 s |
+
+  Verified against `loadZstdTiff`: every sampled plane, a strided read and a
+  cropped read are bit-identical to the whole-file result.
+
+  No resolution levels, so the viewer reports plane-by-plane reading rather
+  than a pyramid.  Region reads are declined on purpose -- these pages hold
+  one strip spanning every row, so a crop would decode the whole plane
+  anyway, and saying so lets the cache keep whole planes instead.
 - **The overview is built on first need, not in the background.**  For a file
   with its own levels it is built at construction and costs nothing; without
   levels the first global-contrast or histogram use blocks for ~1.5 s.

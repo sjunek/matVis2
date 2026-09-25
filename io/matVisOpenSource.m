@@ -12,14 +12,18 @@ function [src, meta, why] = matVisOpenSource(filepath)
 %   for a stitched .czi, ~2.3 s for a 5.9 GB time series, against 40 s to
 %   read that same series in full.
 %
-%   Not served lazily (each falls back to a full load):
-%     - Zstandard-compressed TIFFs.  Neither MATLAB's TIFF library nor
-%       Bio-Formats can decode one; io/loadZstdTiff does, but only whole-file
-%       at present, so there is no per-plane path to call.
-%     - .mat files, and anything Bio-Formats cannot open.
-%     - Files whose planes are interleaved RGB.
+%   Zstandard/PackBits TIFFs go through MatVisZstdTiffSource, which decodes
+%   one directory at a time; everything Bio-Formats can open goes through
+%   MatVisBioFormatsSource.
 %
-%   See also MatVisBioFormatsSource, loadFiles, matVisLoadPolicy.
+%   Not served lazily (each falls back to a full load):
+%     - .mat files.  A plane read out of a typical `save -v7.3` file measured
+%       3.9 s, because the default chunk shape spans every dimension.
+%     - ScanImage TIFFs, whose reader only returns the whole file.
+%     - Anything Bio-Formats cannot open, and planes that are interleaved RGB.
+%
+%   See also MatVisBioFormatsSource, MatVisZstdTiffSource, loadFiles,
+%   matVisLoadPolicy.
 
 src  = [];
 meta = [];
@@ -46,7 +50,19 @@ end
 if ismember(ext, {'.tif', '.tiff'})
     try
         if isZstdTiff(filepath)
-            why = 'no reader can decode a single page of a Zstandard TIFF';
+            % Every directory is compressed independently, so a page decodes
+            % without the rest of the file -- 0.36 s to read the tag chain of
+            % a 735-page BigTIFF, against 75 s to decode it.
+            try
+                src  = MatVisZstdTiffSource(filepath);
+                meta = src.Meta;
+            catch e
+                warning('matVisOpenSource:zstdOpenFailed', ...
+                    ['Could not open "%s" for on-demand reading (%s); it will ' ...
+                     'be loaded in full.'], filepath, e.message);
+                src = [];  meta = [];
+                why = sprintf('its pages could not be indexed (%s)', e.message);
+            end
             return;
         elseif isScanImageTiff(filepath)
             why = 'the ScanImage TIFF reader only returns the whole file';
