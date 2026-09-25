@@ -56,6 +56,12 @@ expensiveWarned = {};
 % timer, a resize -- must stand down rather than re-enter.
 askingExpensive = false;
 
+% True while "Load full dataset" is reading.  That read reports progress, and
+% each report drawnows, which is what lets the Cancel button be pressed -- and
+% equally what would let a slider drag start a second read underneath it.
+fullLoadRunning = false;
+fullLoadCancel  = false;
+
 %% Figure setup
 % Window title shows the dataset name(s). The live playback framerate is shown
 % in a label next to the play-speed control (see updateFrameRateDisplay).
@@ -1005,15 +1011,23 @@ fprintf('\n');
     end
 
     function onMainWindowRightClick()
+        raiseMatVisWindows();
+    end
+
+    function raiseMatVisWindows()
         % Raise this instance's windows.  Only windows that are currently shown
         % may be raised: figure() on a hidden figure would make it visible again
         % and thereby override the window toggle buttons.
-        for ds = 1:nDatasets
-            raiseIfVisible(imageWins{ds});
-            raiseIfVisible(zoomWins{ds});
-            raiseIfVisible(plotWins{ds});
-            raiseIfVisible(xsecWins{ds});
+        % Its own loop variable: this now also runs from inside a render,
+        % whose own "ds" is a variable of the same shared parent scope.
+        for dsR = 1:nDatasets
+            raiseIfVisible(imageWins{dsR});
+            raiseIfVisible(zoomWins{dsR});
+            raiseIfVisible(plotWins{dsR});
+            raiseIfVisible(xsecWins{dsR});
+            raiseIfVisible(vol3DWins{dsR});
         end
+        raiseIfVisible(videoWin);   % one for the instance, not one per dataset
         figure(fig);
     end
 
@@ -1030,9 +1044,10 @@ fprintf('\n');
     %  Main render loop
     % ------------------------------------------------------------------
     function doRender()
-        if askingExpensive
-            % A modal question about this very render is on screen; drawing
-            % again underneath it would re-enter the read it is asking about.
+        if askingExpensive || fullLoadRunning
+            % A modal question about this very render is on screen, or the
+            % whole file is being read; drawing again underneath either would
+            % re-enter the read in progress.
             return;
         end
         xd       = model.XDim;
@@ -1239,6 +1254,10 @@ fprintf('\n');
         restore = onCleanup(@() clearAskingExpensive());
         go = MatVisConfirmDlg('This view reads a lot of data', msg, ...
             'Go ahead', 'Cancel');
+        % Closing a modal window of its own hands focus back to whatever
+        % Windows thinks owns the application -- the MATLAB desktop, which
+        % then covers every matVis window.  Put them back where they were.
+        raiseMatVisWindows();
         if ~go
             % Nothing has been read yet, so this is the cheap place to stop.
             % doRender turns it into the same retreat a mid-read cancel does.
@@ -3795,6 +3814,23 @@ fprintf('\n');
         drawnow;
     end
 
+    function stop = onFullLoadProgress(name, done, total)
+        % The same strip, the same Cancel button, for the one read that is
+        % not driven by a display setting.  drawnow first, then the answer:
+        % the click being asked about is processed by that very drawnow.
+        if ~isempty(lblStatus) && isvalid(lblStatus)
+            if isempty(done)
+                showCancelRead(false);
+            else
+                lblStatus.Text = sprintf('Loading %s... %d/%d planes', ...
+                    name, done, total);
+                showCancelRead(true);
+            end
+        end
+        drawnow;
+        stop = fullLoadCancel;
+    end
+
     function showCancelRead(tf)
         if isempty(btnCancelRead) || ~isvalid(btnCancelRead), return; end
         want = matlab.lang.OnOffSwitchState(tf);
@@ -3806,6 +3842,10 @@ fprintf('\n');
     function onCancelRead()
         % Ask every lazy source to stop at its next progress report.  The
         % read throws MatVisLazySource:cancelled, which doRender catches.
+        % A full load reads through the file loader rather than the sources,
+        % so it has a flag of its own; setting it when none is running costs
+        % nothing, because the next full load clears it before it starts.
+        fullLoadCancel = true;
         for dsC = 1:model.NumDatasets
             s = model.Datasets{dsC};
             if isa(s, 'MatVisLazySource') && isvalid(s)
@@ -4020,25 +4060,64 @@ fprintf('\n');
             paths{dsL} = srcs{dsL}.FilePath;
         end
 
-        dlgP = uiprogressdlg(fig, 'Title', 'Loading full dataset', ...
-            'Message', 'Reading the file into memory...', 'Indeterminate', 'on');
+        % Progress goes where this window already reports reading: the status
+        % strip, with the same Cancel button a projection's read puts there.
+        % A dialog drawn over the figure would cover that strip and give the
+        % wait a second vocabulary for no gain.
+        fullLoadRunning = true;
+        fullLoadCancel  = false;
+        btnLoadFull.Enable = 'off';
+        failed = [];
+        % One file needs no name -- the strip is narrow, and a microscopy file
+        % name would crowd out the count.  Several do, since each restarts it.
+        nFiles = sum(~cellfun(@isempty, paths));
         try
             loaded = model.Datasets;
             for dsL = 1:numel(srcs)
                 if isempty(paths{dsL}), continue; end
-                dlgP.Message = sprintf('Reading %s ...', paths{dsL});
+                if nFiles > 1
+                    [~, nmL, xtL] = fileparts(paths{dsL});
+                    whatL = [nmL xtL];
+                else
+                    whatL = 'full dataset';
+                end
                 % The ordinary loader, not a plane-by-plane read through the
-                % source: it is the faster of the two by a wide margin.
-                arr = loadFiles(paths{dsL});
+                % source: it is the faster of the two by a wide margin, and it
+                % reports its planes as it goes.
+                arr = loadFiles(paths{dsL}, ...
+                    @(done, total) onFullLoadProgress(whatL, done, total));
                 loaded{dsL} = MatVisMemorySource(arr);
             end
         catch e
-            delete(dlgP);
-            uialert(fig, sprintf('Could not load the full dataset:\n\n%s', e.message), ...
-                'Load failed');
+            failed = e;
+        end
+        % Cleared before anything below can render: doRender stands down
+        % while it is set.
+        fullLoadRunning = false;
+        % The progress drawnows let the window be closed mid-read, which the
+        % modal progress dialog this replaced did not.  Nothing below has a
+        % window to put its result in.
+        if ~isvalid(fig), return; end
+        if ~isempty(failed)
+            showCancelRead(false);
+            applyLoadFullState();
+            cancelled = strcmp(failed.identifier, 'loadBioFormats:cancelled');
+            if ~isempty(lblStatus) && isvalid(lblStatus)
+                if cancelled
+                    lblStatus.Text = 'Full load cancelled';
+                else
+                    lblStatus.Text = statusIdleText;
+                end
+            end
+            drawnow;
+            % Nothing to back out of after a cancel: the sources were never
+            % replaced, so the window carries on reading on demand as before.
+            if ~cancelled
+                uialert(fig, sprintf('Could not load the full dataset:\n\n%s', ...
+                    failed.message), 'Load failed');
+            end
             return;
         end
-        delete(dlgP);
 
         for dsL = 1:numel(srcs)
             if isa(srcs{dsL}, 'MatVisLazySource')

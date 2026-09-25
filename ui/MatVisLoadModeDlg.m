@@ -27,17 +27,24 @@ function [choice, remember] = MatVisLoadModeDlg(info)
 choice   = 'cancel';
 remember = 'ask';
 
-W = 470;  H = 320;
+% The rows are fixed heights, so the window has to be tall enough for all of
+% them: anything less and uigridlayout shrinks the bottom rows away, taking
+% the Cancel button and the "for files like this" dropdown with them.
+rowH    = [22, 40, 34, 66, 66, 26, 30];
+padTop  = 12;   padBot = 10;
+rowGap  = 6;
+W = 470;
+H = sum(rowH) + rowGap * (numel(rowH) - 1) + padTop + padBot;
 dlg = uifigure('Name', 'Open dataset', 'Resize', 'off', ...
     'Position', [100 100 W H], 'WindowStyle', 'modal');
 centerOnScreen(dlg);
 cleanup = onCleanup(@() closeIfValid(dlg));
 
 g = uigridlayout(dlg, [7, 2]);
-g.RowHeight   = {22, 40, 34, 66, 66, 26, 30};
+g.RowHeight   = num2cell(rowH);
 g.ColumnWidth = {'1x', 120};
-g.Padding     = [14 12 14 10];
-g.RowSpacing  = 6;
+g.Padding     = [14 padTop 14 padBot];
+g.RowSpacing  = rowGap;
 
 lblName = uilabel(g, 'Text', strjoin(info.names, ', '), ...
     'FontWeight', 'bold', 'FontSize', 12);

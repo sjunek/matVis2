@@ -1,9 +1,13 @@
-function [data, meta] = loadFiles(filepath)
+function [data, meta] = loadFiles(filepath, progressFcn)
 % loadFiles  Load an image file and return its raw numeric array.
 %   data = loadFiles(filepath)   loads the file at filepath.
 %   data = loadFiles('')         opens a file-selection dialog.
 %   data = loadFiles()           opens a file-selection dialog.
 %   [data, meta] = loadFiles(filepath)  also returns dimension metadata.
+%   [data, meta] = loadFiles(filepath, progressFcn)  reports progress while
+%       reading, and lets the caller stop it. Only the Bio-Formats path
+%       reports: it is the one that reads plane by plane, and the one that is
+%       slow enough to be worth watching. See loadBioFormats for the contract.
 %
 %   ScanImage-acquired TIFFs (detected automatically) are read via the
 %   ScanImageTiffReader package (see ensureScanImageTiffReader), surfacing
@@ -21,6 +25,8 @@ function [data, meta] = loadFiles(filepath)
 %   instrument, matching parseArgs's dimNames/dimScale/dimUnits name-value
 %   pairs. For plain files with no dimension/calibration metadata these are
 %   all empty (cells, or [] for instrument), meaning "use defaults".
+
+if nargin < 2, progressFcn = []; end
 
 nativeExts = {'.tif', '.tiff', '.jpg', '.jpeg', '.png', '.bmp'};
 
@@ -99,9 +105,14 @@ end
 
 if bfAvailable && ~ismember(ext, bioFormatsExcludedExts)
     try
-        [data, meta] = loadBioFormats(filepath);
+        [data, meta] = loadBioFormats(filepath, progressFcn);
         return;
     catch e
+        if strcmp(e.identifier, 'loadBioFormats:cancelled')
+            % The caller asked for this. Falling back to the built-in reader
+            % would read the whole file anyway and make Cancel a lie.
+            rethrow(e);
+        end
         if ~isNative
             % Bio-Formats claims a long list of extensions and only finds out
             % it cannot read one when it opens it.  Say that in a sentence
