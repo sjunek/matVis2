@@ -1,8 +1,11 @@
-function [ifds, hdr] = parseTiffIfds(filepath, maxIfds)
+function [ifds, hdr] = parseTiffIfds(filepath, maxIfds, wantedTags)
 % parseTiffIfds  Read the raw IFD (tag directory) chain of a TIFF/BigTIFF.
 %   [ifds, hdr] = parseTiffIfds(filepath)
 %   [ifds, hdr] = parseTiffIfds(filepath, maxIfds)  stops after maxIfds
-%       directories (use 1 for a cheap "what compression is this?" probe).
+%       directories (use 1 for a cheap "what is in the first page?" probe).
+%   [ifds, hdr] = parseTiffIfds(filepath, maxIfds, wantedTags)  keeps only
+%       those tag ids; the rest are skipped without reading their values,
+%       which is what makes a whole-chain probe cheap on a long stack.
 %
 %   This is a plain tag reader -- it never touches pixel data -- so it works
 %   on files MATLAB's own TIFF library refuses to open (e.g. an unsupported
@@ -28,6 +31,10 @@ function [ifds, hdr] = parseTiffIfds(filepath, maxIfds)
 if nargin < 2 || isempty(maxIfds)
     maxIfds = Inf;
 end
+if nargin < 3
+    wantedTags = [];
+end
+filterTags = ~isempty(wantedTags);
 
 % Byte order comes from the first two bytes, so open once to read it and
 % reopen with the matching machine format (fread has no per-call override).
@@ -115,6 +122,7 @@ while offset > 0 && numel(ifds) < maxIfds
     type  = zeros(1, nEntries);
     count = zeros(1, nEntries);
     value = cell(1, nEntries);
+    keep  = true(1, nEntries);
     for k = 1:nEntries
         tag(k)  = fread(fid, 1, 'uint16');
         type(k) = fread(fid, 1, 'uint16');
@@ -122,6 +130,12 @@ while offset > 0 && numel(ifds) < maxIfds
             count(k) = fread(fid, 1, 'uint64');
         else
             count(k) = fread(fid, 1, 'uint32');
+        end
+
+        if filterTags && ~any(wantedTags == tag(k))
+            keep(k) = false;
+            fseek(fid, valueBytes, 'cof');
+            continue;
         end
 
         elemSize = tiffTypeSize(type(k));
@@ -143,7 +157,8 @@ while offset > 0 && numel(ifds) < maxIfds
         end
     end
 
-    ifds(end+1) = struct('tag', tag, 'type', type, 'count', count, 'value', {value}); %#ok<AGROW>
+    ifds(end+1) = struct('tag', tag(keep), 'type', type(keep), ...
+        'count', count(keep), 'value', {value(keep)}); %#ok<AGROW>
 
     if isBig
         offset = fread(fid, 1, 'uint64');

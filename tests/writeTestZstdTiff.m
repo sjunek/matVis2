@@ -15,12 +15,17 @@ function writeTestZstdTiff(path, stack, varargin)
 %     Resolution     []         [xRes yRes] for tags 282/283
 %     ResolutionUnit 1          tag 296 (1 none, 2 inch, 3 centimetre)
 %     Software       ''         tag 305, written only when non-empty
-%     Compression    50000      override to fake a non-Zstandard file
+%     Compression    50000      scheme per page: 1/32771 (uncompressed),
+%                               5 (LZW), 8/32946 (Deflate), 32773
+%                               (PackBits) or 50000 (Zstandard). A scalar
+%                               applies to every page; a vector gives one
+%                               code per page, which is how a mixed-scheme
+%                               file gets written.
 %
-%   Compression uses the same pure-Java Zstandard implementation
-%   zstdDecompress reads with, so Bio-Formats must be set up.
+%   Compression uses the same Java codecs tiffDecompressSegment reads with,
+%   so Bio-Formats must be set up.
 %
-%   See also loadZstdTiff, zstdDecompress.
+%   See also loadZstdTiff, tiffDecompressSegment.
 
 opt = struct('BigTiff', false, 'RowsPerStrip', Inf, 'TileSize', [], ...
     'Predictor', 1, 'Resolution', [], 'ResolutionUnit', 1, 'Software', '', ...
@@ -45,9 +50,17 @@ end
 
 if ~ensureBioFormats()
     error('writeTestZstdTiff:noEngine', ...
-        'Bio-Formats must be set up to compress test data with Zstandard.');
+        'Bio-Formats must be set up to compress test data.');
 end
-compressor = io.airlift.compress.zstd.ZstdCompressor();
+
+% One compression code per page, so a mixed-scheme file can be written.
+pageComp = opt.Compression(:)';
+if isscalar(pageComp)
+    pageComp = repmat(pageComp, 1, nPages);
+elseif numel(pageComp) ~= nPages
+    error('writeTestZstdTiff:badCompression', ...
+        'Compression has %d entries but the stack has %d pages.', numel(pageComp), nPages);
+end
 
 if opt.BigTiff
     dirCountBytes = 8; entryBytes = 20; valueBytes = 8; offsetBytes = 8;
@@ -100,7 +113,7 @@ for p = 1:nPages
                 block = stack(rows, :, :, p);
             end
             raw = encodeSegment(block, opt.Predictor, bits, class(stack));
-            comp = compressBytes(compressor, raw);
+            comp = encodeBytes(raw, pageComp(p));
             padToEven(fid);
             offs(end+1) = ftell(fid); %#ok<AGROW>
             fwrite(fid, comp, 'uint8');
@@ -118,7 +131,7 @@ ifdStart = ftell(fid);
 entriesPerPage = cell(1, nPages);
 ifdTotal = zeros(1, nPages);
 for p = 1:nPages
-    entriesPerPage{p} = buildEntries(w, h, bits, spp, sampleFormat, opt, ...
+    entriesPerPage{p} = buildEntries(w, h, bits, spp, sampleFormat, opt, pageComp(p), ...
         tiled, tileW, tileH, segOffsets{p}, segCounts{p}, offsetType);
     e = entriesPerPage{p};
     extra = 0;
@@ -181,13 +194,13 @@ fwrite(fid, ifdStart, offsetPrec);
 end
 
 % =============================================================================
-function e = buildEntries(w, h, bits, spp, sampleFormat, opt, tiled, tileW, tileH, ...
+function e = buildEntries(w, h, bits, spp, sampleFormat, opt, compression, tiled, tileW, tileH, ...
     offs, cnts, offsetType)
 % Tags in ascending order, as the TIFF spec requires.
 e = entry(256, 4, w);
 e(end+1) = entry(257, 4, h);
 e(end+1) = entry(258, 3, repmat(bits, 1, spp));
-e(end+1) = entry(259, 3, opt.Compression);
+e(end+1) = entry(259, 3, compression);
 if spp >= 3
     e(end+1) = entry(262, 3, 2);
 else
@@ -275,13 +288,51 @@ raw = typecast(v(:), 'uint8');
 end
 
 % =============================================================================
-function comp = compressBytes(compressor, raw)
-inBuf  = java.nio.ByteBuffer.wrap(typecast(raw(:), 'int8'));
-outBuf = java.nio.ByteBuffer.allocate(compressor.maxCompressedLength(numel(raw)));
-compressor.compress(inBuf, outBuf);
-n = outBuf.position();
-comp = typecast(outBuf.array(), 'uint8');
-comp = comp(1:n);
+function comp = encodeBytes(raw, compression)
+% Encode one segment with the scheme its page advertises.
+switch compression
+    case {1, 32771}
+        comp = raw(:);
+    case 50000
+        compressor = io.airlift.compress.zstd.ZstdCompressor();
+        inBuf  = java.nio.ByteBuffer.wrap(typecast(raw(:), 'int8'));
+        outBuf = java.nio.ByteBuffer.allocate(compressor.maxCompressedLength(numel(raw)));
+        compressor.compress(inBuf, outBuf);
+        n = outBuf.position();
+        comp = typecast(outBuf.array(), 'uint8');
+        comp = comp(1:n);
+    case {8, 32946}
+        codec = loci.formats.codec.ZlibCodec();
+        comp = typecast(codec.compress(typecast(raw(:), 'int8'), []), 'uint8');
+    case 32773
+        comp = packbitsEncode(raw);
+    case 5
+        codec = loci.formats.codec.LZWCodec();
+        comp = typecast(codec.compress(typecast(raw(:), 'int8'), []), 'uint8');
+    otherwise
+        % A scheme the writer does not implement: store the bytes as they
+        % are and let the tag lie. That is exactly the file a reader
+        % "rejects what it cannot decode" test needs.
+        comp = raw(:);
+end
+comp = comp(:);
+end
+
+% =============================================================================
+function comp = packbitsEncode(raw)
+% Literal-only PackBits: every run is a "copy the next n+1 bytes" header.
+% Valid (if not compact) output, which is all a reader test needs.
+raw = raw(:);
+comp = zeros(numel(raw) + ceil(numel(raw) / 128), 1, 'uint8');
+in = 1; out = 1;
+while in <= numel(raw)
+    n = min(128, numel(raw) - in + 1);
+    comp(out) = uint8(n - 1);
+    comp(out+1:out+n) = raw(in:in+n-1);
+    in = in + n;
+    out = out + n + 1;
+end
+comp = comp(1:out-1);
 end
 
 % =============================================================================

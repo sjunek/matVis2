@@ -128,15 +128,22 @@ classdef MatVisModel < handle
 
     % Dependent convenience properties for backward compat with MatVisRender
     properties (Dependent)
-        Data      % Datasets{ActiveDataset}
+        Data      % Datasets{ActiveDataset} — a MatVisDataSource
         DataMin   % AllDataMins(ActiveDataset)
         DataMax   % AllDataMaxs(ActiveDataset)
         WithAlpha % true when alpha maps are attached
+        ClassName % element class of the active dataset ('uint16', ...)
+        IsInteger % true when the active dataset's elements are an integer type
+        StatsApproximate % true when whole-dataset statistics (the value
+                  %   range, the global histogram, per-channel ranges) come
+                  %   from a sample -- the display has to say so
     end
 
     properties (Access = private, Transient)
         LastImageDatas_  % 1×K cell — cached 2-D image slice per dataset (Image mode)
         LastZoomDatas_   % 1×K cell — cached zoom crop per dataset (Zoom mode)
+        SliceCacheKeys_  % struct — one field per cache tag: key of the held value
+        SliceCacheVals_  % struct — one field per cache tag: the held value
     end
 
     events
@@ -152,24 +159,27 @@ classdef MatVisModel < handle
     methods
         function obj = MatVisModel(datasets, datasetNames)
             % MatVisModel  Construct from one or more numeric N-D arrays.
-            %   datasets     : numeric array  OR  cell array of numeric arrays
+            %   datasets     : numeric array, cell array of numeric arrays,
+            %                  or MatVisDataSource objects (any mixture) --
+            %                  numeric input is wrapped in a
+            %                  MatVisMemorySource, so Datasets always holds
+            %                  sources from here on
             %   datasetNames : cell array of strings (optional)
 
             if nargin < 2, datasetNames = {}; end
 
-            if isnumeric(datasets)
+            if isnumeric(datasets) || isa(datasets, 'MatVisDataSource')
                 datasets = {datasets};
             end
             validateattributes(datasets, {'cell'}, {'nonempty'}, 'MatVisModel', 'datasets');
             for k = 1:numel(datasets)
-                validateattributes(datasets{k}, {'numeric'}, {'nonempty'}, ...
-                    'MatVisModel', sprintf('datasets{%d}', k));
+                datasets{k} = MatVisDataSource.wrap(datasets{k});
             end
 
             K = numel(datasets);
-            refSz = size(datasets{1});
+            refSz = datasets{1}.Size;
             for k = 2:K
-                if ~isequal(size(datasets{k}), refSz)
+                if ~isequal(datasets{k}.Size, refSz)
                     error('MatVisModel:sizeMismatch', ...
                         'All datasets must have identical dimensions.');
                 end
@@ -186,10 +196,8 @@ classdef MatVisModel < handle
             allMaxs = zeros(1, K);
             maxIdx1 = 1;
             for k = 1:K
-                [mx, mi] = max(datasets{k}(:));
-                allMins(k) = double(min(datasets{k}(:)));
-                allMaxs(k) = double(mx);
-                if k == 1, maxIdx1 = mi; end
+                [allMins(k), allMaxs(k)] = datasets{k}.valueRange();
+                if k == 1, maxIdx1 = datasets{k}.peakIndex(); end
             end
             obj.AllDataMins = allMins;
             obj.AllDataMaxs = allMaxs;
@@ -210,6 +218,7 @@ classdef MatVisModel < handle
             obj.LastImageDatas_ = cell(1, K);
             obj.LastZoomDatas_  = cell(1, K);
             obj.DatasetGammas   = ones(1, K);
+            obj.ClearSliceCache();
 
             % Shared navigation defaults
             s = refSz;
@@ -322,12 +331,55 @@ classdef MatVisModel < handle
         function tf = get.WithAlpha(obj)
             tf = ~isempty(obj.AlphaMaps);
         end
+
+        function c = get.ClassName(obj)
+            c = obj.Datasets{obj.ActiveDataset}.ClassName;
+        end
+
+        function tf = get.StatsApproximate(obj)
+            tf = false;
+            for k = 1:numel(obj.Datasets)
+                tf = tf || obj.Datasets{k}.StatsApproximate;
+            end
+        end
+
+        function tf = get.IsInteger(obj)
+            % Asking the source, not isinteger() on the container: a
+            % file-backed source is an object, and isinteger() on it would
+            % quietly answer false and switch off integer contrast snapping.
+            tf = obj.Datasets{obj.ActiveDataset}.IsInteger;
+        end
     end
 
     % ------------------------------------------------------------------
     %  Setters
     % ------------------------------------------------------------------
     methods
+        function set.Datasets(obj, value)
+            % Replacing the datasets invalidates every held slice.  A numeric
+            % array assigned into a slot is wrapped, so callers that swap data
+            % in directly keep working and Datasets stays all-sources.
+            if iscell(value)
+                for k = 1:numel(value)
+                    value{k} = MatVisDataSource.wrap(value{k});
+                end
+            end
+            % Size is fixed at construction and every consumer trusts it, so a
+            % bare assignment must not change shape: that used to be accepted
+            % silently, leaving the tail of a larger array unreachable and
+            % making a smaller one fail with a badsubscript from inside the
+            % renderer.  ReplaceDatasets is the way to change shape.
+            if ~isempty(obj.Size) && iscell(value) && ~isempty(value) && ...
+                    isa(value{1}, 'MatVisDataSource') && ~isequal(value{1}.Size, obj.Size)
+                error('MatVisModel:sizeChangeNotAllowed', ...
+                    ['Assigning data of size %s to a model of size %s would leave ' ...
+                     'Size stale.  Use ReplaceDatasets to change the data.'], ...
+                    mat2str(value{1}.Size), mat2str(obj.Size));
+            end
+            obj.Datasets = value;
+            obj.ClearSliceCache();
+        end
+
         function set.ActiveDataset(obj, value)
             validateattributes(value, {'numeric'}, ...
                 {'scalar', 'integer', 'positive'}, 'MatVisModel.set.ActiveDataset', 'ActiveDataset');
@@ -567,6 +619,127 @@ classdef MatVisModel < handle
     %  Public methods
     % ------------------------------------------------------------------
     methods
+        function ReplaceDatasets(obj, datasets)
+            % ReplaceDatasets  Swap in new data, keeping the model coherent.
+            %
+            %   datasets : numeric array, or cell of numeric arrays /
+            %              MatVisDataSource objects -- as many as there are
+            %              datasets now, with the same number of dimensions.
+            %              Their LENGTHS may differ: Size and everything
+            %              derived from it is brought up to date, and the
+            %              navigation state is clamped into the new extent.
+            %
+            % Assigning to the Datasets property directly cannot do this --
+            % Size is private and computed in the constructor, so a bare
+            % assignment leaves the two describing different arrays.  That is
+            % silent when the new data is larger (its tail is unreachable) and
+            % a badsubscript from inside the renderer when it is smaller.
+            if isnumeric(datasets) || isa(datasets, 'MatVisDataSource')
+                datasets = {datasets};
+            end
+            validateattributes(datasets, {'cell'}, {'nonempty'}, ...
+                'MatVisModel.ReplaceDatasets', 'datasets');
+            for k = 1:numel(datasets)
+                datasets{k} = MatVisDataSource.wrap(datasets{k});
+            end
+
+            if numel(datasets) ~= obj.NumDatasets
+                error('MatVisModel:datasetCountMismatch', ...
+                    ['This viewer holds %d dataset(s); %d given.  Changing the ' ...
+                     'number of datasets needs a new viewer.'], ...
+                    obj.NumDatasets, numel(datasets));
+            end
+            newSz = datasets{1}.Size;
+            for k = 2:numel(datasets)
+                if ~isequal(datasets{k}.Size, newSz)
+                    error('MatVisModel:sizeMismatch', ...
+                        'All datasets must have identical dimensions.');
+                end
+            end
+            if numel(newSz) ~= numel(obj.Size)
+                error('MatVisModel:dimCountMismatch', ...
+                    ['New data has %d dimensions, this viewer shows %d.  ' ...
+                     'Changing the number of dimensions needs a new viewer.'], ...
+                    numel(newSz), numel(obj.Size));
+            end
+
+            % A reader being dropped holds a file handle open.  Leaving it to
+            % garbage collection can keep a file locked long after it stopped
+            % being displayed, so close it here.  Sources carried over into
+            % the new set are left alone.
+            obj.closeDroppedSources_(datasets);
+
+            oldSz    = obj.Size;
+            obj.Size = newSz;                % before Datasets: the setter checks it
+            obj.Datasets = datasets(:)';     % setter clears the slice cache
+            obj.RefreshDataRanges();
+
+            % Real-world axes keep their origin and spacing and are re-cut to
+            % the new length, so a longer time series reads on in the same
+            % units rather than starting its scale again.
+            for d = 1:numel(newSz)
+                if newSz(d) == oldSz(d), continue; end
+                sc = obj.DimScale{d};
+                if isempty(sc)
+                    obj.DimScale{d} = 1:newSz(d);
+                else
+                    obj.DimScale{d} = sc(1) + (0:newSz(d)-1) * obj.pixelSize(d);
+                end
+            end
+
+            % Navigation state follows the new extent.  A dimension that
+            % changed length has its zoom opened up again: keeping the old
+            % interval would show the first six frames of eleven with nothing
+            % saying so.  Dimensions that did not change keep their zoom.
+            obj.CurrPos = min(max(obj.CurrPos, 1), newSz);
+            zr = obj.ZoomRange;
+            for d = 1:numel(newSz)
+                if newSz(d) ~= oldSz(d)
+                    zr(d, :) = [1, newSz(d)];
+                else
+                    zr(d, 1) = min(max(zr(d, 1), 1), newSz(d));
+                    zr(d, 2) = min(max(zr(d, 2), zr(d, 1)), newSz(d));
+                end
+            end
+            obj.ZoomRange = zr;
+
+            % ROI masks and profile paths are drawn in the display plane's
+            % pixel grid.  If that grid changed shape they no longer describe
+            % anything, so they go rather than silently point at the wrong
+            % pixels.
+            if newSz(obj.XDim) ~= oldSz(obj.XDim) || newSz(obj.YDim) ~= oldSz(obj.YDim)
+                if ~isempty(obj.RoiList)
+                    obj.RoiList = MatVisModel.EmptyRoiList();
+                    obj.RoiSelection = [];
+                    notify(obj, 'RoiChanged');
+                end
+                if ~isempty(obj.ProfileList)
+                    obj.ProfileList = MatVisModel.EmptyProfileList();
+                    obj.ProfileSelection = [];
+                    notify(obj, 'ProfileChanged');
+                end
+            end
+
+            % An alpha map describes the old array's elements.
+            if ~isequal(newSz, oldSz) && obj.WithAlpha
+                obj.SetAlphaMaps([]);
+                warning('MatVisModel:alphaDropped', ...
+                    'The alpha channel was dropped: it does not match the new data size.');
+            end
+        end
+
+        function RefreshDataRanges(obj)
+            % Re-ask every dataset for its value range.  Needed after the
+            % sources are swapped -- a file-backed source only estimates the
+            % range from a sample, and the in-memory one that replaces it
+            % knows it exactly.
+            for k = 1:obj.NumDatasets
+                [obj.AllDataMins(k), obj.AllDataMaxs(k)] = obj.Datasets{k}.valueRange();
+            end
+            obj.ContrastMin = obj.AllDataMins(obj.ActiveDataset);
+            obj.ContrastMax = obj.AllDataMaxs(obj.ActiveDataset);
+        end
+
         function SetAlphaMaps(obj, maps)
             % SetAlphaMaps  Attach alpha maps (one per dataset).
             %   maps : numeric array same size as the data (shared across
@@ -601,17 +774,14 @@ classdef MatVisModel < handle
             aMins = zeros(1, K);
             aMaxs = zeros(1, K);
             for k = 1:K
-                if ~isequal(size(maps{k}), obj.Size)
+                % Alpha maps are sliced by the same plans as the data, so
+                % they go through a source too.
+                maps{k} = MatVisDataSource.wrap(maps{k});
+                if ~isequal(maps{k}.Size, obj.Size)
                     error('MatVisModel:alphaSizeMismatch', ...
                         'Alpha map %d must have the same size as the data.', k);
                 end
-                finiteVals = maps{k}(isfinite(maps{k}));
-                if isempty(finiteVals)
-                    aMins(k) = 0;  aMaxs(k) = 1;
-                else
-                    aMins(k) = double(min(finiteVals(:)));
-                    aMaxs(k) = double(max(finiteVals(:)));
-                end
+                [aMins(k), aMaxs(k)] = maps{k}.valueRange(true);
                 if aMins(k) == aMaxs(k)
                     aMaxs(k) = aMins(k) + 1;
                 end
@@ -622,6 +792,39 @@ classdef MatVisModel < handle
             obj.AlphaMaxs         = aMaxs;
             obj.AlphaContrastMins = aMins;
             obj.AlphaContrastMaxs = aMaxs;
+            obj.ClearSliceCache();
+        end
+
+        % ------------------------------------------------------------------
+        %  Derived-slice cache
+        %
+        %  Extracting what one window shows — above all a projection, which
+        %  reads a whole stack — costs far more than mapping the result to
+        %  colours.  Contrast bounds, gamma and the colormap change only the
+        %  mapping, so the render loop asks for its arrays through this cache
+        %  and pays for the extraction again only when something that alters
+        %  the values themselves has moved (see MatVisRender.rawSlicePlan).
+        % ------------------------------------------------------------------
+        function val = CachedSlice(obj, tag, key, fcn)
+            % CachedSlice  Value held under TAG, recomputed only when KEY differs.
+            %   tag : cache slot name (a valid struct field name)
+            %   key : anything isequal-comparable that identifies the value
+            %   fcn : @() ... producing the value on a miss
+            if isfield(obj.SliceCacheKeys_, tag) && ...
+                    isequal(obj.SliceCacheKeys_.(tag), key)
+                val = obj.SliceCacheVals_.(tag);
+                return;
+            end
+            val = fcn();
+            obj.SliceCacheKeys_.(tag) = key;
+            obj.SliceCacheVals_.(tag) = val;
+        end
+
+        function ClearSliceCache(obj)
+            % Drop every held slice.  Called whenever the underlying arrays
+            % are replaced, since cache keys describe the indexing only.
+            obj.SliceCacheKeys_ = struct();
+            obj.SliceCacheVals_ = struct();
         end
 
         function SetImageData(obj, imgData, dsIdx)
@@ -1110,6 +1313,27 @@ classdef MatVisModel < handle
     end
 
     methods (Access = private)
+        function closeDroppedSources_(obj, newSets)
+            % Close every file-backed source that the incoming set does not
+            % carry over.  Handle identity decides: two sources reading the
+            % same file are still two readers, and one of them may still be
+            % in use.
+            for k = 1:numel(obj.Datasets)
+                s = obj.Datasets{k};
+                if ~isa(s, 'MatVisLazySource') || ~isvalid(s), continue; end
+                kept = false;
+                for j = 1:numel(newSets)
+                    if isa(newSets{j}, 'MatVisLazySource') && newSets{j} == s
+                        kept = true;  break;
+                    end
+                end
+                if ~kept
+                    s.ProgressFcn = [];
+                    s.closeSource();
+                end
+            end
+        end
+
         function roi = buildRoi_(obj, corners)
             % Build a complete ROI struct from polygon corners (2×N [x;y],
             % pixel coords).  Returns [] if the polygon covers no pixels.
@@ -1165,7 +1389,7 @@ classdef MatVisModel < handle
                         subs{d} = repmat(idx{d}, numel(ix), 1);
                     end
                 end
-                vals = double(obj.Data(sub2ind(sz, subs{:})));
+                vals = double(obj.Data.readLinear(sub2ind(sz, subs{:})));
                 w = vals - min(vals);
                 if sum(w) > 0
                     cog(2, :) = [sum(ix(:) .* w) / sum(w), sum(iy(:) .* w) / sum(w)];

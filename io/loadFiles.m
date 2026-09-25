@@ -1,9 +1,14 @@
-function [data, meta] = loadFiles(filepath)
+function [data, meta] = loadFiles(filepath, progressFcn)
 % loadFiles  Load an image file and return its raw numeric array.
 %   data = loadFiles(filepath)   loads the file at filepath.
 %   data = loadFiles('')         opens a file-selection dialog.
 %   data = loadFiles()           opens a file-selection dialog.
 %   [data, meta] = loadFiles(filepath)  also returns dimension metadata.
+%   [data, meta] = loadFiles(filepath, progressFcn)  reports progress while
+%       reading, and lets the caller stop it. The Bio-Formats and Zstandard
+%       readers report: they are the ones that read a plane at a time, and
+%       the ones a file can be served lazily from, so they are the ones whose
+%       full load is worth watching. See loadBioFormats for the contract.
 %
 %   ScanImage-acquired TIFFs (detected automatically) are read via the
 %   ScanImageTiffReader package (see ensureScanImageTiffReader), surfacing
@@ -21,6 +26,8 @@ function [data, meta] = loadFiles(filepath)
 %   instrument, matching parseArgs's dimNames/dimScale/dimUnits name-value
 %   pairs. For plain files with no dimension/calibration metadata these are
 %   all empty (cells, or [] for instrument), meaning "use defaults".
+
+if nargin < 2, progressFcn = []; end
 
 nativeExts = {'.tif', '.tiff', '.jpg', '.jpeg', '.png', '.bmp'};
 
@@ -74,9 +81,12 @@ end
 % ZstdCodec sizes its output buffer from the Zstandard frame's optional
 % content-size field, which these writers omit, and dies with
 % NegativeArraySizeException. So they get their own reader, which takes the
-% decompressed size from the strip/tile geometry instead.
+% decompressed size from the strip/tile geometry instead. One Zstandard
+% page is enough to route the file here: Compression is a per-directory
+% tag, and these writers mix schemes within a file, so loadZstdTiff also
+% decodes the PackBits/Deflate/LZW/uncompressed pages alongside.
 if ismember(ext, {'.tif', '.tiff'}) && isZstdTiff(filepath)
-    [data, meta] = loadZstdTiff(filepath);
+    [data, meta] = loadZstdTiff(filepath, progressFcn);
     return;
 end
 
@@ -96,10 +106,27 @@ end
 
 if bfAvailable && ~ismember(ext, bioFormatsExcludedExts)
     try
-        [data, meta] = loadBioFormats(filepath);
+        [data, meta] = loadBioFormats(filepath, progressFcn);
         return;
     catch e
+        if endsWith(e.identifier, ':cancelled')
+            % The caller asked for this. Falling back to the built-in reader
+            % would read the whole file anyway and make Cancel a lie.
+            rethrow(e);
+        end
         if ~isNative
+            % Bio-Formats claims a long list of extensions and only finds out
+            % it cannot read one when it opens it.  Say that in a sentence
+            % rather than handing the user a Java stack trace.
+            if contains(e.message, 'UnknownFormatException')
+                error('loadFiles:unsupportedFormat', ...
+                    ['Cannot read "%s": Bio-Formats does not recognise its contents, ' ...
+                     'even though it claims the "%s" extension. matVis reads .mat, ' ...
+                     '.tif/.tiff (incl. OME-TIFF and Zstandard), .jpg, .png, .bmp and ' ...
+                     'the microscopy formats Bio-Formats supports (.czi, .lsm, .nd2, ' ...
+                     '.lif, ...). Plain HDF5 (.h5) is not among them.'], ...
+                    filepath, ext);
+            end
             rethrow(e);
         end
         warning('loadFiles:bioformatsReadFailed', ...

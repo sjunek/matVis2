@@ -37,7 +37,9 @@ lblFps = lblFps(1);
 assert(edt.Value == 1, 'default play speed should be 1 (native), got %g', edt.Value);
 fprintf('Play speed field (value=%g) and framerate label found\n', edt.Value);
 
-% --- 1) Speed > 1: frame skipping, "skip every X frames" in the label ----
+% --- 1) Speed > 1: frame skipping, "skip every X frames" in the tooltip --
+%  The label itself only has room for the framerate; the skip / pause detail
+%  goes into its tooltip.
 edt.Value = 2;                       % -> advance every 2 frames
 rs3 = mw.rangeSliders{3};            % play along dim 3
 rs3.IsPlaying = true;
@@ -47,8 +49,10 @@ drawnow; pause(0.8); drawnow;         % let the timer tick several times
 fpsDuringSkip = lblFps.Text;
 fprintf('Framerate label during skip play: "%s"\n', fpsDuringSkip);
 assert(contains(fpsDuringSkip, 'fps'), 'fps readout missing during playback');
-assert(contains(fpsDuringSkip, 'skip every 2 frames'), ...
-    'frame-skip indicator missing: "%s"', fpsDuringSkip);
+tipDuringSkip = char(lblFps.Tooltip);
+fprintf('Framerate tooltip during skip play: "%s"\n', tipDuringSkip);
+assert(contains(tipDuringSkip, 'skip every 2 frames'), ...
+    'frame-skip indicator missing from tooltip: "%s"', tipDuringSkip);
 % Title must NOT carry framerate info
 assert(strcmp(mw.fig.Name, baseTitle), ...
     'title should not change during playback: "%s"', mw.fig.Name);
@@ -69,8 +73,10 @@ drawnow; pause(1.2); drawnow;
 fpsDuringSlow = lblFps.Text;
 fprintf('Framerate label during slowed play: "%s"\n', fpsDuringSlow);
 assert(contains(fpsDuringSlow, 'fps'), 'fps readout missing (slow mode)');
-assert(contains(fpsDuringSlow, 'pause'), ...
-    'pause indicator missing: "%s"', fpsDuringSlow);
+tipDuringSlow = char(lblFps.Tooltip);
+fprintf('Framerate tooltip during slowed play: "%s"\n', tipDuringSlow);
+assert(contains(tipDuringSlow, 'pause'), ...
+    'pause indicator missing from tooltip: "%s"', tipDuringSlow);
 
 rs3.IsPlaying = false;
 rs3.SetPlayMode('none');

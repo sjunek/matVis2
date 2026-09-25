@@ -51,8 +51,8 @@ function xw = MatVisXSecWin(model, cbs, dsIdx)
 % so its gestures are the ones it defines: left-drag rotates, CTRL +
 % LEFT-DRAG PANS, wheel and middle-drag zoom.  There is no MATLAB property
 % to move the pan onto the middle button.  Its wheel zoom works on the
-% centre of the view; onCameraMoved re-centres the result on the cursor.
-% The toolbox-free fallback axes is driven from here instead and follows the
+% centre of the view; MatVisVolumeView re-centres the result on the cursor.
+% The toolbox-free fallback is driven from here instead and follows the
 % 2-D bindings: left-drag rotates, middle-drag pans, wheel zooms.
 
 if nargin < 2 || isempty(cbs),   cbs = struct();               end
@@ -84,7 +84,6 @@ gam_  = model.Gamma;
 % those ranges rather than data values — see MatVisRender.normalizeChannels.
 chanRng_ = [];
 lastMainXY = [model.XDim, model.YDim];
-volshowBroken = false;               % set once volshow/viewer3d has failed
 
 dsTag = '';
 if model.NumDatasets > 1, dsTag = ['_ds' num2str(dsIdx)]; end
@@ -164,14 +163,7 @@ for pk_ = 1:NPANEL
     P(pk_).roiLines  = gobjects(1, 0);
     P(pk_).roiTexts  = gobjects(1, 0);
     P(pk_).profLines = gobjects(1, 0);
-    P(pk_).viewer    = [];
-    P(pk_).camPrev   = [];
-    P(pk_).volObj    = [];
-    P(pk_).ax3       = [];
-    P(pk_).surf3     = [];
-    P(pk_).mip       = [];
-    P(pk_).mipExtent = [];
-    P(pk_).mipFace   = 0;
+    P(pk_).vv        = [];
     P(pk_).sig       = [];
     P(pk_).lastHW    = [NaN NaN];
     P(pk_).tickSig   = [];
@@ -234,7 +226,6 @@ dragStart = [];    % [x y] in local panel coords (or pixels while orbiting)
 orbitView = [];    % [az el] at the start of a 3-D orbit drag
 panRef    = [];    % [lo; width] of both dims when a pan drag started
 ptCalib   = [];    % fig.CurrentPoint minus the root pointer, see ptFig()
-camBusy   = false; % guards onCameraMoved against our own camera writes
 
 fig.WindowButtonDownFcn   = @(src, ~) onMouseDown(src);
 fig.WindowButtonMotionFcn = @(~, ~)   onMouseMove();
@@ -320,7 +311,13 @@ xw.Refresh           = @forceRefresh;
         if ~isequal(sig, P(k).sig)
             P(k).sig = sig;
             data = model.Datasets{dsIdx};
-            raw  = MatVisRender.getRawSliceForDims(model, data, xd, yd, xIdx, yIdx);
+            % The panel repaints whenever contrast, gamma or the colormap
+            % change, but the slice behind it does not: its plan omits them,
+            % so the cache hands back the array it already holds instead of
+            % re-projecting.
+            plan = MatVisRender.rawSlicePlanForDims(model, xd, yd, xIdx, yIdx);
+            raw  = model.CachedSlice(sprintf('xsec%d_%d', dsIdx, k), plan.key, ...
+                @() MatVisRender.rawSliceFromPlan(data, model, plan));
 
             % In RGB mode the pages are equalized exactly as in the main
             % window before the (normalized) contrast window is applied;
@@ -340,8 +337,9 @@ xw.Refresh           = @forceRefresh;
                 % the spatial filter internally (as in the main window).
                 rgb = MatVisRender.renderStretchImage(model, raw, cLo, cHi, gam_);
                 if model.WithAlpha
-                    aRaw = MatVisRender.getRawSliceForDims(model, ...
-                        model.AlphaMaps{dsIdx}, xd, yd, xIdx, yIdx);
+                    aRaw = model.CachedSlice(sprintf('xsecA%d_%d', dsIdx, k), ...
+                        plan.key, @() MatVisRender.rawSliceFromPlan( ...
+                            model.AlphaMaps{dsIdx}, model, plan));
                     if ndims(aRaw) == 3, aRaw = mean(aRaw, 3); end
                     aN = MatVisRender.renderAlphaSlice(aRaw, ...
                         model.AlphaContrastMins(dsIdx), ...
@@ -352,8 +350,9 @@ xw.Refresh           = @forceRefresh;
                 disp_ = MatVisRender.filterImage(raw, model.FilterType, model.FilterPar);
                 nrm   = MatVisRender.normalizeData(disp_, cLo, cHi);
                 if model.WithAlpha
-                    aRaw = MatVisRender.getRawSliceForDims(model, ...
-                        model.AlphaMaps{dsIdx}, xd, yd, xIdx, yIdx);
+                    aRaw = model.CachedSlice(sprintf('xsecA%d_%d', dsIdx, k), ...
+                        plan.key, @() MatVisRender.rawSliceFromPlan( ...
+                            model.AlphaMaps{dsIdx}, model, plan));
                     aN = MatVisRender.renderAlphaSlice(aRaw, ...
                         model.AlphaContrastMins(dsIdx), ...
                         model.AlphaContrastMaxs(dsIdx), model.AlphaGamma);
@@ -429,24 +428,14 @@ xw.Refresh           = @forceRefresh;
         d3 = P(k).dims;
         if numel(unique(d3)) < 3 || nDims < 3, return; end
 
-        idxCells = cell(1, 3);
-        strides  = ones(1, 3);
-        n        = zeros(1, 3);
-        lo       = zeros(1, 3);
+        rng3 = zeros(3, 2);
         for j = 1:3
-            [l, h]  = rangeFor(k, j);
-            lo(j)   = l;
-            n(j)    = h - l + 1;
+            [l, h]    = rangeFor(k, j);
+            rng3(j,:) = [l, h];
         end
-        if ~fullRes3D
-            while prod(ceil(n ./ strides)) > MAXVOX
-                [~, j] = max(ceil(n ./ strides));
-                strides(j) = strides(j) + 1;
-            end
-        end
-        for j = 1:3
-            idxCells{j} = lo(j) : strides(j) : (lo(j) + n(j) - 1);
-        end
+        budget = MAXVOX;
+        if fullRes3D, budget = Inf; end
+        [lo, n, strides] = MatVisVolumeView.planSampling(rng3, budget);
 
         sig = sliceSignature(k, {[lo(1) n(1) strides(1)], ...
                                  [lo(2) n(2) strides(2)], ...
@@ -454,136 +443,15 @@ xw.Refresh           = @forceRefresh;
         if isequal(sig, P(k).sig), return; end
         P(k).sig = sig;
 
-        vol = MatVisRender.getRawVolumeForDims(model, model.Datasets{dsIdx}, ...
-                                               d3, idxCells);
         [vLo, vHi] = scalarBounds_();      % volume rendering is always scalar
-        nrm = MatVisRender.applyGamma( ...
-                MatVisRender.normalizeData(vol, vLo, vHi), gam_);
-        V   = uint8(max(0, min(1, nrm)) * 255);
+        [V, voxSize] = MatVisVolumeView.extractVolume(model, ...
+            model.Datasets{dsIdx}, d3, lo, n, strides, vLo, vHi, gam_);
 
-        sp = MatVisRender.spacingForDims(model, d3);
-        if isempty(sp), sp = [1 1 1]; end
-        voxSize = sp .* strides;      % one displayed voxel spans this much
-
-        if ~isempty(P(k).viewer) && isvalid(P(k).viewer)
-            if renderVolshow(k, V, voxSize), return; end
-            % volshow refused the volume — fall back permanently.
-            volshowBroken = true;
-            buildPanel(k);
-        end
-        renderMipFallback(k, V, voxSize);
-    end
-
-    function ok = renderVolshow(k, V, voxSize)
-        % Push the volume into the viewer3d.  Data order for volshow is
-        % (row, column, page) = (Y, X, Z), so the dims-order volume is
-        % permuted; voxel spacing is applied as a scaling transformation.
-        ok    = false;
-        Vv    = permute(V, [2 1 3]);
-        tform = makeTform_(voxSize);
-        cmap  = MatVisRender.getColormap(model.ColormapIdx, 256);
-        % Flat alphamap: volshow's default ramp attenuates dim voxels even in
-        % MaximumIntensityProjection, so a faint structure disappears instead
-        % of projecting at its true value. With alpha = 1 the panel shows the
-        % actual maximum, mapped through the same colormap as the 2-D panels.
-        amap  = ones(256, 1);
-
-        % Update in place when possible — recreating the Volume object on
-        % every frame is what makes a live 3-D view unaffordable.
-        if ~isempty(P(k).volObj) && isvalid(P(k).volObj)
-            try
-                P(k).volObj.Data = Vv;
-                if ~isempty(tform)
-                    P(k).volObj.Transformation = tform;
-                end
-                P(k).volObj.Colormap = cmap;
-                try; P(k).volObj.Alphamap = amap; catch; end
-                ok = true;
-                return;
-            catch
-                % e.g. a size change the object won't take — start over.
-                try; delete(P(k).volObj); catch; end
-                P(k).volObj = [];
-            end
-        end
-
-        try
-            args = {'Parent', P(k).viewer, ...
-                    'RenderingStyle', 'MaximumIntensityProjection', ...
-                    'Colormap', cmap, 'Alphamap', amap};
-            if ~isempty(tform)
-                args = [args, {'Transformation', tform}];
-            end
-            P(k).volObj = volshow(Vv, args{:});
-            ok = true;
-        catch
-            P(k).volObj = [];
-        end
-    end
-
-    function renderMipFallback(k, V, voxSize)
-        % Toolbox-free 3-D view: the three axis-aligned maximum projections
-        % are cached and the one facing the camera is texture-mapped onto the
-        % far face of the bounding box.  Rotating the box swaps the face, so
-        % the display stays a max projection from (approximately) the current
-        % viewing direction.
-        if isempty(P(k).ax3) || ~isvalid(P(k).ax3), return; end
-        vd = double(V);
-        mipZ = max(vd, [], 3);              % (x, y)
-        mipY = squeeze(max(vd, [], 2));     % (x, z)
-        mipX = squeeze(max(vd, [], 1));     % (y, z)
-        cmapIdx = model.ColormapIdx;
-        P(k).mip = { ...
-            MatVisRender.composeImage(mipX.' / 255, 1, cmapIdx), ...   % rows z, cols y
-            MatVisRender.composeImage(mipY.' / 255, 1, cmapIdx), ...   % rows z, cols x
-            MatVisRender.composeImage(mipZ.' / 255, 1, cmapIdx)};      % rows y, cols x
-        P(k).mipExtent = [size(V, 1), size(V, 2), size(V, 3)] .* voxSize;
-
-        ax3 = P(k).ax3;
-        ext = P(k).mipExtent;
-        ax3.XLim = [0, max(ext(1), eps)];
-        ax3.YLim = [0, max(ext(2), eps)];
-        ax3.ZLim = [0, max(ext(3), eps)];
-        ax3.DataAspectRatio = [1 1 1];
-        ax3.XLabel.String = dimLabel(P(k).dims(1));
-        ax3.YLabel.String = dimLabel(P(k).dims(2));
-        ax3.ZLabel.String = dimLabel(P(k).dims(3));
-        P(k).mipFace = 0;
-        placeMipFace(k);
-    end
-
-    function placeMipFace(k)
-        % Draw the cached projection that faces the camera onto the far side
-        % of the bounding box.
-        if isempty(P(k).mip) || isempty(P(k).ax3) || ~isvalid(P(k).ax3), return; end
-        [az, el] = view(P(k).ax3);
-        a = az * pi/180;  e = el * pi/180;
-        camDir = [sin(a)*cos(e), -cos(a)*cos(e), sin(e)];   % target -> camera
-        [~, axIdx] = max(abs(camDir));
-        far = camDir(axIdx) > 0;    % camera on the + side -> plane at the min end
-        faceCode = axIdx * 2 - double(far);
-        if faceCode == P(k).mipFace, return; end
-        P(k).mipFace = faceCode;
-
-        ext = P(k).mipExtent;
-        img = P(k).mip{axIdx};
-        if far, c = 0; else, c = ext(axIdx); end
-        switch axIdx
-            case 1   % plane x = c, image rows = z, cols = y
-                X = [c c; c c];
-                Y = [0 ext(2); 0 ext(2)];
-                Z = [0 0; ext(3) ext(3)];
-            case 2   % plane y = c, image rows = z, cols = x
-                X = [0 ext(1); 0 ext(1)];
-                Y = [c c; c c];
-                Z = [0 0; ext(3) ext(3)];
-            otherwise % plane z = c, image rows = y, cols = x
-                X = [0 ext(1); 0 ext(1)];
-                Y = [0 0; ext(2) ext(2)];
-                Z = [c c; c c];
-        end
-        set(P(k).surf3, 'XData', X, 'YData', Y, 'ZData', Z, ...
-            'CData', img, 'FaceColor', 'texturemap', 'Visible', 'on');
+        vv = P(k).vv;
+        if isempty(vv) || ~isvalid(vv), return; end
+        vv.Colormap = MatVisRender.getColormap(model.ColormapIdx, 256);
+        vv.Labels   = {dimLabel(d3(1)), dimLabel(d3(2)), dimLabel(d3(3))};
+        vv.setVolume(V, voxSize);
     end
 
     % ------------------------------------------------------- ROI overlays
@@ -687,12 +555,10 @@ xw.Refresh           = @forceRefresh;
         P(k).roiLines  = gobjects(1, 0);
         P(k).roiTexts  = gobjects(1, 0);
         P(k).profLines = gobjects(1, 0);
-        P(k).viewer    = [];
-        P(k).camPrev   = [];
-        P(k).volObj    = [];
-        P(k).ax3       = [];
-        P(k).surf3     = [];
-        P(k).mip       = [];
+        if ~isempty(P(k).vv) && isvalid(P(k).vv)
+            delete(P(k).vv);
+        end
+        P(k).vv        = [];
         P(k).sig       = [];
         P(k).lastHW    = [NaN NaN];
         P(k).tickSig   = [];
@@ -757,46 +623,12 @@ xw.Refresh           = @forceRefresh;
     end
 
     function build3D(k)
-        % Prefer the Image Processing Toolbox volume renderer (a true
-        % rotatable MIP); fall back to the projection-on-a-face renderer when
-        % it is unavailable or refuses to start in this container.
-        if ~volshowBroken && ~isempty(which('viewer3d')) && ~isempty(which('volshow'))
-            try
-                v = viewer3d('Parent', P(k).holder);
-                try; v.BackgroundColor    = 'black'; catch; end
-                try; v.BackgroundGradient = 'off';   catch; end
-                try; v.Lighting           = 'off';   catch; end
-                applyViewerInteractions(v);
-                P(k).viewer  = v;
-                P(k).camPrev = [];
-                try
-                    v.CameraMovedFcn = @(~, ~) onCameraMoved(k);
-                catch
-                end
-                return;
-            catch
-                volshowBroken = true;
-                delete(P(k).holder.Children);
-            end
-        end
-
-        ax3 = uiaxes('Parent', P(k).holder, 'Units', 'normalized');
-        fillHolder_(ax3);
-        disableDefaultInteractivity(ax3);
-        try; ax3.Toolbar = []; catch; end
-        ax3.FontSize = 8;
-        ax3.Color    = 'k';
-        view(ax3, -37.5, 30);
-        grid(ax3, 'on');
-        box(ax3, 'on');
-        ax3.Title.String     = '3D max projection (drag to rotate)';
-        ax3.Title.FontSize   = 9;
-        ax3.Title.FontWeight = 'normal';
-        s = surface(ax3, zeros(2), zeros(2), zeros(2), ...
-            'FaceColor', 'texturemap', 'EdgeColor', 'none', 'Visible', 'off');
-        s.HitTest = 'off';  s.PickableParts = 'none';
-        P(k).ax3   = ax3;
-        P(k).surf3 = s;
+        % The shared volume view picks the renderer: the Image Processing
+        % Toolbox one (a true rotatable MIP) when it is available, the
+        % projection-on-a-face fallback otherwise.
+        vv = MatVisVolumeView(P(k).holder);
+        vv.PointerFcn = @ptFig;
+        P(k).vv = vv;
     end
 
 % =========================================================================
@@ -886,9 +718,6 @@ xw.Refresh           = @forceRefresh;
         P(k).sig     = [];
         P(k).lastHW  = [NaN NaN];
         P(k).tickSig = [];
-        if strcmp(P(k).mode, '3d')
-            P(k).mipFace = 0;
-        end
         renderPanel(k);
     end
 
@@ -967,16 +796,8 @@ xw.Refresh           = @forceRefresh;
         end
         % Zooming/panning a 3-D panel pins its camera; hand it back to the
         % viewer so the reset really does return to the default view.
-        if ~isempty(P(k).viewer) && isvalid(P(k).viewer)
-            camBusy = true;
-            try
-                P(k).viewer.CameraZoomMode     = 'auto';
-                P(k).viewer.CameraTargetMode   = 'auto';
-                P(k).viewer.CameraPositionMode = 'auto';
-            catch
-            end
-            camBusy = false;
-            P(k).camPrev = [];
+        if ~isempty(P(k).vv) && isvalid(P(k).vv)
+            P(k).vv.resetCamera();
         end
         applyZoom(k, lo, hi);
     end
@@ -1065,10 +886,12 @@ xw.Refresh           = @forceRefresh;
         if k == 0 || strcmp(P(k).mode, 'off'), return; end
 
         if strcmp(P(k).mode, '3d')
-            % Only the toolbox-free fallback axes can be driven from here; a
-            % viewer3d keeps every mouse event to itself (applyViewerInter-
-            % actions), so over one of those this never even fires.
-            if isempty(P(k).ax3) || ~isvalid(P(k).ax3), return; end
+            % Only the toolbox-free fallback can be driven from here; a
+            % viewer3d keeps every mouse event to itself (see
+            % MatVisVolumeView), so over one of those this never even fires.
+            if isempty(P(k).vv) || ~isvalid(P(k).vv) || P(k).vv.isViewer3D()
+                return;
+            end
             switch src.SelectionType
                 case 'extend'                            % middle-drag: pan
                     dragPanel = k;
@@ -1076,7 +899,7 @@ xw.Refresh           = @forceRefresh;
                     dragStart = ptFig();
                     fig.Pointer = 'hand';
                 case 'normal'
-                    [az, el]  = view(P(k).ax3);
+                    [az, el]  = P(k).vv.cameraAngles();
                     orbitView = [az, el];
                     dragPanel = k;
                     dragMode  = 'orbit';
@@ -1146,14 +969,13 @@ xw.Refresh           = @forceRefresh;
         if strcmp(dragMode, 'orbit')
             pt = ptFig();
             d  = pt - dragStart;
-            view(P(k).ax3, orbitView(1) - d(1)*0.5, ...
-                 max(-89, min(89, orbitView(2) + d(2)*0.5)));
-            placeMipFace(k);
+            P(k).vv.setCameraAngles(orbitView(1) - d(1)*0.5, ...
+                                    orbitView(2) + d(2)*0.5);
             return;
         end
         if strcmp(dragMode, 'pan3')
             pt = ptFig();
-            pan3D(k, pt - dragStart);
+            P(k).vv.pan(pt - dragStart);
             dragStart = pt;             % incremental, so nothing accumulates
             return;
         end
@@ -1224,9 +1046,9 @@ xw.Refresh           = @forceRefresh;
         if k == 0 || strcmp(P(k).mode, 'off'), return; end
         if strcmp(P(k).mode, '3d')
             % A viewer3d never lets the wheel through to us; only the
-            % toolbox-free fallback axes is zoomed from here.
-            if ~isempty(P(k).ax3) && isvalid(P(k).ax3)
-                zoomAxes3AtCursor(P(k).ax3, wheelFactor(evt));
+            % toolbox-free fallback is zoomed from here.
+            if ~isempty(P(k).vv) && isvalid(P(k).vv) && ~P(k).vv.isViewer3D()
+                P(k).vv.zoomAtCursor(wheelFactor(evt));
             end
             return;
         end
@@ -1276,137 +1098,6 @@ xw.Refresh           = @forceRefresh;
         [yLo, ~] = rangeFor(k, 2);
         if isequal(lo, [xLo, yLo]), return; end
         applyZoom(k, lo, lo + w - 1, true);
-    end
-
-    % ------------------------------------------------- 3-D camera control
-    function applyViewerInteractions(v)
-        % All mouse input over a viewer3d belongs to the viewer.  It is an
-        % HTML component that handles pointer and wheel events inside its own
-        % canvas, so they never reach the figure: MATLAB's figure only turns
-        % a middle click into SelectionType 'extend' for events on its own
-        % drawing surface, which the viewer is not.  Nothing here can bind a
-        % gesture over a 3-D panel.
-        %
-        % What the viewer itself offers (fixed in its client code, with no
-        % MATLAB property to remap it): left-drag rotates, ctrl + left-drag
-        % pans, the wheel and middle-drag zoom.  Its wheel zoom works on the
-        % centre of the view; onCameraMoved re-centres the result on the
-        % cursor afterwards, which is the one part we can still influence.
-        try
-            v.Interactions = "all";
-        catch
-        end
-    end
-
-    function onCameraMoved(k)
-        % viewer3d has finished a camera move.  If it was a pure zoom (the
-        % wheel, or the toolbar), redo it about the cursor: shift the target
-        % so that whatever the pointer was over before the zoom is under it
-        % again.  Rotating and panning leave the zoom alone and pass through.
-        if camBusy, return; end
-        v = P(k).viewer;
-        if isempty(v) || ~isvalid(v), return; end
-        cur  = readCam_(v);
-        prev = P(k).camPrev;
-        P(k).camPrev = cur;
-        if isempty(cur) || isempty(prev), return; end
-        if isequal(cur.zoom, prev.zoom) || ~isequal(cur.target, prev.target)
-            return;
-        end
-        s = prev.zoom / cur.zoom;          % < 1 after zooming in
-        if ~isfinite(s) || s <= 0 || abs(s - 1) < 1e-6, return; end
-        [ox, oy, inside] = viewerCursorOffset(v);
-        if ~inside, return; end
-        [ok, T, C, ~, right, up_, halfW, halfH] = viewerFrame(v);
-        if ~ok, return; end
-        % Where the cursor pointed *before* the zoom: the visible area was
-        % 1/s wider then.  The projection is orthographic, so the depth of
-        % that point does not matter, only its offset from the view axis.
-        Q  = T + right * (ox * halfW / s) + up_ * (oy * halfH / s);
-        dT = (1 - s) * (Q - T);
-        camBusy = true;
-        try
-            v.CameraTarget   = T + dT;
-            v.CameraPosition = C + dT;
-        catch
-        end
-        camBusy = false;
-        P(k).camPrev = readCam_(v);
-    end
-
-    function pan3D(k, dPix)
-        if ~isempty(P(k).viewer) && isvalid(P(k).viewer)
-            v = P(k).viewer;
-            [ok, T, C, ~, right, up_, halfW, halfH] = viewerFrame(v);
-            if ~ok, return; end
-            pp = getpixelposition(v, true);
-            % Move the camera against the drag, so the volume follows it.
-            d = -right * (2 * halfW * dPix(1) / max(pp(3), 1)) ...
-                - up_  * (2 * halfH * dPix(2) / max(pp(4), 1));
-            camBusy = true;
-            try
-                v.CameraTarget   = T + d;
-                v.CameraPosition = C + d;
-            catch
-            end
-            camBusy = false;
-            P(k).camPrev = readCam_(v);
-        elseif ~isempty(P(k).ax3) && isvalid(P(k).ax3)
-            camdolly(P(k).ax3, -dPix(1), -dPix(2), 0, 'movetarget', 'pixels');
-        end
-    end
-
-    function [ok, T, C, fwd, right, up_, halfW, halfH] = viewerFrame(v)
-        % Camera frame of a viewer3d plus the half extent of the visible
-        % area at the target plane, in data units.
-        ok = false;  T = [];  C = [];  fwd = [];  right = [];  up_ = [];
-        halfW = 0;   halfH = 0;
-        try
-            T   = double(v.CameraTarget(:)).';
-            C   = double(v.CameraPosition(:)).';
-            up0 = double(v.CameraUpVector(:)).';
-            va  = double(v.CameraViewAngle);
-            z   = double(v.CameraZoom);
-        catch
-            return;
-        end
-        d    = T - C;
-        dist = norm(d);
-        if ~isfinite(dist) || dist <= 0 || ~isfinite(z) || z <= 0, return; end
-        fwd   = d / dist;
-        right = cross(fwd, up0);
-        if norm(right) < 1e-9, return; end
-        right = right / norm(right);
-        up_   = cross(right, fwd);
-        pp    = getpixelposition(v, true);
-        if pp(3) <= 0 || pp(4) <= 0, return; end
-        halfH = dist * tand(clamp_(va, 0.01, 179) / 2) / z;
-        halfW = halfH * pp(3) / pp(4);
-        ok    = true;
-    end
-
-    function [ox, oy, inside] = viewerCursorOffset(v)
-        % Cursor position relative to the centre of the viewer, in units of
-        % half its width/height (so [-1 1] spans the visible area).
-        ox = 0;  oy = 0;  inside = false;
-        pp = getpixelposition(v, true);
-        if pp(3) <= 0 || pp(4) <= 0, return; end
-        pt = ptFig();
-        ox = 2 * (pt(1) - (pp(1) + pp(3)/2)) / pp(3);
-        oy = 2 * (pt(2) - (pp(2) + pp(4)/2)) / pp(4);
-        inside = abs(ox) <= 1 && abs(oy) <= 1;
-    end
-
-    function zoomAxes3AtCursor(ax3, s)
-        % Fallback axes: magnify, then dolly the camera so that whatever was
-        % under the cursor stays there.
-        m  = 1 / s;
-        pp = getpixelposition(ax3, true);
-        pt = ptFig();
-        ox = pt(1) - (pp(1) + pp(3)/2);
-        oy = pt(2) - (pp(2) + pp(4)/2);
-        camzoom(ax3, m);
-        camdolly(ax3, ox * (m - 1), oy * (m - 1), 0, 'movetarget', 'pixels');
     end
 
     function mode = hitTest(k, x, y)
@@ -1474,7 +1165,7 @@ xw.Refresh           = @forceRefresh;
         idx      = num2cell(model.CurrPos);
         idx{xd}  = xi;
         idx{yd}  = yi;
-        val = model.Datasets{dsIdx}(idx{:});
+        val = model.Datasets{dsIdx}.readSub(idx);
         txt = sprintf('%s %d, %s %d  =  %g', dimLabel(xd), xi, dimLabel(yd), yi, val);
         if model.hasRealScale(xd) || model.hasRealScale(yd)
             txt = sprintf('%s   (%.4g %s, %.4g %s)', txt, ...
@@ -1563,17 +1254,6 @@ function f = getCb_(cbs, name)
     end
 end
 
-function tf = makeTform_(voxSize)
-    % Scaling transformation mapping voxel indices to real-world extent.
-    tf = [];
-    A = eye(4);
-    A(1,1) = voxSize(1);  A(2,2) = voxSize(2);  A(3,3) = voxSize(3);
-    if ~isempty(which('affinetform3d'))
-        tf = affinetform3d(A);
-    elseif ~isempty(which('affine3d'))
-        tf = affine3d(A');      % older post-multiply convention
-    end
-end
 
 function img = blendAlpha_(img, a, bgWhite)
     a = max(0, min(1, double(a)));
@@ -1586,16 +1266,6 @@ function v = clamp_(x, lo, hi)
     v = max(lo, min(hi, x));
 end
 
-function c = readCam_(v)
-    % Camera state of a viewer3d, or [] if it cannot be read.
-    c = [];
-    try
-        c = struct('zoom',   double(v.CameraZoom), ...
-                   'target', double(v.CameraTarget(:)).', ...
-                   'pos',    double(v.CameraPosition(:)).');
-    catch
-    end
-end
 
 function fillHolder_(ax)
     % Let the axes have the whole panel: MATLAB then keeps just enough room

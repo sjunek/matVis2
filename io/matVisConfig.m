@@ -152,15 +152,27 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
         % fresh layout instead of misapplying stale, incompatible coordinates.
         monitorPositions = get(0, 'MonitorPositions');
 
-        save(configPath, ...
+        saveVars = { ...
             'windowVisibility', 'windowPositions', 'monitorPositions', ...
             'colormapIdx', 'contrastMode', 'gamma', 'contrastMin', 'contrastMax', ...
             'rgbContrastRange', ...
             'numDatasets', 'activeDataset', 'contrastLocked', ...
             'datasetContrastMins', 'datasetContrastMaxs', 'datasetGammas', ...
             'alphaContrastMins', 'alphaContrastMaxs', 'alphaGamma', 'alphaBgWhite', ...
-            'aspectRatioFixed', 'aspectRatio', 'winScalePct', ...
-            '-mat');
+            'aspectRatioFixed', 'aspectRatio', 'winScalePct'};
+
+        % Manual mode: persist the mode but not the window it was left at.
+        % Manual bounds and gamma are properties of the dataset at hand, not
+        % of the user's preferred setup, so restoring them onto a different
+        % dataset in a later session gives an arbitrary (often black) image.
+        if strcmp(contrastMode, 'Manual')
+            saveVars = setdiff(saveVars, ...
+                {'gamma', 'contrastMin', 'contrastMax', ...
+                 'datasetContrastMins', 'datasetContrastMaxs', 'datasetGammas'}, ...
+                'stable');
+        end
+
+        save(configPath, saveVars{:}, '-mat');
 
         fprintf('Config saved to: %s\n', configPath);
 
@@ -171,9 +183,24 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
 end
 
 function configPath = GetConfigPath_()
-    [~, hostname] = system('hostname');
-    hostname = strtrim(hostname);
-    if isempty(hostname), hostname = 'Unknown'; end
+    % The host name never changes within a session, and finding it used to
+    % cost ~150 ms because system('hostname') spawns a shell -- paid twice on
+    % every startup.  COMPUTERNAME is the same NetBIOS name on Windows, and
+    % Windows paths are case-insensitive, so a config file written under
+    % either spelling is found by the other.
+    persistent cachedHost
+    if isempty(cachedHost)
+        cachedHost = '';
+        if ispc
+            cachedHost = strtrim(getenv('COMPUTERNAME'));
+        end
+        if isempty(cachedHost)
+            [~, h] = system('hostname');
+            cachedHost = strtrim(h);
+        end
+        if isempty(cachedHost), cachedHost = 'Unknown'; end
+    end
+    hostname = cachedHost;
 
     % Anchor to THIS checkout's repo root, not wherever which('matVis')
     % happens to resolve -- this machine has multiple sibling matVis/matVis2

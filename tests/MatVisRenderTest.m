@@ -14,7 +14,7 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
             model = MatVisRenderTest.makeModel3D();
             model.ContrastMin = 0;
             model.ContrastMax = 100;
-            model.Data = ones(5,4,3) * 50;
+            model.Data = MatVisMemorySource(ones(5,4,3) * 50);
             slice = MatVisRender.renderSlice(model);
             tc.verifyEqual(slice, repmat(0.5, size(slice)), 'AbsTol', 1e-10);
         end
@@ -23,7 +23,7 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
             model = MatVisRenderTest.makeModel3D();
             model.ContrastMin = 0;
             model.ContrastMax = 1;
-            model.Data = ones(5,4,3) * 5;
+            model.Data = MatVisMemorySource(ones(5,4,3) * 5);
             slice = MatVisRender.renderSlice(model);
             tc.verifyEqual(max(slice(:)), 1);
         end
@@ -140,9 +140,10 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
             % avgMode 0: weighted mean over a single pixel is the data itself
             model = MatVisRenderTest.makeModel3D();
             alpha = MatVisRenderTest.makeAlpha3D();
+            alphaSrc = MatVisMemorySource(alpha);
             [p, a] = MatVisRender.renderProfileNeighborAlphaFromData( ...
-                model, model.Data, alpha, 3, 0);
-            expectedP = squeeze(model.Data(3, 2, :));
+                model, model.Data, alphaSrc, 3, 0);
+            expectedP = squeeze(model.Raw(3, 2, :));
             expectedA = squeeze(alpha(3, 2, :));
             tc.verifyEqual(p, double(expectedP), 'AbsTol', 1e-12);
             tc.verifyEqual(a, expectedA, 'AbsTol', 1e-12);
@@ -151,14 +152,15 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
         function testProfileNeighborAlpha_weightedMean3x3(tc)
             model = MatVisRenderTest.makeModel3D();
             alpha = MatVisRenderTest.makeAlpha3D();
+            alphaSrc = MatVisMemorySource(alpha);
             [p, a] = MatVisRender.renderProfileNeighborAlphaFromData( ...
-                model, model.Data, alpha, 3, 1);
+                model, model.Data, alphaSrc, 3, 1);
             % 3x3 neighborhood around CurrPos = [3, 2] (clipped to bounds)
             xR = 2:4;  yR = 1:3;
             nT = model.Size(3);
             expP = zeros(nT, 1);  expA = zeros(nT, 1);
             for t = 1:nT
-                v = double(model.Data(xR, yR, t));
+                v = double(model.Raw(xR, yR, t));
                 w = alpha(xR, yR, t);
                 expP(t) = sum(v(:) .* w(:)) / sum(w(:));
                 expA(t) = mean(w(:));
@@ -169,13 +171,15 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
 
         function testProfileNeighborAlpha_omitsNanData(tc)
             model = MatVisRenderTest.makeModel3D();
-            model.Data = double(model.Data);
-            model.Data(2, 1, 1) = NaN;   % inside the 3x3 neighborhood, t=1
+            model.Raw = double(model.Raw);
+            model.Raw(2, 1, 1) = NaN;   % inside the 3x3 neighborhood, t=1
+            model.Data = MatVisMemorySource(model.Raw);
             alpha = MatVisRenderTest.makeAlpha3D();
+            alphaSrc = MatVisMemorySource(alpha);
             [p, ~] = MatVisRender.renderProfileNeighborAlphaFromData( ...
-                model, model.Data, alpha, 3, 1);
+                model, model.Data, alphaSrc, 3, 1);
             xR = 2:4;  yR = 1:3;
-            v = model.Data(xR, yR, 1);
+            v = model.Raw(xR, yR, 1);
             w = alpha(xR, yR, 1);
             keep = ~isnan(v);
             expected = sum(v(keep) .* w(keep)) / sum(w(keep));
@@ -187,10 +191,11 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
             model = MatVisRenderTest.makeModel3D();
             model.ZoomRange(3, :) = [2, 2];
             alpha = MatVisRenderTest.makeAlpha3D();
+            alphaSrc = MatVisMemorySource(alpha);
             [pZoom, ~] = MatVisRender.renderProfileNeighborAlphaFromData( ...
-                model, model.Data, alpha, 3, 1);
+                model, model.Data, alphaSrc, 3, 1);
             [pFull, aFull] = MatVisRender.renderFullProfileNeighborAlphaFromData( ...
-                model, model.Data, alpha, 3, 1);
+                model, model.Data, alphaSrc, 3, 1);
             tc.verifyEqual(numel(pZoom), 1);
             tc.verifyEqual(numel(pFull), model.Size(3));
             tc.verifyEqual(numel(aFull), model.Size(3));
@@ -200,16 +205,17 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
         function testRoiProfileAlpha_weightedMean(tc)
             model = MatVisRenderTest.makeModel3D();
             alpha = MatVisRenderTest.makeAlpha3D();
+            alphaSrc = MatVisMemorySource(alpha);
             roi.index.x = [2; 3; 4];
             roi.index.y = [2; 2; 3];
             [p, a] = MatVisRender.renderRoiProfileAlphaFromData( ...
-                model, model.Data, alpha, 3, roi, false);
+                model, model.Data, alphaSrc, 3, roi, false);
             nT = model.Size(3);
             expP = zeros(nT, 1);  expA = zeros(nT, 1);
             for t = 1:nT
                 v = zeros(3, 1);  w = zeros(3, 1);
                 for q = 1:3
-                    v(q) = double(model.Data(roi.index.x(q), roi.index.y(q), t));
+                    v(q) = double(model.Raw(roi.index.x(q), roi.index.y(q), t));
                     w(q) = alpha(roi.index.x(q), roi.index.y(q), t);
                 end
                 expP(t) = sum(v .* w) / sum(w);
@@ -222,10 +228,11 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
         function testRoiProfileAlpha_displayAxisReturnsEmpty(tc)
             model = MatVisRenderTest.makeModel3D();
             alpha = MatVisRenderTest.makeAlpha3D();
+            alphaSrc = MatVisMemorySource(alpha);
             roi.index.x = [2; 3];
             roi.index.y = [2; 2];
             [p, a] = MatVisRender.renderRoiProfileAlphaFromData( ...
-                model, model.Data, alpha, model.XDim, roi, false);
+                model, model.Data, alphaSrc, model.XDim, roi, false);
             tc.verifyEmpty(p);
             tc.verifyEmpty(a);
         end
@@ -235,10 +242,11 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
             % plain ROI mean.
             model = MatVisRenderTest.makeModel3D();
             alpha = 0.7 * ones(model.Size);
+            alphaSrc = MatVisMemorySource(alpha);
             roi.index.x = [1; 2; 5];
             roi.index.y = [1; 3; 4];
             [p, a] = MatVisRender.renderRoiProfileAlphaFromData( ...
-                model, model.Data, alpha, 3, roi, false);
+                model, model.Data, alphaSrc, 3, roi, false);
             pPlain = MatVisRender.renderRoiProfileFromData( ...
                 model, model.Data, 3, roi, false);
             tc.verifyEqual(p, pPlain, 'AbsTol', 1e-10);
@@ -250,14 +258,16 @@ classdef MatVisRenderTest < matlab.unittest.TestCase
     methods (Static)
         function model = makeModel3D()
             % Simple mock struct that matches MatVisModel interface
-            model.Data = reshape(1:60, [5, 4, 3]);
+            raw = reshape(1:60, [5, 4, 3]);
+            model.Data = MatVisMemorySource(raw);  % mirrors MatVisModel.Data
+            model.Raw  = raw;                      % same values, for expected-value math
             model.Size = [5, 4, 3];
             model.CurrPos = [3, 2, 2];
             model.ZoomRange = [1, 5; 1, 4; 1, 3];
             model.XDim = 1;   % dim 1 = columns (x)
             model.YDim = 2;   % dim 2 = rows (y)
-            model.ContrastMin = min(model.Data(:));
-            model.ContrastMax = max(model.Data(:));
+            model.ContrastMin = min(raw(:));
+            model.ContrastMax = max(raw(:));
             model.ProjFun     = 'none';
             model.ProjDim     = 0;
             model.ProjZoomLock = false;

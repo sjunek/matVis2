@@ -38,15 +38,14 @@ if ~ismember(mode, {'ask', 'separate', 'concatenate'})
 end
 
 if nargin < 1 || isempty(filepaths)
-    [fnames, fpath] = uigetfile(buildFileFilter(), ...
-        'Select one or more files', 'MultiSelect', 'on');
-    if isequal(fnames, 0)
-        error('importMultiFile:cancelled', 'File selection cancelled.');
+    try
+        filepaths = matVisPickFiles();
+    catch e
+        if strcmp(e.identifier, 'matVisPickFiles:cancelled')
+            error('importMultiFile:cancelled', 'File selection cancelled.');
+        end
+        rethrow(e);
     end
-    if ischar(fnames)
-        fnames = {fnames};
-    end
-    filepaths = cellfun(@(f) fullfile(fpath, f), fnames, 'UniformOutput', false);
 elseif ischar(filepaths) || isstring(filepaths)
     filepaths = cellstr(filepaths);
 end
