@@ -4101,7 +4101,9 @@ fprintf('\n');
         if ~isempty(failed)
             showCancelRead(false);
             applyLoadFullState();
-            cancelled = strcmp(failed.identifier, 'loadBioFormats:cancelled');
+            % Whichever reader was in play: each names its own cancel, and
+            % they all mean the same thing here.
+            cancelled = endsWith(failed.identifier, ':cancelled');
             if ~isempty(lblStatus) && isvalid(lblStatus)
                 if cancelled
                     lblStatus.Text = 'Full load cancelled';

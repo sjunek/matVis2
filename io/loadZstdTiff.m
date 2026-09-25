@@ -1,6 +1,13 @@
-function [data, meta] = loadZstdTiff(filepath)
+function [data, meta] = loadZstdTiff(filepath, progressFcn)
 % loadZstdTiff  Read a Zstandard-compressed TIFF/BigTIFF (compression 50000).
 %   [data, meta] = loadZstdTiff(filepath)
+%   [data, meta] = loadZstdTiff(filepath, progressFcn)
+%
+%   progressFcn is called as stop = progressFcn(done, total) every few pages,
+%   and as progressFcn([], []) once the run is over; returning true stops the
+%   read, which then throws loadZstdTiff:cancelled.  Decoding 735 pages takes
+%   over a minute, so the caller needs somewhere to say so and a way out --
+%   see loadBioFormats, which reports on the same contract.
 %
 %   Neither MATLAB's TIFF library ("The compression scheme 50000 is not
 %   currently supported when reading TIFF files.") nor Bio-Formats 8.5 can
@@ -38,6 +45,8 @@ function [data, meta] = loadZstdTiff(filepath)
 %   See also zstdTiffOpen, zstdTiffReadPage, isZstdTiff, loadFiles.
 
 
+if nargin < 2, progressFcn = []; end
+
 S = zstdTiffOpen(filepath);
 
 fid = fopen(filepath, 'r', 'ieee-le');
@@ -48,9 +57,20 @@ closer = onCleanup(@() fclose(fid));
 
 g    = S.g;
 data = zeros([g.height, g.width, g.spp, S.nPages], g.cls);
+% Only worth announcing when there is enough to wait for, and only every
+% fourth page: each report costs the caller a drawnow.
+report = ~isempty(progressFcn) && S.nPages >= 4;
 for k = 1:S.nPages
+    if report && mod(k, 4) == 1 && progressFcn(k, S.nPages)
+        progressFcn([], []);
+        error('loadZstdTiff:cancelled', ...
+            'Reading cancelled after %d of %d pages.', k - 1, S.nPages);
+    end
     data(:, :, :, k) = zstdTiffReadPage(fid, S.ifds(k), g, ...
         S.compressions(k), filepath, k);
+end
+if report
+    progressFcn([], []);
 end
 
 % Collapse the axes the file does not actually use.

@@ -5,9 +5,10 @@ function [data, meta] = loadFiles(filepath, progressFcn)
 %   data = loadFiles()           opens a file-selection dialog.
 %   [data, meta] = loadFiles(filepath)  also returns dimension metadata.
 %   [data, meta] = loadFiles(filepath, progressFcn)  reports progress while
-%       reading, and lets the caller stop it. Only the Bio-Formats path
-%       reports: it is the one that reads plane by plane, and the one that is
-%       slow enough to be worth watching. See loadBioFormats for the contract.
+%       reading, and lets the caller stop it. The Bio-Formats and Zstandard
+%       readers report: they are the ones that read a plane at a time, and
+%       the ones a file can be served lazily from, so they are the ones whose
+%       full load is worth watching. See loadBioFormats for the contract.
 %
 %   ScanImage-acquired TIFFs (detected automatically) are read via the
 %   ScanImageTiffReader package (see ensureScanImageTiffReader), surfacing
@@ -85,7 +86,7 @@ end
 % tag, and these writers mix schemes within a file, so loadZstdTiff also
 % decodes the PackBits/Deflate/LZW/uncompressed pages alongside.
 if ismember(ext, {'.tif', '.tiff'}) && isZstdTiff(filepath)
-    [data, meta] = loadZstdTiff(filepath);
+    [data, meta] = loadZstdTiff(filepath, progressFcn);
     return;
 end
 
@@ -108,7 +109,7 @@ if bfAvailable && ~ismember(ext, bioFormatsExcludedExts)
         [data, meta] = loadBioFormats(filepath, progressFcn);
         return;
     catch e
-        if strcmp(e.identifier, 'loadBioFormats:cancelled')
+        if endsWith(e.identifier, ':cancelled')
             % The caller asked for this. Falling back to the built-in reader
             % would read the whole file anyway and make Cancel a lie.
             rethrow(e);
