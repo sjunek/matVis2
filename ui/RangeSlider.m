@@ -257,7 +257,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             % -- Plot zoom lock button (col 6, fills the row) --
             obj.BtnPlotLock_ = uibutton(obj.Grid_, 'state', ...
                 'Text', '', ...
-                'Icon', RangeSlider.makeOpenLockIcon_(14), ...
+                'Icon', matVisLockIcon(false), ...
                 'Value', false, ...
                 'Tooltip', sprintf(['Lock profile-plot X-axis to current zoom range.\n' ...
                     'When active, the plot shows only data within the zoom interval.']));
@@ -339,11 +339,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
             obj.setIfChanged_(obj.ChkPlot_,     'Value', obj.ShowPlot);
             obj.setIfChanged_(obj.BtnPlotLock_, 'Value', obj.PlotLock);
             if obj.LockIconState_ ~= double(obj.PlotLock)
-                if obj.PlotLock
-                    obj.BtnPlotLock_.Icon = RangeSlider.makeLockIcon_(14);
-                else
-                    obj.BtnPlotLock_.Icon = RangeSlider.makeOpenLockIcon_(14);
-                end
+                obj.BtnPlotLock_.Icon = matVisLockIcon(obj.PlotLock);
                 obj.LockIconState_ = double(obj.PlotLock);
             end
 
@@ -767,11 +763,7 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 
         function onPlotLockToggled_(obj, src, ~)
             obj.PlotLock = logical(src.Value);
-            if src.Value
-                src.Icon = RangeSlider.makeLockIcon_(14);
-            else
-                src.Icon = RangeSlider.makeOpenLockIcon_(14);
-            end
+            src.Icon = matVisLockIcon(src.Value);
             notify(obj, 'PlotLockToggled');
         end
 
@@ -801,35 +793,6 @@ classdef RangeSlider < matlab.ui.componentcontainer.ComponentContainer
 
     % ==================================================================
     methods (Static, Access = private)
-
-        function img = makeLockIcon_(sz)
-            % Closed padlock icon: 3-channel RGB. Body + closed U-shackle.
-            bg = 0.94;  fg = 0.18;
-            img = bg * ones(sz, sz, 3);
-            bL = round(sz * 0.18);  bR = sz + 1 - round(sz * 0.18);
-            bT = round(sz * 0.52);  bB = min(sz, round(sz * 0.93));
-            img(bT:bB, bL:bR, :) = fg;
-            sL = round(sz * 0.32);  sR = sz + 1 - round(sz * 0.32);
-            sT = max(1, round(sz * 0.10));  sw = max(2, round(sz * 0.13));
-            img(sT:bT,      sL:sL+sw-1, :) = fg;   % left wall
-            img(sT:bT,      sR-sw+1:sR, :) = fg;   % right wall
-            img(sT:sT+sw-1, sL:sR,      :) = fg;   % top bar
-        end
-
-        function img = makeOpenLockIcon_(sz)
-            % Open padlock icon: body + shackle with right side raised (open).
-            bg = 0.94;  fg = 0.18;
-            img = bg * ones(sz, sz, 3);
-            bL = round(sz * 0.18);  bR = sz + 1 - round(sz * 0.18);
-            bT = round(sz * 0.52);  bB = min(sz, round(sz * 0.93));
-            img(bT:bB, bL:bR, :) = fg;
-            sL = round(sz * 0.32);  sR = sz + 1 - round(sz * 0.32);
-            sT = max(1, round(sz * 0.10));  sw = max(2, round(sz * 0.13));
-            img(sT:bT,      sL:sL+sw-1, :) = fg;   % left wall (connects to body)
-            img(sT:sT+sw-1, sL:sR,      :) = fg;   % top bar
-            openEnd = max(sT+sw, round(sz * 0.32));
-            img(sT:openEnd, sR-sw+1:sR,  :) = fg;  % right wall (short — open)
-        end
 
         function hoverDispatch_(fig, ~)
             % Cursor-only hover handler. Active when no drag is in progress.

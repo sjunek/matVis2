@@ -463,8 +463,8 @@ dropDataset = uidropdown(dsSubGrid, ...
 dropDataset.Layout.Column = 1;
 
 btnLock = uibutton(dsSubGrid, 'state', ...
-    'Text',    char(128274), ...
-    'FontSize', 14, ...
+    'Text',    '', ...
+    'Icon',    matVisLockIcon(model.ContrastLocked), ...
     'Value',   model.ContrastLocked, ...
     'Tooltip', 'Linked (locked): contrast scaled linearly across datasets. Click to toggle independent.', ...
     'Enable',  nDatasets > 1, ...
@@ -2443,7 +2443,7 @@ fprintf('\n');
 
     function onLockButtonChanged(src)
         model.ContrastLocked = logical(src.Value);
-        src.Text = lockIcon(src.Value);
+        src.Icon = matVisLockIcon(src.Value);
         doRender();
     end
 
@@ -4202,7 +4202,7 @@ fprintf('\n');
         if isfield(config, 'contrastLocked')
             model.ContrastLocked = logical(config.contrastLocked);
             btnLock.Value = model.ContrastLocked;
-            btnLock.Text  = lockIcon(model.ContrastLocked);
+            btnLock.Icon  = matVisLockIcon(model.ContrastLocked);
         end
 
         if isfield(config, 'datasetContrastMins') && ...
@@ -4628,15 +4628,6 @@ end % MatVisMainWindow
 % =========================================================================
 %  Module-level helper functions
 % =========================================================================
-
-function s = lockIcon(locked)
-% Returns lock emoji: closed (linked) or open (independent).
-if locked
-    s = char(128274);   % 🔒
-else
-    s = char(128275);   % 🔓
-end
-end
 
 function label = getDimLabel(model, dimIdx)
     if ~isempty(model.DimNames) && numel(model.DimNames) >= dimIdx

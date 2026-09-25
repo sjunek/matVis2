@@ -104,7 +104,7 @@ cProjD = subcell_(grid, 2, 2, {LBL, '1x', BTN_MINI});
 uilabel(cProjD, 'Text', 'Dim:', 'HorizontalAlignment', 'right', 'FontSize', FONT_LBL);
 dropProjDim = uidropdown(cProjD, 'Tooltip', 'Dimension to project along', 'FontSize', FONT);
 btnProjLock = uibutton(cProjD, 'state', ...
-    'Text', '', 'Icon', dimSelOpenLockIcon_(14), 'Value', false, ...
+    'Text', '', 'Icon', matVisLockIcon(false), 'Value', false, ...
     'Tooltip', sprintf(['Lock projection to zoom range of selected dimension.\n' ...
         'When active, only data within the zoom interval is projected.\n' ...
         'Can be set before switching the projection on, so a projection over ' ...
@@ -169,7 +169,7 @@ btnRGBMax = uibutton(cMax, 'state', 'Text', 'Max Stretch', 'FontSize', 8, ...
 
 cRGBLock = subcell_(grid, 3, 4, {'1x', BTN_LOCK});
 uilabel(cRGBLock, 'Text', '', 'FontSize', FONT_LBL);   % spacer (right-aligns lock)
-btnRGBLock = uibutton(cRGBLock, 'state', 'Text', '', 'Icon', dimSelOpenLockIcon_(14), ...
+btnRGBLock = uibutton(cRGBLock, 'state', 'Text', '', 'Icon', matVisLockIcon(false), ...
     'Value', logical(model.RGBStretchZoomLock), 'Enable', 'off', ...
     'Tooltip', sprintf(['Lock RGB stretch to the zoom interval of the RGB dimension.\n' ...
         'When active, only indices within the zoom range are colour-coded.']));
@@ -384,11 +384,7 @@ end
 
 function onRGBStretchLockToggle(btn, model, renderFcn)
 model.RGBStretchZoomLock = logical(btn.Value);
-if btn.Value
-    btn.Icon = dimSelLockIcon_(14);
-else
-    btn.Icon = dimSelOpenLockIcon_(14);
-end
+btn.Icon = matVisLockIcon(btn.Value);
 renderFcn();
 end
 
@@ -430,11 +426,7 @@ end
 
 function onProjLockChanged(btn, model, renderFcn)
 model.ProjZoomLock = logical(btn.Value);
-if btn.Value
-    btn.Icon = dimSelLockIcon_(14);
-else
-    btn.Icon = dimSelOpenLockIcon_(14);
-end
+btn.Icon = matVisLockIcon(btn.Value);
 renderFcn();
 end
 
@@ -501,35 +493,3 @@ g.Padding       = [0 0 0 0];
 g.ColumnSpacing = 1;        % tight gap between label and control
 end
 
-% ---------------------------------------------------------------------------
-
-function img = dimSelLockIcon_(sz)
-% Closed padlock icon: body + closed U-shackle.
-bg = 0.94;  fg = 0.18;
-img = bg * ones(sz, sz, 3);
-bL = round(sz * 0.18);  bR = sz + 1 - round(sz * 0.18);
-bT = round(sz * 0.52);  bB = min(sz, round(sz * 0.93));
-img(bT:bB, bL:bR, :) = fg;
-sL = round(sz * 0.32);  sR = sz + 1 - round(sz * 0.32);
-sT = max(1, round(sz * 0.10));  sw = max(2, round(sz * 0.13));
-img(sT:bT,      sL:sL+sw-1, :) = fg;
-img(sT:bT,      sR-sw+1:sR, :) = fg;
-img(sT:sT+sw-1, sL:sR,      :) = fg;
-end
-
-% ---------------------------------------------------------------------------
-
-function img = dimSelOpenLockIcon_(sz)
-% Open padlock icon: body + shackle with right side raised.
-bg = 0.94;  fg = 0.18;
-img = bg * ones(sz, sz, 3);
-bL = round(sz * 0.18);  bR = sz + 1 - round(sz * 0.18);
-bT = round(sz * 0.52);  bB = min(sz, round(sz * 0.93));
-img(bT:bB, bL:bR, :) = fg;
-sL = round(sz * 0.32);  sR = sz + 1 - round(sz * 0.32);
-sT = max(1, round(sz * 0.10));  sw = max(2, round(sz * 0.13));
-img(sT:bT,      sL:sL+sw-1, :) = fg;   % left wall (connects to body)
-img(sT:sT+sw-1, sL:sR,      :) = fg;   % top bar
-openEnd = max(sT+sw, round(sz * 0.32));
-img(sT:openEnd, sR-sw+1:sR,  :) = fg;  % right wall (short — open)
-end
