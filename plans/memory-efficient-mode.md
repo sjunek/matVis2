@@ -283,12 +283,17 @@ same 23 pre-existing failures as the baseline.
   than unfinished: one window cannot hold one exact dataset and one sampled
   one under a single "approx." label.  What was wrong was the error -- an
   unreadable file produced a Java stack trace, and now produces a sentence.
-- **Level-aware display (M3) is stubbed, not solved.**  A file whose plane is
-  too large to render whole is opened at the finest level that fits 64 MB --
-  the 53865x29727 stitched image is shown as 5985x3303, with `DimScale`
-  rescaled so coordinates and scale bars stay right, and a warning saying so.
-  Showing it at full resolution needs the display to request a decimated slice
-  sized to the axes.
+- **Level-aware display** *(done -- see M3 below)*.  This bullet described the
+  interim stub, where the file was clamped to one level at open.  It was
+  superseded and is kept only so the earlier text is not read as current:
+  the model now holds full resolution and the *request* chooses the level.
+  Measured on the stitched .czi (29727x53865x3, 1601 MPix):
+
+  | request | returned | time |
+  |---|---|---|
+  | whole image at the 4 MPix display budget | 1416x2565 | 422 ms |
+  | 512x512 zoom region | 512x512, full resolution | 115 ms |
+  | stride-64 over the whole image | 465x842 | 9 ms |
 
 ### M2 — original scope
 
