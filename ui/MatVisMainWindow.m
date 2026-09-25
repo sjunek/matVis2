@@ -51,6 +51,11 @@ dispPxCache = struct();
 % *setting*, not the step, so scrubbing after it does not nag.
 expensiveWarned = {};
 
+% True while the "this reads a lot" question is on screen.  That dialog is
+% modal and blocks inside a render, so renders raised meanwhile -- a playback
+% timer, a resize -- must stand down rather than re-enter.
+askingExpensive = false;
+
 %% Figure setup
 % Window title shows the dataset name(s). The live playback framerate is shown
 % in a label next to the play-speed control (see updateFrameRateDisplay).
@@ -97,10 +102,11 @@ bottomH        = rowH_bottom;
 % dataset has nothing to report and should not lose the space.
 statusH = 24 * double(model.StatsApproximate);
 
-rowHeights = {posPanelH, imagePanelH, contrastPanelH, bottomH};
-if statusH > 0
-    rowHeights{end+1} = statusH;
-end
+% The row is always there, even at height zero.  Data can be swapped for a
+% file that has to be read on demand long after the window was built, and a
+% row cannot be added to a live grid -- so the strip is created once and its
+% height is what decides whether it is seen.
+rowHeights = {posPanelH, imagePanelH, contrastPanelH, bottomH, statusH};
 
 % The strip needs its own height AND the spacing above it; without the second
 % term the grid asks for more than the figure has, and the last row -- the
@@ -429,13 +435,7 @@ rbManual.Value = strcmp(model.ContrastMode, 'Manual');
 % Global is the one mode whose bounds are sampled rather than measured when
 % the data is read on demand; Image, Zoom and Manual all work from arrays
 % that are fully in hand, so they stay exact and say nothing.
-approxTip = '';
-if model.StatsApproximate
-    approxTip = ['Bounds come from a reduced-resolution overview, not every ' ...
-                 'pixel, because the data is read from disk as you navigate. ' ...
-                 'Re-open with matVis2(file, ''LoadMode'', ''full'') for exact values.'];
-    rbGlobal.Tooltip = approxTip;
-end
+rbGlobal.Tooltip = approxTipText();
 
 % Row 3: Dataset selector + contrast lock  (row 2 = 8px spacer)
 dsPanel = uipanel(contrastGrid, 'BorderType', 'none', 'BackgroundColor', fig.Color);
@@ -516,12 +516,7 @@ edtPercHigh.Enable = ~strcmp(model.ContrastMode, 'Manual');
 % Every control above reads a whole-dataset number: the histogram range is
 % the data range, and the percentile cutoffs are taken from the whole-dataset
 % histogram.  All of them are sampled in memory-efficient mode.
-if model.StatsApproximate
-    edtHistMin.Tooltip  = approxTip;
-    edtHistMax.Tooltip  = approxTip;
-    edtPercLow.Tooltip  = ['Lower percentile cutoff (0-1). Ignored in Manual mode.  ' approxTip];
-    edtPercHigh.Tooltip = ['Upper percentile cutoff (0-1). Ignored in Manual mode.  ' approxTip];
-end
+applyApproxMarks();
 
 % Histogram-during-playback toggle (off = faster playback, as in original matVis)
 btnPlayHist = uibutton(contrastGrid, 'state', ...
@@ -769,7 +764,10 @@ setappdata(fig, 'OverlayVisible', true);
 lblStatus   = [];
 btnLoadFull   = [];
 btnCancelRead = [];
-if statusH > 0
+% What the status strip says when nothing is being read.  It gains a reason
+% when a full load is impossible, and must survive every progress report.
+statusIdleText = 'Memory-efficient mode';
+if true
     statusGrid = uigridlayout(grid, [1, 3]);
     statusGrid.Layout.Row    = 5;
     statusGrid.Layout.Column = 1;
@@ -778,11 +776,9 @@ if statusH > 0
     statusGrid.Padding       = [2 0 0 0];
     statusGrid.ColumnSpacing = 6;
 
-    lblStatus = uilabel(statusGrid, 'Text', 'Memory-efficient mode', ...
-        'FontSize', 11, 'FontColor', [0.72 0.45 0.10], ...
-        'Tooltip', ['Image planes are read from the file as you navigate. ' ...
-                    'Whole-dataset numbers (the value range, the global ' ...
-                    'histogram) come from a reduced-resolution overview.']);
+    [statusIdleText, statusTip] = describeReadMode();
+    lblStatus = uilabel(statusGrid, 'Text', statusIdleText, ...
+        'FontSize', 11, 'FontColor', [0.72 0.45 0.10], 'Tooltip', statusTip);
     lblStatus.Layout.Row = 1;  lblStatus.Layout.Column = 1;
 
     % Shown only while a run of plane reads is in flight.  It works because
@@ -797,24 +793,13 @@ if statusH > 0
     btnLoadFull = uibutton(statusGrid, 'Text', 'Load full dataset', 'FontSize', 10, ...
         'ButtonPushedFcn', @(~,~) onLoadFullDataset());
     btnLoadFull.Layout.Row = 1;  btnLoadFull.Layout.Column = 3;
-    if ~allDatasetsLoadable()
-        btnLoadFull.Enable  = 'off';
-        btnLoadFull.Tooltip = ['This file cannot be held in one array at all ' ...
-            '(a single plane exceeds the 2 GB limit of the reader), so there ' ...
-            'is nothing to load it into.'];
-    else
-        btnLoadFull.Tooltip = ['Read the whole dataset into memory. Everything ' ...
-            'becomes exact and instant to navigate, at the cost of the wait ' ...
-            'and the memory.'];
-    end
+    applyLoadFullState();
 
     % Every lazy dataset reports what it is reading, so a projection or an
-    % overview build shows progress instead of an unexplained pause.
-    for dsP = 1:model.NumDatasets
-        if isa(model.Datasets{dsP}, 'MatVisLazySource')
-            model.Datasets{dsP}.ProgressFcn = @onSourceProgress;
-        end
-    end
+    % overview build shows progress instead of an unexplained pause.  The
+    % strip is hidden outright when nothing is read on demand.
+    statusGrid.Visible = onOffStr_(statusH > 0);
+    wireSourceProgress();
 end
 
 mvTiming_.labels{end+1} = 'bottom controls created'; mvTiming_.times(end+1) = toc(mvT0_);
@@ -891,7 +876,9 @@ mw.fctHandles.loadNewData = @loadNewData;
 
 % A menu bar costs no room in the layout, which the bottom button grid has
 % none of -- and File > Open is where this belongs anyway.
-mData = uimenu(fig, 'Text', '&Data');
+% uimenu has no width property, so the label is the only lever: two spaces
+% either side make the hit area about half again as wide as "Data" alone.
+mData = uimenu(fig, 'Text', '  &Data  ');
 uimenu(mData, 'Text', '&Open data...', 'Accelerator', 'O', ...
     'MenuSelectedFcn', @(~,~) onOpenData());
 
@@ -1043,6 +1030,11 @@ fprintf('\n');
     %  Main render loop
     % ------------------------------------------------------------------
     function doRender()
+        if askingExpensive
+            % A modal question about this very render is on screen; drawing
+            % again underneath it would re-enter the read it is asking about.
+            return;
+        end
         xd       = model.XDim;
         yd       = model.YDim;
         xr       = model.ZoomRange(xd, :);
@@ -1234,21 +1226,29 @@ fprintf('\n');
         end
         msg = sprintf(['%s.\n\nEvery step reads them from the file -- ' ...
             'roughly %s each time, and matVis cannot respond while it does. ' ...
-            'The status strip shows progress.\n\nNarrowing the zoom on that ' ...
-            'dimension reads fewer planes; "Load full dataset" removes the ' ...
-            'wait altogether.'], what, secondsText_(secs));
+            'The status strip shows progress, and a Cancel button appears ' ...
+            'there while it reads.\n\nNarrowing the zoom on that dimension ' ...
+            'reads fewer planes.'], what, secondsText_(secs));
         setappdata(fig, 'MatVisLastReadWarning', msg);
 
-        % uialert refuses a hidden figure, and a diagnostic must never be the
-        % thing that breaks the render it was diagnosing.
-        if strcmp(fig.Visible, 'on')
-            try
-                uialert(fig, msg, 'This view reads a lot of data', ...
-                    'Icon', 'warning');
-                drawnow;      % paint it before the read blocks the app
-            catch
-            end
+        % The question is asked in a window of its own, so it is not clipped
+        % to this one.  That window is modal and blocks, which means a
+        % playback timer could otherwise fire a second render underneath it;
+        % askingExpensive makes doRender stand down until the answer is in.
+        askingExpensive = true;
+        restore = onCleanup(@() clearAskingExpensive());
+        go = MatVisConfirmDlg('This view reads a lot of data', msg, ...
+            'Go ahead', 'Cancel');
+        if ~go
+            % Nothing has been read yet, so this is the cheap place to stop.
+            % doRender turns it into the same retreat a mid-read cancel does.
+            error('MatVisLazySource:cancelled', ...
+                'Cancelled before the read started.');
         end
+    end
+
+    function clearAskingExpensive()
+        askingExpensive = false;
     end
 
     function s = computeDatasetDisplay(ds, F)
@@ -1445,11 +1445,7 @@ fprintf('\n');
         figH      = posPanelH + imgPanelH + contrastPanelH + rowH_bottomBudget ...
                   + 3*rowH_spacing + 12 + actualChromeH ...
                   + (statusH + rowH_spacing) * double(statusH > 0);
-        rh = {posPanelH, imgPanelH, contrastPanelH, bottomH};
-        if statusH > 0
-            rh{end+1} = statusH;
-        end
-        grid.RowHeight    = rh;
+        grid.RowHeight    = {posPanelH, imgPanelH, contrastPanelH, bottomH, statusH};
         fig.Position(3:4) = [figWidth, figH];
     end
 
@@ -1660,6 +1656,9 @@ fprintf('\n');
         setappdata(fig, 'GlobalHistKey',    []);
         setappdata(fig, 'GlobalHistCounts', []);
         model.ClearSliceCache();
+
+        % How the new data is read may be nothing like how the old data was.
+        refreshMemoryStatus();
 
         doRender();
     end
@@ -3783,7 +3782,7 @@ fprintf('\n');
         % the label would not repaint until the read it describes is over.
         if isempty(lblStatus) || ~isvalid(lblStatus), return; end
         if isempty(done)
-            lblStatus.Text = 'Memory-efficient mode';
+            lblStatus.Text = statusIdleText;
             showCancelRead(false);
         else
             lblStatus.Text = sprintf('Loading... %d/%d planes', done, total);
@@ -3834,6 +3833,12 @@ fprintf('\n');
             what = 'projection';
             trySet(@() set(dimSelector.dropProjFun, 'Value', 'none'));
         end
+        % Switching the projection off frees the dimension it occupied, which
+        % the RGB dropdown may now offer again.  Without this refresh the RGB
+        % selector stays disabled after a cancel although nothing is using
+        % the dimension any more.
+        trySet(@() dimSelector.Update());
+
         showCancelRead(false);
         if ~isempty(lblStatus) && isvalid(lblStatus)
             if isempty(what)
@@ -3862,6 +3867,135 @@ fprintf('\n');
         sel = MatVisLoadPrefDlg(getpref('matVis2', 'LoadPolicy', 'ask'));
         if isempty(sel), return; end
         setpref('matVis2', 'LoadPolicy', sel);
+    end
+
+    function wireSourceProgress()
+        % Sources arriving with replaced data have no callback of their own,
+        % so a projection over them would read in silence and the Cancel
+        % button would have no moment in which to be pressed.
+        for kW = 1:model.NumDatasets
+            if isa(model.Datasets{kW}, 'MatVisLazySource')
+                model.Datasets{kW}.ProgressFcn = @onSourceProgress;
+            end
+        end
+    end
+
+    function applyLoadFullState()
+        if ~model.StatsApproximate
+            btnLoadFull.Enable  = 'off';
+            btnLoadFull.Tooltip = 'The whole dataset is already in memory.';
+        elseif ~allDatasetsLoadable()
+            btnLoadFull.Enable  = 'off';
+            btnLoadFull.Tooltip = fullLoadImpossibleText();
+        else
+            btnLoadFull.Enable  = 'on';
+            btnLoadFull.Tooltip = ['Read the whole dataset into memory. ' ...
+                'Everything becomes exact and instant to navigate, at the ' ...
+                'cost of the wait and the memory.'];
+        end
+    end
+
+    function refreshMemoryStatus()
+        % Replacing the data can change how it is read -- an array swapped
+        % for a file served on demand, or the other way round -- so every
+        % part of the window that describes the reading has to follow: the
+        % strip and its height, the progress callbacks, the full-load button
+        % and the marks that say which numbers are estimates.
+        wireSourceProgress();
+        statusH = 24 * double(model.StatsApproximate);
+        [statusIdleText, statusTip] = describeReadMode();
+        lblStatus.Text      = statusIdleText;
+        lblStatus.Tooltip   = statusTip;
+        lblStatus.FontColor = [0.72 0.45 0.10];
+        applyLoadFullState();
+        showCancelRead(false);
+        statusGrid.Visible = onOffStr_(statusH > 0);
+        applyPanelHeights();
+        applyApproxMarks();
+        refreshTitles();
+    end
+
+    function applyApproxMarks()
+        % The tooltips that say a number came from a sample rather than from
+        % every pixel.  Recomputed rather than set once, because the answer
+        % changes when the data does.
+        tipA = approxTipText();
+        rbGlobal.Tooltip    = tipA;
+        edtHistMin.Tooltip  = tipA;
+        edtHistMax.Tooltip  = tipA;
+        edtPercLow.Tooltip  = ['Lower percentile cutoff (0-1). Ignored in Manual mode.  ' tipA];
+        edtPercHigh.Tooltip = ['Upper percentile cutoff (0-1). Ignored in Manual mode.  ' tipA];
+    end
+
+    function s = approxTipText()
+        if model.StatsApproximate
+            s = ['Bounds come from a reduced-resolution overview, not every ' ...
+                 'pixel, because the data is read from disk as you navigate. ' ...
+                 'Re-open with matVis2(file, ''LoadMode'', ''full'') for exact values.'];
+        else
+            s = '';
+        end
+    end
+
+    function [lbl, tip] = describeReadMode()
+        % The strip names how the data is actually being read, because that
+        % is what the user needs to know: a file with its own pyramid is
+        % being served from it, which is a different thing from streaming
+        % planes one at a time.  Everything else goes in the tooltip.
+        lazy = {};
+        for kR = 1:model.NumDatasets
+            if isa(model.Datasets{kR}, 'MatVisLazySource')
+                lazy{end+1} = model.Datasets{kR}; %#ok<AGROW>
+            end
+        end
+        if isempty(lazy)
+            lbl = 'Memory-efficient mode';  tip = '';  return;
+        end
+
+        hasLevels = cellfun(@(s) isfield(s.Capabilities, 'HasFileLevels') && ...
+                                 s.Capabilities.HasFileLevels, lazy);
+        if all(hasLevels)
+            lbl  = 'Reading from image pyramid';
+            lv   = lazy{1}.LevelSizes;
+            % Only the in-plane dimensions: the levels differ in resolution,
+            % not in how many planes they hold, so the rest is noise here.
+            tip  = sprintf(['This file carries its own resolution pyramid ' ...
+                '(%d levels, %s down to %s), and matVis reads whichever ' ...
+                'level matches the window -- so panning and zooming never ' ...
+                'touch the full-resolution pixels.'], ...
+                numel(lv), dimsText_(lv{1}(1:2)), dimsText_(lv{end}(1:2)));
+        else
+            lbl = 'Memory-efficient mode';
+            tip = ['Image planes are read from the file as you navigate, ' ...
+                   'rather than all of them being loaded up front.'];
+        end
+
+        tip = [tip ' Whole-dataset numbers (the value range, the global ' ...
+               'histogram) come from a reduced-resolution overview, so they ' ...
+               'are estimates.'];
+        if ~allDatasetsLoadable()
+            tip = [tip ' ' fullLoadImpossibleText()];
+        end
+    end
+
+    function s = fullLoadImpossibleText()
+        % Name the figures rather than saying "too large": the limit is the
+        % reader's 2 GB array ceiling, not the machine's memory, and that
+        % distinction decides whether buying more RAM would help.  (It would
+        % not.)
+        s = 'It cannot be loaded into memory in full.';
+        for kF = 1:model.NumDatasets
+            src = model.Datasets{kF};
+            if ~isa(src, 'MatVisLazySource') || src.FullLoadFeasible, continue; end
+            sz  = src.Size;
+            bpe = MatVisDataSource.bytesPerElement(src.ClassName);
+            s = sprintf(['It cannot be loaded in full at all: one plane alone ' ...
+                'is %s, and the reader cannot return more than 2 GB in a ' ...
+                'single array (the whole dataset is %s). More memory would ' ...
+                'not help.'], bytesText_(prod(sz(1:2)) * bpe), ...
+                bytesText_(prod(sz) * bpe));
+            return;
+        end
     end
 
     function tf = allDatasetsLoadable()
@@ -3920,15 +4054,18 @@ fprintf('\n');
         edtHistMin.Value  = model.DataMin;
         edtHistMax.Value  = model.DataMax;
 
+        % The strip stays, in green: the user pressed a button and deserves
+        % to see that it worked.  refreshMemoryStatus would hide it instead,
+        % so only the parts that are now wrong are corrected here.
         if ~isempty(lblStatus) && isvalid(lblStatus)
-            lblStatus.Text      = 'Fully loaded';
+            statusIdleText      = 'Fully loaded';
+            lblStatus.Text      = statusIdleText;
             lblStatus.Tooltip   = 'The whole dataset is in memory; all values are exact.';
             lblStatus.FontColor = [0.30 0.50 0.25];
         end
-        if ~isempty(btnLoadFull) && isvalid(btnLoadFull)
-            btnLoadFull.Enable = 'off';
-        end
-        fig.Name = strrep(fig.Name, '  [memory-efficient]', '');
+        applyLoadFullState();
+        applyApproxMarks();      % the numbers are exact now
+        refreshTitles();         % drops the [memory-efficient] suffix
         doRender();
     end
 
@@ -4547,6 +4684,23 @@ function s = MatVisMainWindow_ExpensiveReadSeconds()
 % projection (a 30-plane stack on a CZI measures about 1.3 s) and below the
 % point where a frozen window looks broken rather than busy.
 s = 3;
+end
+
+function s = dimsText_(sz)
+s = strjoin(arrayfun(@(d) sprintf('%d', d), sz, 'UniformOutput', false), 'x');
+end
+
+function s = bytesText_(n)
+u = {'B', 'kB', 'MB', 'GB', 'TB'};
+k = 1;
+while n >= 1024 && k < numel(u)
+    n = n / 1024;  k = k + 1;
+end
+if n >= 100 || k == 1
+    s = sprintf('%.0f %s', n, u{k});
+else
+    s = sprintf('%.1f %s', n, u{k});
+end
 end
 
 function s = secondsText_(n)
