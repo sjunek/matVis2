@@ -139,5 +139,41 @@ classdef parseArgsTest < matlab.unittest.TestCase
             tc.verifyEmpty(args.alphaMap);
         end
 
+        function testSingletonDimsSqueezed(tc)
+            d = rand(4, 1, 3, 1, 5);
+            a = rand(4, 1, 3, 1, 5);
+            args = parseArgs(d, 'dimNames', {'Y','A','X','B','T'}, ...
+                'dimUnits', {'um','','um','','s'}, ...
+                'dimScale', {0.5, 1, 0.5, 1, 2}, 'alphaMap', a, ...
+                'startPar', {'xySel', [3 1], 'currPos', [2 1 2 1 4], ...
+                             'zoomVal', [1 4; 1 1; 1 3; 1 1; 2 5]});
+            tc.verifyEqual(size(args.data{1}), [4 3 5]);
+            tc.verifyEqual(args.data{1}(:), d(:));
+            tc.verifyEqual(args.dimNames, {'Y','X','T'});
+            tc.verifyEqual(args.dimUnits, {'um','um','s'});
+            tc.verifyEqual(args.dimScale{3}, (0:4) * 2);
+            tc.verifyEqual(size(args.alphaMap{1}), [4 3 5]);
+            tc.verifyEqual(args.startPar.xySel, [2 1]);
+            tc.verifyEqual(args.startPar.currPos, [2 2 4]);
+            tc.verifyEqual(args.startPar.zoomVal, [1 4; 1 3; 2 5]);
+        end
+
+        function testSingletonSqueezeAcceptsSqueezedNames(tc)
+            args = parseArgs(rand(4, 4, 1, 5), 'dimNames', {'Y','X','T'});
+            tc.verifyEqual(args.dimNames, {'Y','X','T'});
+        end
+
+        function testSingletonSqueezeKeepsTwoDims(tc)
+            args = parseArgs(rand(1, 1, 6));
+            tc.verifyEqual(size(args.data{1}), [1 6]);
+            args = parseArgs(rand(1, 6));
+            tc.verifyEqual(size(args.data{1}), [1 6]);
+        end
+
+        function testSingletonXySelDropped(tc)
+            args = parseArgs(rand(4, 1, 5), 'startPar', {'xySel', [2 1]});
+            tc.verifyFalse(isfield(args.startPar, 'xySel'));
+        end
+
     end
 end

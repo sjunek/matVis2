@@ -63,6 +63,26 @@ for k = 2:numel(r.data)
     end
 end
 
+% Squeeze out singleton dimensions: a dimension of size 1 has nothing to
+% navigate, and the position panel cannot show a one-step slider.  Only
+% in-memory arrays are reshaped (free -- no copy); the file sources already
+% drop their singleton axes.  At least two dimensions are kept, so a lone
+% 1xN row stays an image.  Per-dimension arguments given for the original
+% dimensions are reduced to match.
+origSz = refSz;
+keep = squeezeKeep(refSz);
+if ~all(keep) && all(cellfun(@isnumeric, r.data))
+    refSz = origSz(keep);
+    for k = 1:numel(r.data)
+        r.data{k} = reshape(r.data{k}, refSz);
+    end
+    r.dimNames = dropDims(r.dimNames, keep);
+    r.dimUnits = dropDims(r.dimUnits, keep);
+    r.dimScale = dropDims(r.dimScale, keep);
+else
+    keep = true(1, numel(origSz));
+end
+
 n = numel(refSz);
 K = numel(r.data);
 
@@ -78,6 +98,9 @@ r.datasetNames = padCellStr(r.datasetNames, K, @(i) sprintf('Dataset %d', i));
 r.fileMetadata = padCell(r.fileMetadata, K, @(i) []);
 
 r.startPar = cellPairsToStruct(r.startPar);
+if ~all(keep)
+    r.startPar = remapStartPar(r.startPar, keep);
+end
 
 % Normalize alphaMap to a 1×K cell (one map per dataset).  A single
 % numeric map is shared across all datasets.  On size mismatch the maps
@@ -95,6 +118,9 @@ else
     end
     ok = numel(maps) == K;
     for k = 1:numel(maps)
+        if ~all(keep) && isnumeric(maps{k}) && isequal(size(maps{k}), origSz)
+            maps{k} = reshape(maps{k}, refSz);   % squeezed like the data
+        end
         ok = ok && isequal(dataSize(maps{k}), refSz);
     end
     if ok
@@ -132,6 +158,63 @@ function tf = isDataArg(x)
 % A dataset may arrive as a numeric array or as a MatVisDataSource that reads
 % it from a file on demand; both describe the same thing downstream.
 tf = (isnumeric(x) && ~isempty(x)) || isa(x, 'MatVisDataSource');
+end
+
+function keep = squeezeKeep(sz)
+% Logical mask of the dimensions to keep when squeezing size SZ: every
+% non-singleton one, topped up with the leading singletons to two in all.
+keep = sz ~= 1;
+if nnz(keep) < 2
+    keep(find(~keep, 2 - nnz(keep))) = true;
+end
+end
+
+function c = dropDims(c, keep)
+% Reduce a per-dimension list to the dimensions KEEP retains.  A full list
+% (one entry per original dimension) is masked; a list already of the
+% squeezed length is taken to describe the squeezed dimensions; a shorter
+% list covers the leading dimensions and is masked over those.
+if isstring(c)
+    c = cellstr(c);
+end
+m = numel(c);
+if m == numel(keep)
+    c = c(keep);
+elseif m ~= nnz(keep) && m < numel(keep)
+    c = c(keep(1:m));
+end
+end
+
+function sp = remapStartPar(sp, keep)
+% Translate the dimension-indexed startPar fields from the original to the
+% squeezed dimension numbering.  An xySel naming a dropped dimension is
+% discarded, leaving the default image dimensions.
+newIdx = cumsum(keep);
+n = numel(keep);
+if isfield(sp, 'xySel')
+    v = sp.xySel;
+    if isstruct(v)
+        for f = intersect(fieldnames(v)', {'x', 'y'})
+            d = v.(f{1});
+            if isscalar(d) && d >= 1 && d <= n && keep(d)
+                v.(f{1}) = newIdx(d);
+            else
+                v = rmfield(v, f{1});
+            end
+        end
+        sp.xySel = v;
+    elseif all(v(:) >= 1 & v(:) <= n & v(:) == round(v(:))) && all(keep(v(:)))
+        sp.xySel = newIdx(v);
+    else
+        sp = rmfield(sp, 'xySel');
+    end
+end
+if isfield(sp, 'currPos') && numel(sp.currPos) == n
+    sp.currPos = sp.currPos(keep);
+end
+if isfield(sp, 'zoomVal') && size(sp.zoomVal, 1) == n
+    sp.zoomVal = sp.zoomVal(keep, :);
+end
 end
 
 function sz = dataSize(x)
