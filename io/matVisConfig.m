@@ -148,8 +148,8 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
         % the very same hardware). The config file is shared by hostname, not
         % MATLAB version, so a layout saved under one release can land on
         % completely wrong coordinates when restored under another. Saving
-        % this lets onLoadConfig detect that mismatch and fall back to a
-        % fresh layout instead of misapplying stale, incompatible coordinates.
+        % this lets onLoadConfig carry each window over to the same monitor
+        % in the current layout (matVisRemapWindowPos).
         monitorPositions = get(0, 'MonitorPositions');
 
         saveVars = { ...
