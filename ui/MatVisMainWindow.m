@@ -2566,7 +2566,7 @@ fprintf('\n');
     end
 
     function onPlotSetXLimits(~, ~)
-        answer = settingsDlg({'X Min:', 'X Max:'}, 'Set Plot X-axis Limits', 1, ...
+        answer = MatVisInputDlg({'X Min:', 'X Max:'}, 'Set Plot X-axis Limits', ...
             {num2str(plotFixXLimits(1)), num2str(plotFixXLimits(2))});
         if isempty(answer), return; end
         xmin = str2double(answer{1});
@@ -2581,7 +2581,7 @@ fprintf('\n');
     end
 
     function onPlotSetYLimits(~, ~)
-        answer = settingsDlg({'Y Min:', 'Y Max:'}, 'Set Plot Y-axis Limits', 1, ...
+        answer = MatVisInputDlg({'Y Min:', 'Y Max:'}, 'Set Plot Y-axis Limits', ...
             {num2str(plotFixYLimits(1)), num2str(plotFixYLimits(2))});
         if isempty(answer), return; end
         ymin = str2double(answer{1});
@@ -3370,14 +3370,6 @@ fprintf('\n');
         else
             handled = false;
         end
-    end
-
-    % inputdlg for those settings.  When the dialog closes Windows hands the
-    % focus to the MATLAB desktop rather than back to the uifigure, burying
-    % the matVis windows, so raise them again whatever the outcome.
-    function answer = settingsDlg(varargin)
-        answer = inputdlg(varargin{:});
-        raiseMatVisWindows();
     end
 
     % Write a default into a numeric field, clamped to its current Limits --
@@ -4563,7 +4555,7 @@ fprintf('\n');
     function onAspectSetRatio()
         % Right click: prompt for a custom [x y] ratio and switch to fixed.
         r      = model.AspectRatio;
-        answer = settingsDlg('Aspect ratio [x y]:', 'Set Aspect Ratio', 1, ...
+        answer = MatVisInputDlg('Aspect ratio [x y]:', 'Set Aspect Ratio', ...
             {sprintf('%g %g', r(1), r(2))});
         if isempty(answer), return; end
         v = str2num(answer{1}); %#ok<ST2NM>
@@ -4607,7 +4599,7 @@ fprintf('\n');
 
     function onWinScaleSet()
         % Right click: prompt for the scaling factor, then apply it.
-        answer = settingsDlg('Window scaling factor [%]:', 'Window Scale', 1, ...
+        answer = MatVisInputDlg('Window scaling factor [%]:', 'Window Scale', ...
             {num2str(round(model.WinScalePct))});
         if isempty(answer), return; end
         v = str2double(answer{1});

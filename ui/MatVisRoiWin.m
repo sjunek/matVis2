@@ -528,7 +528,7 @@ refreshUI();
     function onRename()
         sel = model.RoiSelection;
         if numel(sel) ~= 1, return; end
-        answer = inputdlg('ROI name:', 'Rename ROI', 1, {model.RoiList(sel).name});
+        answer = MatVisInputDlg('ROI name:', 'Rename ROI', {model.RoiList(sel).name});
         if isempty(answer) || isempty(strtrim(answer{1})), return; end
         model.RenameRoi(sel, strtrim(answer{1}));
     end

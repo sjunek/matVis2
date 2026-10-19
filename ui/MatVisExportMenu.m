@@ -175,8 +175,8 @@ dlg.Visible = 'on';
     end
 
     function onWorkspace()
-        answer = inputdlg('Workspace variable name:', 'Export to workspace', ...
-                          1, {defaultVarName});
+        answer = MatVisInputDlg('Workspace variable name:', 'Export to workspace', ...
+                                {defaultVarName});
         if isempty(answer), return; end
         baseName = strtrim(answer{1});
 

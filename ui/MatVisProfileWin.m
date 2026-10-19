@@ -490,7 +490,7 @@ refreshUI();
     function onRename()
         sel = model.ProfileSelection;
         if numel(sel) ~= 1, return; end
-        answer = inputdlg('Profile name:', 'Rename Profile', 1, ...
+        answer = MatVisInputDlg('Profile name:', 'Rename Profile', ...
             {model.ProfileList(sel).name});
         if isempty(answer) || isempty(strtrim(answer{1})), return; end
         model.RenameProfile(sel, strtrim(answer{1}));
