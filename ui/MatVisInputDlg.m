@@ -1,11 +1,18 @@
-function answer = MatVisInputDlg(prompt, titleText, defaults)
+function [answer, checked] = MatVisInputDlg(prompt, titleText, defaults, checkLabel, checkDefault, disableWith)
 %MatVisInputDlg  Ask for one or more text values in a window of its own.
 %
 %   answer = MatVisInputDlg(prompt, titleText, defaults)
+%   [answer, checked] = MatVisInputDlg(prompt, titleText, defaults, ...
+%                                      checkLabel, checkDefault, disableWith)
 %
 %   prompt and defaults are char or cellstr, one entry per field.  Returns a
 %   cellstr of the entered values, or {} for Cancel, Esc or closing the
 %   window -- the same contract as inputdlg.  Return accepts.
+%
+%   checkLabel (char or cellstr) adds one checkbox per entry below the
+%   fields, initially checkDefault (logical vector); checked is their state
+%   on OK, or checkDefault on Cancel.  While checkbox number disableWith is
+%   ticked, the text fields are disabled.
 %
 %   inputdlg builds a classic figure, and on Windows those are owned by the
 %   MATLAB desktop: closing one activates its owner, which pulls the desktop
@@ -18,19 +25,25 @@ prompt   = cellstr(prompt);
 if nargin < 3 || isempty(defaults), defaults = repmat({''}, size(prompt)); end
 defaults = cellstr(defaults);
 n        = numel(prompt);
+if nargin < 4 || isempty(checkLabel), checkLabel = {}; end
+checkLabel = cellstr(checkLabel);
+nCheck   = numel(checkLabel);
+if nargin < 5 || isempty(checkDefault), checkDefault = false(1, nCheck); end
+if nargin < 6, disableWith = 0; end
+checked  = logical(checkDefault(:)');
 
 answer = {};
 values = defaults(:)';     % live text, so Return sees uncommitted typing
 
 rowH = 22;
-W = 320;  H = 12 + n * (rowH + 8) + 30 + 12;
+W = 320 + 60 * (nCheck > 0);  H = 12 + (n + nCheck) * (rowH + 8) + 30 + 12;
 dlg = uifigure('Name', titleText, 'Resize', 'off', ...
     'Position', [100 100 W H], 'WindowStyle', 'modal');
 centerOn(dlg);
 cleanup = onCleanup(@() closeIfValid(dlg));
 
-g = uigridlayout(dlg, [n + 1, 3]);
-g.RowHeight   = [repmat({rowH}, 1, n), {30}];
+g = uigridlayout(dlg, [n + nCheck + 1, 3]);
+g.RowHeight   = [repmat({rowH}, 1, n + nCheck), {30}];
 g.ColumnWidth = {'fit', '1x', 90};
 g.Padding     = [12 12 12 12];
 g.RowSpacing  = 8;
@@ -46,8 +59,16 @@ for k = 1:n
     edits(k).Layout.Row = k;  edits(k).Layout.Column = [2 3];
 end
 
+cbs = gobjects(1, nCheck);
+for k = 1:nCheck
+    cbs(k) = uicheckbox(g, 'Text', checkLabel{k}, 'Value', checked(k), 'FontSize', 11, ...
+        'Tag', sprintf('mvInputCheck%d', k), 'ValueChangedFcn', @(~,~) syncEnable());
+    cbs(k).Layout.Row = n + k;  cbs(k).Layout.Column = [1 3];
+end
+syncEnable();
+
 btnRow = uigridlayout(g, [1, 3]);
-btnRow.Layout.Row = n + 1;  btnRow.Layout.Column = [1 3];
+btnRow.Layout.Row = n + nCheck + 1;  btnRow.Layout.Column = [1 3];
 btnRow.ColumnWidth   = {'1x', 90, 90};
 btnRow.RowHeight     = {'1x'};
 btnRow.Padding       = [0 0 0 0];
@@ -71,6 +92,12 @@ if isvalid(dlg), uiwait(dlg); end
         values{k} = char(v);
     end
 
+    function syncEnable()
+        if disableWith < 1 || disableWith > nCheck, return; end
+        if cbs(disableWith).Value, st = 'off'; else, st = 'on'; end
+        set(edits, 'Enable', st);
+    end
+
     function onKey(key)
         switch key
             case 'return', finish(true);
@@ -79,7 +106,10 @@ if isvalid(dlg), uiwait(dlg); end
     end
 
     function finish(accept)
-        if accept, answer = values; end
+        if accept
+            answer = values;
+            if nCheck > 0, checked = logical([cbs.Value]); end
+        end
         uiresume(dlg);
         closeIfValid(dlg);
     end

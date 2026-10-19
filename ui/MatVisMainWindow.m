@@ -209,6 +209,8 @@ plotFixX      = false;
 plotFixXLimits = [1, max(model.Size)];
 plotFixY      = false;
 plotFixYLimits = [0, 1];   % overwritten on first fix-Y activation
+plotContrastY = false;  % plot Y axis follows the image contrast gamma
+plotContrastLim = false; % fixed plot Y limits follow the contrast min/max
 
 % --- Play-speed control row (directly below the last slider) ----------------
 %  The columns mirror the RangeSlider column layout; label, speed field and
@@ -1094,7 +1096,13 @@ fprintf('\n');
                 vol3DWins{ds}.Update(s.cmin, s.cmax, s.gamma, s.chanRange);
             end
 
-            plotWins{ds}.Update(s.profiles);
+            % Channel-equalizing RGB modes report contrast as a fraction of
+            % each channel's range, which has no meaning in data units.
+            if isempty(s.chanRange)
+                plotWins{ds}.Update(s.profiles, [s.cmin, s.cmax, s.gamma]);
+            else
+                plotWins{ds}.Update(s.profiles, []);
+            end
         end
 
         % Histogram and contrast fields: active dataset only.
@@ -2555,7 +2563,7 @@ fprintf('\n');
             try
                 ax1 = plotWins{1}.AxesFor(1);
                 if ~isempty(ax1) && isvalid(ax1) && strcmp(ax1.Visible, 'on')
-                    plotFixYLimits = ax1.YLim;
+                    plotFixYLimits = plotWins{1}.DataYLim(1);   % data units
                 end
             catch
             end
@@ -2581,9 +2589,38 @@ fprintf('\n');
     end
 
     function onPlotSetYLimits(~, ~)
-        answer = MatVisInputDlg({'Y Min:', 'Y Max:'}, 'Set Plot Y-axis Limits', ...
-            {num2str(plotFixYLimits(1)), num2str(plotFixYLimits(2))});
+        % While the limits follow the contrast, offer its current min/max,
+        % so unticking that box keeps the scale where it is.
+        if plotContrastLim && numel(lastBoundsAds) == 2 && lastBoundsAds(2) > lastBoundsAds(1)
+            plotFixYLimits = lastBoundsAds;
+        end
+        defaults = {num2str(plotFixYLimits(1)), num2str(plotFixYLimits(2))};
+        [answer, chk] = MatVisInputDlg({'Y Min:', 'Y Max:'}, 'Set Plot Y-axis Limits', ...
+            defaults, {'Gamma-scaled y-axis (contrast gamma)', ...
+                       'Y limits from contrast min/max'}, ...
+            [plotContrastY, plotContrastLim], 2);
         if isempty(answer), return; end
+        chkChanged     = ~isequal(chk, [plotContrastY, plotContrastLim]);
+        plotContrastY   = chk(1);
+        plotContrastLim = chk(2);
+        for ds = 1:nDatasets
+            plotWins{ds}.SetContrastY(plotContrastY);
+            plotWins{ds}.SetContrastLim(plotContrastLim);
+        end
+        if plotContrastLim
+            plotFixY          = true;
+            btnPlotFixY.Value = true;
+            for ds = 1:nDatasets
+                plotWins{ds}.SetFixY(true);
+            end
+            doRender();
+            return;
+        end
+        if chkChanged
+            doRender();
+            % Only the checkboxes changed: leave the y scale free.
+            if ~plotFixY && isequal(answer(:)', defaults), return; end
+        end
         ymin = str2double(answer{1});
         ymax = str2double(answer{2});
         if ~isfinite(ymin) || ~isfinite(ymax) || ymin >= ymax, return; end

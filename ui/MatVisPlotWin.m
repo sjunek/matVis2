@@ -27,6 +27,15 @@ function pw = MatVisPlotWin(model, posChangeFcn, zoomChangeFcn, dsIdx)
 % pw.SetShowMarker(tf)        show/hide '.' markers on all profile lines
 % pw.SetFixX(tf, limits)      lock/unlock X-axis scale; limits=[xmin xmax] (optional)
 % pw.SetFixY(tf, limits)      lock/unlock Y-axis scale; limits=[ymin ymax] (optional)
+% pw.SetContrastY(tf)         scale the Y axis the way the image contrast maps
+%                             values (min/max/gamma passed to Update); takes
+%                             effect on the next Update
+% pw.SetContrastLim(tf)       while the Y scale is fixed, fix it to the
+%                             contrast min/max instead of the SetFixY limits
+% pw.DataYLim(ii)             Y limits of dim II's axes in data units
+%
+% pw.Update(profiles, cmap)   cmap = [cmin cmax gamma] of this dataset's image
+%                             mapping, or [] when it has none in data units
 
 if nargin < 2 || isempty(posChangeFcn),  posChangeFcn  = @(~,~)   []; end
 if nargin < 3 || isempty(zoomChangeFcn), zoomChangeFcn = @(~,~,~) []; end
@@ -49,6 +58,10 @@ fixXScale  = false;
 fixXLimits = [1, max(model.Size)];
 fixYScale  = false;
 fixYLimits = [0, 1];   % overwritten by SetFixY before first use
+contrastY   = false;   % Y axis follows the image contrast mapping
+contrastLim = false;   % fixed Y limits come from the contrast min/max
+contrastMap = [];      % [cmin cmax gamma] last passed to Update
+drawnMap    = [];      % mapping the lines are currently drawn with ([] = linear)
 
 %% ---- Drag interaction state --------------------------------------------
 dragActive  = false;
@@ -173,17 +186,22 @@ pw.UpdatePos      = @updatePositions;
 pw.SetShowMarker  = @setShowMarker;
 pw.SetFixX        = @setFixX;
 pw.SetFixY        = @setFixY;
+pw.SetContrastY   = @setContrastY;
+pw.SetContrastLim = @setContrastLim;
+pw.DataYLim       = @dataYLim;
 
 % =========================================================================
 %   NESTED FUNCTIONS
 % =========================================================================
 
     % -----------------------------------------------------------------
-    function updateProfiles(profiles)
+    function updateProfiles(profiles, cmap)
         if numel(profiles) ~= nDims
             error('MatVisPlotWin:profilesMismatch', ...
                 'profiles length (%d) must equal nDims (%d).', numel(profiles), nDims);
         end
+        if nargin >= 2, contrastMap = cmap; end
+        drawnMap = activeMap();
 
         visCount = 0;
         newRH    = cell(1, nDims);
@@ -249,10 +267,12 @@ pw.SetFixY        = @setFixY;
                 extraLines{jj} = extraLines{jj}(1:max(nTraces-1, 0));
 
                 allLines = [ln, extraLines{jj}];
+                tProf    = toAxis(prof, drawnMap);
                 for k = 1:nTraces
                     lk = allLines(k);
-                    lk.XData = xData;
-                    lk.YData = prof(:, k)';
+                    lk.XData    = xData;
+                    lk.YData    = tProf(:, k)';
+                    lk.UserData = prof(:, k)';   % data units, for export
                     if showMarker
                         if ~strcmp(lk.Marker, '.')
                             lk.Marker     = '.';
@@ -299,16 +319,17 @@ pw.SetFixY        = @setFixY;
 
                 % Y limits over all traces
                 if ~fixYScale
-                    ylo = min(prof(:));  yhi = max(prof(:));
+                    ylo = min(tProf(:));  yhi = max(tProf(:));
                     if isempty(ylo) || ~isfinite(ylo),  ylo = 0;  yhi = 1;  end
                     if ylo == yhi,  ylo = ylo - 1;  yhi = yhi + 1;  end
                     pad = 0.05 * (yhi - ylo);
                     ax.YLim     = [ylo - pad, yhi + pad];
                     ax.YLimMode = 'manual';
                 else
-                    ax.YLim     = fixYLimits;
+                    ax.YLim     = fixedAxisYLim();
                     ax.YLimMode = 'manual';
                 end
+                relabelYAxis(jj);
 
                 syncSelPatchY(jj);
             else
@@ -488,17 +509,118 @@ pw.SetFixY        = @setFixY;
         if fixYScale
             for jj = 1:nDims
                 if hasAxes(jj)
-                    axHandles{jj}.YLim     = fixYLimits;
+                    axHandles{jj}.YLim     = fixedAxisYLim();
                     axHandles{jj}.YLimMode = 'manual';
+                    relabelYAxis(jj);
                 end
             end
         else
             for jj = 1:nDims
                 if hasAxes(jj)
                     axHandles{jj}.YLimMode = 'auto';
+                    relabelYAxis(jj);
                 end
             end
         end
+    end
+
+    % -----------------------------------------------------------------
+    function setContrastY(tf)
+        contrastY = logical(tf);
+    end
+
+    % -----------------------------------------------------------------
+    function setContrastLim(tf)
+        contrastLim = logical(tf);
+    end
+
+    % -----------------------------------------------------------------
+    function yl = dataYLim(ii)
+        if ~hasAxes(ii), yl = []; return; end
+        yl = fromAxis(axHandles{ii}.YLim, drawnMap);
+    end
+
+    % -----------------------------------------------------------------
+    function m = activeMap()
+        % Contrast mapping to draw with, or [] for a plain linear axis.
+        m = [];
+        if contrastY && validContrastMap()
+            m = double(contrastMap(:)');
+        end
+    end
+
+    % -----------------------------------------------------------------
+    function tf = validContrastMap()
+        tf = numel(contrastMap) == 3 && all(isfinite(contrastMap)) && ...
+             contrastMap(2) > contrastMap(1) && contrastMap(3) > 0;
+    end
+
+    % -----------------------------------------------------------------
+    function yl = fixedAxisYLim()
+        lims = fixYLimits;
+        if contrastLim && validContrastMap()
+            lims = double(contrastMap(1:2));
+            lims = lims(:)';
+        end
+        yl = toAxis(lims, drawnMap);
+        if ~(yl(2) > yl(1)), yl = lims; end
+    end
+
+    % -----------------------------------------------------------------
+    function t = toAxis(y, m)
+        % Same mapping as the image: n = (y-cmin)/(cmax-cmin), then n^gamma.
+        % Values outside [cmin cmax] are not clipped; the power is applied
+        % to |n| with its sign kept, so the axis stays monotonic.
+        if isempty(m), t = y; return; end
+        n = (double(y) - m(1)) / (m(2) - m(1));
+        if m(3) == 1
+            t = n;
+        else
+            t = sign(n) .* abs(n) .^ m(3);
+        end
+    end
+
+    % -----------------------------------------------------------------
+    function y = fromAxis(t, m)
+        if isempty(m), y = t; return; end
+        if m(3) == 1
+            n = t;
+        else
+            n = sign(t) .* abs(t) .^ (1 / m(3));
+        end
+        y = m(1) + n * (m(2) - m(1));
+    end
+
+    % -----------------------------------------------------------------
+    function relabelYAxis(jj)
+        % On a contrast-scaled axis the lines are drawn in mapped units;
+        % place ticks evenly in those units and label them with the data
+        % value there, rounded to a step that suits the local spacing.
+        if ~hasAxes(jj), return; end
+        ax = axHandles{jj};
+        m  = drawnMap;
+        if isempty(m)
+            if ~strcmp(ax.YTickMode, 'auto'),      ax.YTickMode = 'auto';      end
+            if ~strcmp(ax.YTickLabelMode, 'auto'), ax.YTickLabelMode = 'auto'; end
+            if ~strcmp(ax.YLabel.String, 'Value'), ylabel(ax, 'Value');        end
+            return;
+        end
+        yl   = ax.YLim;
+        tPos = linspace(yl(1), yl(2), 7);
+        d    = fromAxis(tPos, m);
+        sp   = abs(gradient(d));
+        sp(~(sp > 0)) = max(abs(diff(fromAxis(yl, m))), 1) / 6;
+        q    = 10 .^ floor(log10(sp));
+        d    = round(d ./ q) .* q;
+        t    = toAxis(d, m);
+        keep = isfinite(t) & t >= yl(1) & t <= yl(2);
+        [t, iu] = unique(t(keep));
+        d = d(keep);  d = d(iu);
+        labels = arrayfun(@(v) sprintf('%.4g', v), d(:), 'UniformOutput', false);
+        if ~isequal(ax.YTick, t(:)'),       ax.YTick      = t;      end
+        if ~isequal(ax.YTickLabel, labels), ax.YTickLabel = labels; end
+        lbl = sprintf('Value (contrast scale, \\gamma = %.3g)', m(3));
+        if ~strcmp(ax.YLabel.String, lbl), ylabel(ax, lbl); end
     end
 
     % -----------------------------------------------------------------
@@ -567,7 +689,9 @@ pw.SetFixY        = @setFixY;
             ln = lns(k);
             if isgraphics(ln) && strcmp(ln.Visible, 'on')
                 x = ln.XData(:);
-                Y = [Y, ln.YData(:)]; %#ok<AGROW>
+                y = ln.UserData;                   % data units
+                if isempty(y), y = ln.YData; end
+                Y = [Y, y(:)]; %#ok<AGROW>
                 names{end+1} = ln.DisplayName; %#ok<AGROW>
             end
         end
