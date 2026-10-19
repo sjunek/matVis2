@@ -107,6 +107,7 @@ btnShowNames = uibutton(btnGrid, 'state', 'Text', 'Names', 'FontSize', 11, ...
 toolPanel = uipanel(mainGrid, 'Title', 'Tools', 'FontSize', 11, ...
     'BorderType', 'line');
 toolPanel.Layout.Row = 2;
+matVisShadePanelTitle(toolPanel);
 
 toolGrid = uigridlayout(toolPanel, [1, 3]);
 toolGrid.ColumnWidth   = {'1x', '1x', '1x'};
@@ -135,6 +136,7 @@ toolButtons.dir.ValueChangedFcn   = @(src,~) onShowDir(src);
 setPanel = uipanel(mainGrid, 'Title', 'Settings / data export', ...
     'FontSize', 11, 'BorderType', 'line');
 setPanel.Layout.Row = 3;
+matVisShadePanelTitle(setPanel);
 
 setGrid = uigridlayout(setPanel, [2, 4]);
 setGrid.RowHeight     = {24, 24};
@@ -181,6 +183,7 @@ btnExportData.Layout.Row = 2;  btnExportData.Layout.Column = 4;
 viewPanel = uipanel(mainGrid, 'Title', 'Profile view', 'FontSize', 11, ...
     'BorderType', 'line');
 viewPanel.Layout.Row = 4;
+matVisShadePanelTitle(viewPanel);
 
 viewGrid = uigridlayout(viewPanel, [3, 1]);
 viewGrid.RowHeight  = {18, '2x', '1x'};

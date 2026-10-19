@@ -104,6 +104,7 @@ btnShowNames = uibutton(btnGrid, 'state', 'Text', 'Names', 'FontSize', 11, ...
 toolPanel = uipanel(mainGrid, 'Title', 'Tools', 'FontSize', 11, ...
     'BorderType', 'line');
 toolPanel.Layout.Row = 2;
+matVisShadePanelTitle(toolPanel);
 
 toolGrid = uigridlayout(toolPanel, [1, 6]);
 toolGrid.ColumnWidth   = repmat({'1x'}, 1, 6);
@@ -132,6 +133,7 @@ end
 setPanel = uipanel(mainGrid, 'Title', 'Settings / trace export', ...
     'FontSize', 11, 'BorderType', 'line');
 setPanel.Layout.Row = 3;
+matVisShadePanelTitle(setPanel);
 
 setGrid = uigridlayout(setPanel, [2, 4]);
 setGrid.RowHeight     = {24, 24};
@@ -177,6 +179,7 @@ btnExportData.Layout.Row = 2;  btnExportData.Layout.Column = 4;
 infoPanel = uipanel(mainGrid, 'Title', 'Selected ROI', 'FontSize', 11, ...
     'BorderType', 'line');
 infoPanel.Layout.Row = 4;
+matVisShadePanelTitle(infoPanel);
 
 infoGrid = uigridlayout(infoPanel, [1, 2]);
 infoGrid.ColumnWidth   = {130, '1x'};

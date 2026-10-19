@@ -154,6 +154,7 @@ lblStatus.Layout.Row = 2;
 
 %% ---- Volume ------------------------------------------------------------
 pVol = uipanel(side, 'Title', 'Volume');
+matVisShadePanelTitle(pVol);
 gv = uigridlayout(pVol, [4 2]);
 gv.RowHeight   = {22, 22, 22, 22};
 gv.ColumnWidth = {24, '1x'};
@@ -183,6 +184,7 @@ uibutton(gvf, 'Text', 'Refresh', 'ButtonPushedFcn', @(~,~) forceRefresh());
 
 %% ---- Extent ------------------------------------------------------------
 pExt = uipanel(side, 'Title', 'Extent / sampling');
+matVisShadePanelTitle(pExt);
 ge = uigridlayout(pExt, [5 3]);
 ge.RowHeight   = {22, 22, 22, 22, 22};
 ge.ColumnWidth = {24, '1x', '1x'};
@@ -222,6 +224,7 @@ btnFull.Layout.Column = 3;
 
 %% ---- Rendering ---------------------------------------------------------
 pRen = uipanel(side, 'Title', 'Rendering');
+matVisShadePanelTitle(pRen);
 gr = uigridlayout(pRen, [6 2]);
 gr.RowHeight   = {22, 22, 22, 22, 22, 22};
 gr.ColumnWidth = {68, '1x'};
@@ -283,6 +286,7 @@ spGam  = uispinner(g6, 'Limits', [0.1 5], 'Value', 1, 'Step', 0.1, ...
 
 %% ---- View --------------------------------------------------------------
 pView = uipanel(side, 'Title', 'View');
+matVisShadePanelTitle(pView);
 nViewRows = 6 + (model.NumDatasets > 1);
 gvw = uigridlayout(pView, [nViewRows 2]);
 gvw.RowHeight   = repmat({22}, 1, nViewRows);

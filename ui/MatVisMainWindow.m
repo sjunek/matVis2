@@ -134,6 +134,7 @@ posPanel = uipanel(grid, 'Title', 'Position and plot controls', ...
     'FontSize', 13, 'FontWeight', 'bold', 'TitlePosition', 'centertop');
 posPanel.Layout.Row    = 1;
 posPanel.Layout.Column = 1;
+matVisShadePanelTitle(posPanel);
 
 % Rows 1..nDims-1 are single sliders; row nDims holds the last slider together
 % with the play-speed row right underneath it (small gap), so the play-speed
@@ -281,9 +282,6 @@ btnPlotFixX = uibutton(plotBtnRow, 'state', ...
     'Tooltip', 'Fix plot X-axis scale (right-click to set limits)', ...
     'ValueChangedFcn', @onPlotFixXToggle);
 btnPlotFixX.Layout.Column = 3;
-cmPlotX = uicontextmenu(fig);
-uimenu(cmPlotX, 'Text', 'Set X limits...', 'MenuSelectedFcn', @onPlotSetXLimits);
-btnPlotFixX.ContextMenu = cmPlotX;
 
 % 4) Fix Y-scale  (right-click → enter limits)
 btnPlotFixY = uibutton(plotBtnRow, 'state', ...
@@ -291,9 +289,6 @@ btnPlotFixY = uibutton(plotBtnRow, 'state', ...
     'Tooltip', 'Fix plot Y-axis scale (right-click to set limits)', ...
     'ValueChangedFcn', @onPlotFixYToggle);
 btnPlotFixY.Layout.Column = 4;
-cmPlotY = uicontextmenu(fig);
-uimenu(cmPlotY, 'Text', 'Set Y limits...', 'MenuSelectedFcn', @onPlotSetYLimits);
-btnPlotFixY.ContextMenu = cmPlotY;
 
 % 5) Export data subset
 btnPlotExport = uibutton(plotBtnRow, 'push', ...
@@ -330,6 +325,7 @@ imageCtrlPanel = uipanel(grid, 'Title', 'Image controls', ...
     'FontSize', 13, 'FontWeight', 'bold', 'TitlePosition', 'centertop');
 imageCtrlPanel.Layout.Row    = 2;
 imageCtrlPanel.Layout.Column = 1;
+matVisShadePanelTitle(imageCtrlPanel);
 
 % The panel stacks the dimension/RGB/projection/filter controls on top and the
 % RGB-stretch blue/red-point bar below them. The bar's row is reserved
@@ -360,16 +356,11 @@ barWrap.ColumnSpacing = 4;
 stretchBar = [];
 
 % Aspect ratio + window scaling: DimSelector builds the buttons; the
-% behaviour lives here because it acts on the image/zoom windows.
+% behaviour lives here because it acts on the image/zoom windows.  Their
+% right-click dialogs, like those of the x/y lim buttons, are opened straight
+% from onFigureButtonDown (see handleButtonRightClick).
 dimSelector.btnAspect.ValueChangedFcn   = @(~,~) onAspectToggle();
-cmAspect = uicontextmenu(fig);
-uimenu(cmAspect, 'Text', 'Set aspect ratio...', 'MenuSelectedFcn', @(~,~) onAspectSetRatio());
-dimSelector.btnAspect.ContextMenu = cmAspect;
-
 dimSelector.btnWinScale.ButtonPushedFcn = @(~,~) applyWindowScale();
-cmWinScale = uicontextmenu(fig);
-uimenu(cmWinScale, 'Text', 'Set window scale...', 'MenuSelectedFcn', @(~,~) onWinScaleSet());
-dimSelector.btnWinScale.ContextMenu = cmWinScale;
 mvTiming_.labels{end+1} = 'DimSelector created'; mvTiming_.times(end+1) = toc(mvT0_);
 
 %% Contrast Panel
@@ -378,6 +369,7 @@ contrastPanel = uipanel(grid, 'Title', 'Contrast', ...
     'FontSize', 13, 'FontWeight', 'bold', 'TitlePosition', 'centertop');
 contrastPanel.Layout.Row    = 3;
 contrastPanel.Layout.Column = 1;
+matVisShadePanelTitle(contrastPanel);
 
 % 9 rows x 8 columns
 % Row 1: mode buttons
@@ -3106,7 +3098,7 @@ fprintf('\n');
         end
 
         if strcmp(fig.SelectionType, 'alt')
-            if ~inHist, onMainWindowRightClick(); end
+            if ~inHist && ~handleButtonRightClick(), onMainWindowRightClick(); end
             return;
         end
 
@@ -3358,6 +3350,25 @@ fprintf('\n');
             resetNumField(edtContrastMax, model.DataMax);
             onContrastMaxChanged(edtContrastMax);
             handled = true;
+        end
+    end
+
+    % Right-click on a button with extra settings opens its dialog directly.
+    % A ContextMenu would first show a one-item menu that has to be clicked
+    % again, so the hit test is done here like the caption reset above.
+    function handled = handleButtonRightClick()
+        handled = true;
+        figPt   = fig.CurrentPoint;
+        if labelHit(btnPlotFixX, figPt)
+            onPlotSetXLimits();
+        elseif labelHit(btnPlotFixY, figPt)
+            onPlotSetYLimits();
+        elseif labelHit(dimSelector.btnAspect, figPt)
+            onAspectSetRatio();
+        elseif labelHit(dimSelector.btnWinScale, figPt)
+            onWinScaleSet();
+        else
+            handled = false;
         end
     end
 

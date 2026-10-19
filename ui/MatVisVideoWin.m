@@ -100,6 +100,7 @@ right.Scrollable    = 'on';
 
 %% ---- Content (movie) ---------------------------------------------------
 pContent = uipanel(left, 'Title', 'Content (whole movie)');
+matVisShadePanelTitle(pContent);
 gc = uigridlayout(pContent, [6 3]);
 gc.RowHeight     = {22, 22, 22, 22, 22, 22};
 gc.ColumnWidth   = {80, '1x', 86};
@@ -155,6 +156,7 @@ place(cbFillZoom, 6, [2 3]);
 
 %% ---- Frame (movie) ----------------------------------------------------
 pFrame = uipanel(left, 'Title', 'Frame (whole movie)');
+matVisShadePanelTitle(pFrame);
 gf = uigridlayout(pFrame, [4 4]);
 gf.RowHeight     = {22, 22, 22, 22};
 gf.ColumnWidth   = {80, '1x', 34, 86};
@@ -194,6 +196,7 @@ place(btnEven, 4, [3 4]);
 
 %% ---- Sequences --------------------------------------------------------
 pSeq = uipanel(left, 'Title', 'Sequences');
+matVisShadePanelTitle(pSeq);
 gq = uigridlayout(pSeq, [3 1]);
 gq.RowHeight   = {'1x', 24, 18};
 gq.ColumnWidth = {'1x'};
@@ -229,6 +232,7 @@ lblTotal.Layout.Row = 3;
 
 %% ---- Output -----------------------------------------------------------
 pOut = uipanel(left, 'Title', 'Output');
+matVisShadePanelTitle(pOut);
 go = uigridlayout(pOut, [4 4]);
 go.RowHeight     = {22, 22, 22, 22};
 go.ColumnWidth   = {80, '1x', 50, 86};
@@ -265,6 +269,7 @@ place(spQual, 4, [3 4]);
 
 %% ---- Sweep (per sequence) ----------------------------------------------
 pSweep = uipanel(right, 'Title', 'Sweep (this sequence)');
+matVisShadePanelTitle(pSweep);
 gs = uigridlayout(pSweep, [4 4]);
 gs.RowHeight      = {22, 22, 22, 18};
 gs.ColumnWidth    = {58, '1x', 50, '1x'};
@@ -305,6 +310,7 @@ place(lblEstimate, 4, [1 4]);
 
 %% ---- Contrast (per sequence) -------------------------------------------
 pCon = uipanel(right, 'Title', 'Contrast (this sequence)');
+matVisShadePanelTitle(pCon);
 gcn = uigridlayout(pCon, [5 4]);
 gcn.RowHeight     = {22, 22, 22, 22, 22};
 gcn.ColumnWidth   = {58, '1x', 24, '1x'};
@@ -364,6 +370,7 @@ btnFromCurrentEnd = uibutton(gFrom, 'Text', 'Main win → end', ...
 
 %% ---- 3-D camera (per sequence) -----------------------------------------
 pCam = uipanel(right, 'Title', '3D camera (this sequence)');
+matVisShadePanelTitle(pCam);
 gcm = uigridlayout(pCam, [5 4]);
 gcm.RowHeight     = {22, 22, 22, 22, 22};
 gcm.ColumnWidth   = {58, '1x', 24, '1x'};
@@ -426,6 +433,7 @@ btnSpin = uibutton(gcb, 'Text', 'Spin 360°', ...
 
 %% ---- 3-D panel (movie) ------------------------------------------------
 p3D = uipanel(right, 'Title', '3D panel (whole movie)');
+matVisShadePanelTitle(p3D);
 g3 = uigridlayout(p3D, [5 4]);
 g3.RowHeight     = {22, 22, 22, 22, 22};
 g3.ColumnWidth   = {62, '1x', '1x', '1x'};
