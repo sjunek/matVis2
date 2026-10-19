@@ -4259,61 +4259,52 @@ fprintf('\n');
         applyAspectRatio();     % window-scale is applied only on explicit click
 
         % Window positions (support per-dataset keys and legacy single keys).
-        % Saved positions come from a prior session's screen/monitor layout
-        % and are clamped back on-screen (clampFigPosToScreen) so a config
-        % saved on a different display never reopens fully off-screen.
-        %
-        % get(0,'MonitorPositions') is not portable across MATLAB releases on
-        % the same machine (older releases can under-detect monitors or
-        % report a display's resolution differently under Windows
-        % per-monitor-DPI-awareness than newer ones, even on identical
-        % hardware), and the config file is shared by hostname, not MATLAB
-        % version. Applying saved absolute pixel coordinates computed under a
-        % different monitor layout can land windows in nonsensical places, so
-        % only trust them when the current session's monitor layout matches
-        % the one they were saved under; otherwise fall back to a fresh
-        % layout for this session's actual monitors.
-        monitorsMatch = isfield(config, 'monitorPositions') && ...
-            isequal(config.monitorPositions, get(0, 'MonitorPositions'));
-        if isfield(config, 'windowPositions') && monitorsMatch
+        % Each window goes back to the monitor it was saved on, whatever
+        % the mouse is doing. get(0,'MonitorPositions') is not stable for
+        % the same displays (row order, and DPI-scaled vs physical pixels
+        % for secondary monitors, differ between MATLAB sessions/releases),
+        % so the saved coordinates are carried over monitor by monitor
+        % (matVisRemapWindowPos) rather than required to match exactly, and
+        % then clamped on-screen (clampFigPosToScreen) in case that monitor
+        % is gone.
+        if isfield(config, 'windowPositions')
             pos = config.windowPositions;
+            savedMon = [];
+            if isfield(config, 'monitorPositions'), savedMon = config.monitorPositions; end
+            curMon = get(0, 'MonitorPositions');
+            restorePos = @(p) clampFigPosToScreen(matVisRemapWindowPos(p, savedMon, curMon));
             if isfield(pos, 'Main')
-                mainP = clampFigPosToScreen([pos.Main(1:2), fig.Position(3:4)]);
+                mainP = matVisRemapWindowPos(pos.Main, savedMon, curMon);
+                mainP = clampFigPosToScreen([mainP(1:2), fig.Position(3:4)]);
                 fig.Position(1:2) = mainP(1:2);
             end
 
             for ds = 1:nDatasets
                 dsKey = num2str(ds);
                 if isfield(pos, ['Image' dsKey])
-                    imageWins{ds}.fig.Position = clampFigPosToScreen(pos.(['Image' dsKey]));
+                    imageWins{ds}.fig.Position = restorePos(pos.(['Image' dsKey]));
                 elseif ds == 1 && isfield(pos, 'Image')
-                    imageWins{ds}.fig.Position = clampFigPosToScreen(pos.Image);
+                    imageWins{ds}.fig.Position = restorePos(pos.Image);
                 end
                 if isfield(pos, ['Zoom' dsKey])
-                    zoomWins{ds}.fig.Position = clampFigPosToScreen(pos.(['Zoom' dsKey]));
+                    zoomWins{ds}.fig.Position = restorePos(pos.(['Zoom' dsKey]));
                 elseif ds == 1 && isfield(pos, 'Zoom')
-                    zoomWins{ds}.fig.Position = clampFigPosToScreen(pos.Zoom);
+                    zoomWins{ds}.fig.Position = restorePos(pos.Zoom);
                 end
                 if isfield(pos, ['Plot' dsKey])
-                    plotWins{ds}.fig.Position = clampFigPosToScreen(pos.(['Plot' dsKey]));
+                    plotWins{ds}.fig.Position = restorePos(pos.(['Plot' dsKey]));
                 elseif ds == 1 && isfield(pos, 'Plot')
-                    plotWins{ds}.fig.Position = clampFigPosToScreen(pos.Plot);
+                    plotWins{ds}.fig.Position = restorePos(pos.Plot);
                 end
                 % Cross-section windows may not exist yet — remember the
                 % saved geometry and apply it when one is created.
                 if isfield(pos, ['XSec' dsKey])
-                    xsecSavedPos{ds} = pos.(['XSec' dsKey]);
+                    xsecSavedPos{ds} = matVisRemapWindowPos(pos.(['XSec' dsKey]), savedMon, curMon);
                     if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
                         xsecWins{ds}.fig.Position = clampFigPosToScreen(xsecSavedPos{ds});
                     end
                 end
             end
-        elseif isfield(config, 'windowPositions')
-            fprintf(['[matVis2] Saved window positions were recorded under a different ' ...
-                'monitor layout (e.g. a different MATLAB release''s display detection, ' ...
-                'or a monitor added/removed/rearranged since); using a fresh layout for ' ...
-                'this session''s displays instead.\n']);
-            applyFreshLayout();
         end
 
         % Window visibility
@@ -4384,17 +4375,9 @@ fprintf('\n');
 
     function applyFreshLayout()
         % Tile Main/Image/Zoom/Plot (and remember ROI/Profile/Metadata
-        % default positions) from scratch for this session's actual
-        % monitors -- used both when no saved config exists yet, and when a
-        % saved config's window positions don't apply (see onLoadConfig:
-        % monitor layout mismatch across MATLAB releases/monitor changes).
-        %
-        % Anchor to the monitor the user is actually working on (the one
-        % under the mouse pointer), not always the OS-designated primary
-        % display -- get(0,'ScreenSize') is primary-only and, on a
-        % multi-monitor setup where MATLAB lives on a secondary/tertiary
-        % display, would otherwise place every fresh layout on a monitor
-        % the user isn't looking at.
+        % default positions) from scratch -- used when no saved config
+        % exists yet. Anchored to the primary monitor (targetMonitorBounds),
+        % so the result does not depend on where the mouse is.
         targetMon  = targetMonitorBounds();
         monL       = targetMon(1);
         monB       = targetMon(2);
@@ -4515,8 +4498,8 @@ fprintf('\n');
         end
 
         % Not usably visible on any monitor (e.g. a config saved on a
-        % different machine/monitor arrangement) -- fall back to the monitor
-        % under the mouse pointer.
+        % different machine/monitor arrangement) -- fall back to the primary
+        % monitor.
         mon        = targetMonitorBounds();
         titleBarH  = 32;   % see onWindowShown
         safeMargin = 8;
@@ -4527,20 +4510,9 @@ fprintf('\n');
 
     function mon = targetMonitorBounds()
         % [left bottom width height] (MATLAB y-up convention, see
-        % MonitorPositions) of the monitor currently under the mouse pointer
-        % -- i.e. wherever the user is actually working -- falling back to
-        % the primary monitor if the pointer isn't within any monitor's
-        % bounds (shouldn't normally happen).
-        mp = get(0, 'MonitorPositions');
-        p  = get(0, 'PointerLocation');
-        for i = 1:size(mp, 1)
-            monL = mp(i,1); monB = mp(i,2);
-            monR = monL + mp(i,3);  monT = monB + mp(i,4);
-            if p(1) >= monL && p(1) < monR && p(2) >= monB && p(2) < monT
-                mon = mp(i,:);
-                return;
-            end
-        end
+        % MonitorPositions) of the primary monitor. Deliberately not the
+        % monitor under the mouse pointer: where the windows open must not
+        % depend on where the mouse happens to be at startup.
         mon = get(0, 'ScreenSize');
     end
 
