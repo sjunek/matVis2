@@ -33,7 +33,7 @@ if isempty(dsIdx), dsIdx = 1; end
 dsTag = '';                             % disambiguate exports across datasets
 if model.NumDatasets > 1, dsTag = ['_ds' num2str(dsIdx)]; end
 
-fig = uifigure('Name', ['Image: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', ...
+fig = uifigure('Name', ['Image: ' model.DatasetNames{dsIdx}], 'NumberTitle', 'off', ...
                'Resize', 'on', 'AutoResizeChildren', 'off', 'Visible', 'off');
 
 % Axes are shown as regular MATLAB axes with rulers on the left/bottom so
@@ -500,15 +500,17 @@ iw.SetAspectRatio    = @applyAspectRatio;
         idx      = num2cell(model.CurrPos);
         idx{xd}  = px;
         idx{yd}  = py;
-        val = model.Data.readSub(idx);
+        val = model.Datasets{dsIdx}.readSub(idx);
         alphaVal = [];
         if model.WithAlpha
-            alphaVal = model.AlphaMaps{model.ActiveDataset}.readSub(idx);
+            alphaVal = model.AlphaMaps{dsIdx}.readSub(idx);
         end
     end
 
     function updateTitle(px, py)
-        baseName = ['Image: ' model.DatasetNames{model.ActiveDataset}];
+        % Same format MatVisMainWindow sets: 'Image - <name>' for several datasets
+        if model.NumDatasets > 1, sep = ' - '; else, sep = ': '; end
+        baseName = ['Image' sep model.DatasetNames{dsIdx}];
         if nargin == 0
             fig.Name = baseName;
         else

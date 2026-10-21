@@ -27,7 +27,7 @@ if isempty(dsIdx), dsIdx = 1; end
 dsTag = '';                             % disambiguate exports across datasets
 if model.NumDatasets > 1, dsTag = ['_ds' num2str(dsIdx)]; end
 
-fig = uifigure('Name', ['Zoom: ' model.DatasetNames{model.ActiveDataset}], 'NumberTitle', 'off', ...
+fig = uifigure('Name', ['Zoom: ' model.DatasetNames{dsIdx}], 'NumberTitle', 'off', ...
                'Resize', 'on', 'AutoResizeChildren', 'off', 'Visible', 'off');
 
 % No rulers or labels: the cropped image fills the whole figure. uiaxes
@@ -477,15 +477,17 @@ zw.SetAspectRatio    = @applyAspectRatio;
         idx      = num2cell(model.CurrPos);
         idx{xd}  = px;
         idx{yd}  = py;
-        val = model.Data.readSub(idx);
+        val = model.Datasets{dsIdx}.readSub(idx);
         alphaVal = [];
         if model.WithAlpha
-            alphaVal = model.AlphaMaps{model.ActiveDataset}.readSub(idx);
+            alphaVal = model.AlphaMaps{dsIdx}.readSub(idx);
         end
     end
 
     function updateTitle(xL, yL)
-        baseName = ['Zoom: ' model.DatasetNames{model.ActiveDataset}];
+        % Same format MatVisMainWindow sets: 'Zoom - <name>' for several datasets
+        if model.NumDatasets > 1, sep = ' - '; else, sep = ': '; end
+        baseName = ['Zoom' sep model.DatasetNames{dsIdx}];
         if nargin == 0
             fig.Name = baseName;
         else
