@@ -1501,6 +1501,7 @@ fprintf('\n');
             [sets, fm] = matVisOpenDatasets(res.items, {'Mode', 'separate'}, 'auto');
             names = fm.datasetNames;
         end
+        [sets, fm] = squeezeLikeLaunch(sets, fm);
 
         if strcmp(res.action, 'replace') && canReplaceWith(sets)
             try
@@ -1514,6 +1515,30 @@ fprintf('\n');
             end
         end
         openInNewWindow(sets, names, fm);
+    end
+
+    function [sets, fm] = squeezeLikeLaunch(sets, fm)
+        % A viewer's dimensions are those left after parseArgs squeezed the
+        % singleton ones away, so new data has to be squeezed the same way
+        % before its dimension count means anything -- and before it is
+        % swapped in, or the replaced data would keep its singleton axes.
+        % Per-dimension file metadata is reduced with it.
+        fields = {'dimNames', 'dimUnits', 'dimScale'};
+        nv = {};
+        for f = 1:numel(fields)
+            if ~isempty(fm) && ~isempty(fm.(fields{f}))
+                nv = [nv, fields(f), {fm.(fields{f})}]; %#ok<AGROW>
+            end
+        end
+        try
+            a = parseArgs(sets, nv{:});
+        catch
+            return;   % e.g. sizes differ: the new-window path reports it
+        end
+        sets = a.data;
+        for f = 1:2:numel(nv)
+            fm.(nv{f}) = a.(nv{f});
+        end
     end
 
     function tf = canReplaceWith(sets)

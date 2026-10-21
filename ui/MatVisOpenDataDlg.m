@@ -156,13 +156,15 @@ uiwait(dlg);
             return;
         end
 
+        sel  = cellfun(@(n) find(strcmp({vars.name}, n), 1), names);
+        note = squeezeNote({vars(sel).size});
         if isempty(why)
-            lblVerdict.Text = sprintf('%s -- matches this viewer (%d dataset(s), %d dimensions).', ...
-                strjoin(names, ', '), nSets, nd);
+            lblVerdict.Text = sprintf('%s -- matches this viewer (%d dataset(s), %d dimensions).%s', ...
+                strjoin(names, ', '), nSets, nd, note);
             btnReplace.Enable = 'on';
         else
-            lblVerdict.Text = sprintf('%s -- %s  A new window will be opened.', ...
-                strjoin(names, ', '), why);
+            lblVerdict.Text = sprintf('%s -- %s%s  A new window will be opened.', ...
+                strjoin(names, ', '), why, note);
             btnReplace.Enable = 'off';
         end
     end
@@ -207,7 +209,7 @@ uiwait(dlg);
 
         szs       = cellfun(@(i) i.size, infos, 'UniformOutput', false);
         totalSets = sum(cellfun(@(i) i.nSets, infos));
-        nd        = numel(szs{1});
+        nd        = shownNumDims(szs{1});
         shape     = sprintf('%s %s', dimsText(szs{1}), infos{1}.class);
 
         whyNot = '';
@@ -220,13 +222,14 @@ uiwait(dlg);
             whyNot = sprintf('this viewer shows %d dimensions.', curNumDims);
         end
 
+        note = squeezeNote(szs);
         if isempty(whyNot)
-            lblVerdict.Text = sprintf('%s -- %s, %s.  Matches this viewer.', ...
-                strjoin(names, ', '), shape, bytesText(totalBytes));
+            lblVerdict.Text = sprintf('%s -- %s, %s.  Matches this viewer.%s', ...
+                strjoin(names, ', '), shape, bytesText(totalBytes), note);
             btnReplace.Enable = 'on';
         else
-            lblVerdict.Text = sprintf('%s -- %s, %s.  %s  A new window will be opened.', ...
-                strjoin(names, ', '), shape, bytesText(totalBytes), capitalise(whyNot));
+            lblVerdict.Text = sprintf('%s -- %s, %s.  %s%s  A new window will be opened.', ...
+                strjoin(names, ', '), shape, bytesText(totalBytes), capitalise(whyNot), note);
             btnReplace.Enable = 'off';
         end
     end
@@ -257,11 +260,11 @@ uiwait(dlg);
             sel = [idx{:}];
             names = {vars(sel).name};
             nSets = numel(sel);
-            dims  = arrayfun(@(v) numel(v.size), vars(sel));
+            dims  = arrayfun(@(v) shownNumDims(v.size), vars(sel));
             nd    = dims(1);
             if any(dims ~= dims(1))
                 why = 'the selected variables do not all have the same number of dimensions.';
-            elseif ~allSameSize(vars(sel))
+            elseif ~allSameShownSize(vars(sel))
                 why = 'the selected variables do not all have the same size.';
             elseif nSets ~= curNumDatasets
                 why = sprintf('this viewer holds %d dataset(s).', curNumDatasets);
@@ -330,6 +333,49 @@ uiwait(dlg);
         lstFiles.Value = {};
         updateVerdict();
     end
+end
+
+% =============================================================================
+function sz = shownSize(sz)
+% Size a viewer would show for data of size SZ: parseArgs squeezes the
+% singleton dimensions away but keeps at least two.  Comparing raw sizes would
+% turn a 512x512x1x20 stack away from a viewer showing 512x512x20.
+keep = sz ~= 1;
+if nnz(keep) < 2
+    keep(find(~keep, 2 - nnz(keep))) = true;
+end
+sz = sz(keep);
+end
+
+% =============================================================================
+function n = shownNumDims(sz)
+n = numel(shownSize(sz));
+end
+
+% =============================================================================
+function tf = allSameShownSize(v)
+tf = true;
+for k = 2:numel(v)
+    if ~isequal(shownSize(v(k).size), shownSize(v(1).size)), tf = false; return; end
+end
+end
+
+% =============================================================================
+function s = squeezeNote(sizes)
+% Says which sizes lose a size-1 dimension, so the dimension count given
+% beside them does not appear to contradict the sizes in the list.  Empty
+% when nothing is squeezed.
+s = '';
+notes = {};
+for k = 1:numel(sizes)
+    sz = sizes{k};
+    if numel(shownSize(sz)) == numel(sz), continue; end
+    t = sprintf('%s is shown as %s', dimsText(sz), dimsText(shownSize(sz)));
+    if ~ismember(t, notes), notes{end+1} = t; end %#ok<AGROW>
+end
+if ~isempty(notes)
+    s = sprintf('  Size-1 dimensions are squeezed: %s.', strjoin(notes, ', '));
+end
 end
 
 % =============================================================================

@@ -53,10 +53,16 @@ if ~iscell(r.data)
     r.data = {r.data};
 end
 
-% Validate all datasets have identical dimensions
+% Validate all datasets have identical dimensions.  In-memory arrays need
+% only agree once squeezed (below): 64x48x1x7 and 64x48x7 display the same.
 refSz = dataSize(r.data{1});
+sameRaw = true;
 for k = 2:numel(r.data)
-    if ~isequal(dataSize(r.data{k}), refSz)
+    szK = dataSize(r.data{k});
+    if isequal(szK, refSz), continue; end
+    sameRaw = false;
+    if ~all(cellfun(@isnumeric, r.data)) || ...
+            ~isequal(szK(squeezeKeep(szK)), refSz(squeezeKeep(refSz)))
         error('parseArgs:dimMismatch', ...
             'All datasets must have identical dimensions. Dataset %d has size [%s] but dataset 1 has size [%s].', ...
             k, num2str(dataSize(r.data{k})), num2str(refSz));
@@ -71,7 +77,7 @@ end
 % dimensions are reduced to match.
 origSz = refSz;
 keep = squeezeKeep(refSz);
-if ~all(keep) && all(cellfun(@isnumeric, r.data))
+if (~all(keep) || ~sameRaw) && all(cellfun(@isnumeric, r.data))
     refSz = origSz(keep);
     for k = 1:numel(r.data)
         r.data{k} = reshape(r.data{k}, refSz);
