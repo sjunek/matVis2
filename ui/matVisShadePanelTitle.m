@@ -7,7 +7,9 @@ function matVisShadePanelTitle(p)
 % uigridlayout that fills the panel paints its own (default) background over
 % the content area, which leaves only the title strip in the darker shade.
 % Scaling the current colour keeps the shade relative to whatever background
-% the panel starts with.
+% the panel starts with.  The title is set bold too, so every window's panel
+% titles look the same.
 
 p.BackgroundColor = 0.88 * p.BackgroundColor;
+p.FontWeight      = 'bold';
 end
