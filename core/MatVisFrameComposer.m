@@ -35,7 +35,8 @@ classdef MatVisFrameComposer < handle
     %     .dim      dimension index ('timelabel'); plot: dims to draw
     %     .format   sprintf format ('timelabel', default '%s = %.4g %s')
     %     .length   scalebar length in real units (0/absent = auto)
-    %   'volume' adds .dims3 .extent ('full'|'zoom'|'custom') .ranges .maxVox
+    %   'volume' adds .dims3 .aspect (per-axis stretch, default [1 1 1])
+    %   .extent ('full'|'zoom'|'custom') .ranges .maxVox
     %   .style ('max'|'min') .cmapIdx (0 = follow the model) .box .showLabels
     %   .az .el .zoom (defaults; the View3D property overrides them per frame).
     %   'histogram' adds .histRange ([] = the dataset's own range) and .histLog.
@@ -216,7 +217,8 @@ classdef MatVisFrameComposer < handle
                        ... % fallback: the View3D property overrides them, so
                        ... % ramping a camera does not touch the layout (and
                        ... % therefore does not rebuild the figure).
-                       'dims3', [1 2 3], 'extent', 'full', 'ranges', [], ...
+                       'dims3', [1 2 3], 'aspect', [1 1 1], ...
+                       'extent', 'full', 'ranges', [], ...
                        'maxVox', 4e6, 'style', 'max', 'cmapIdx', 0, ...
                        'box', true, 'showLabels', true, ...
                        'az', -37.5, 'el', 30, 'zoom', 1, 'contrast', [], ...
@@ -952,7 +954,13 @@ classdef MatVisFrameComposer < handle
                 ci = m.ColormapIdx;
             end
             cmapV = MatVisRender.getColormap(ci, 256);
-            pr = MatVisVolumeProjector.project(P.V, P.vox, ...
+            % The stretch only scales the voxels, so it stays out of the
+            % extraction key above.
+            asp = [1 1 1];
+            if isfield(spec, 'aspect') && numel(spec.aspect) == 3
+                asp = double(spec.aspect(:).');
+            end
+            pr = MatVisVolumeProjector.project(P.V, P.vox .* asp, ...
                 'Az', v.az, 'El', v.el, 'Zoom', v.zoom, ...
                 'OutSize', [outW outH], 'Style', spec.style, ...
                 'Colormap', cmapV);

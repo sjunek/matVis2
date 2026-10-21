@@ -485,6 +485,20 @@ classdef MatVisVideoTest < matlab.unittest.TestCase
             tc.verifyEqual(d, c, 'repeat render differed');
         end
 
+        function testVolumePanel_followsAspect(tc)
+            model  = MatVisVideoTest.makeModel();
+            layout = MatVisFrameComposer.DefaultLayout('3d', model);
+            comp   = MatVisFrameComposer(model, layout, 'FrameSize', [240 240]);
+            tc.addTeardown(@() delete(comp));
+            comp.View3D = struct('az', 40, 'el', 20, 'zoom', 1);
+
+            a = comp.RenderFrame();
+            layout.aspect = [1 1 3];
+            comp.SetLayout(layout);
+            b = comp.RenderFrame();
+            tc.verifyNotEqual(a, b, 'frame did not follow the axis stretch');
+        end
+
         function testVolumePanel_defaultDimsAreDistinct(tc)
             model  = MatVisVideoTest.makeModel4D();
             layout = MatVisFrameComposer.DefaultLayout('3d', model);

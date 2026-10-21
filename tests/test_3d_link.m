@@ -90,6 +90,25 @@ setCheckbox(namedCheckbox(w1.fig, 'Full resolution'), false);
 assert(~w2.ViewState().fullRes, ...
     'a visible linked window did not follow the sampling change');
 
+%% ... and so does an axis stretch
+spins  = findall(w1.fig, '-isa', 'matlab.ui.control.Spinner');
+aspSp  = spins(arrayfun(@(h) isequal(h.Limits, [0.01 100]), spins));
+assert(numel(aspSp) == 3, 'expected three aspect spinners, found %d', numel(aspSp));
+zSp    = aspSp(contains({aspSp.Tooltip}, 'Z axis'));
+zSp.Value = 2.5;
+feval(zSp.ValueChangedFcn, zSp, []);
+assert(isequal(w1.ViewState().aspect, [1 1 2.5]), 'the Z stretch did not stick');
+assert(isequal(w2.ViewState().aspect, [1 1 2.5]), ...
+    'a visible linked window did not follow the axis stretch');
+
+% The video generator copies the stretch along with the camera
+vw  = mw.getVideoWin();
+btn = vw.controls.grabStart;
+feval(btn.ButtonPushedFcn, btn, []);
+assert(isequal([vw.controls.aspect3.Value], [1 1 2.5]), ...
+    'the video generator did not copy the axis stretch');
+delete(vw.fig);
+
 %% Contrast stays per dataset
 s = w1.ViewState();
 assert(~isfield(s, 'cmin') && ~isfield(s, 'gamma'), ...
@@ -113,6 +132,13 @@ vv.setVolume(uint8(rand(12, 10, 8) * 255), [1 1 1]);
 p0 = vv.cameraPose();
 assert(all(isfinite(p0.pos)) && all(isfinite(p0.target)) && ...
        all(isfinite(p0.up)), 'a fresh view reports no pose to share');
+% Re-scaling stretches the box without new data
+ax1 = findall(h1, 'Type', 'axes');
+vv.setVoxelSize([1 1 3]);
+assert(abs(ax1.ZLim(2) - 24) < 1e-9 && abs(ax1.XLim(2) - 12) < 1e-9, ...
+    'setVoxelSize did not stretch the box');
+vv.setVoxelSize([1 1 1]);
+
 vvEmpty = MatVisVolumeView(h3);
 assert(~any(isfinite(vvEmpty.cameraPose().pos)), ...
     'a view with no volume must not hand out a camera');

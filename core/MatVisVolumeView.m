@@ -15,6 +15,8 @@ classdef MatVisVolumeView < handle
 %                                (i, j, k) -> (dim1, dim2, dim3); voxSize is
 %                                the real-world size of one voxel along each
 %                                of those dims.
+%     vv.setVoxelSize(voxSize)   re-scale the volume already shown, without
+%                                sending its data again.
 %     [V, voxSize] = MatVisVolumeView.extractVolume(...)  builds such a
 %                                volume from a matVis model.
 %
@@ -108,6 +110,25 @@ classdef MatVisVolumeView < handle
                 obj.build();
             end
             obj.pushFallback();
+        end
+
+        function setVoxelSize(obj, voxSize)
+            % Change only the voxel size of the volume shown.  A viewer3d
+            % takes it as a new Transformation; the fallback rebuilds its
+            % faces, which is cheap next to sending the data again.
+            if isempty(obj.Vol_) || isequal(voxSize(:).', obj.VoxSize_), return; end
+            obj.VoxSize_ = voxSize(:).';
+            if obj.isViewer3D() && ~isempty(obj.VolObj) && isvalid(obj.VolObj)
+                tform = MatVisVolumeView.scaleTform(obj.VoxSize_);
+                if ~isempty(tform)
+                    try
+                        obj.VolObj.Transformation = tform;
+                        return;
+                    catch
+                    end
+                end
+            end
+            obj.setVolume(obj.Vol_, obj.VoxSize_);
         end
 
         function applyLook(obj)

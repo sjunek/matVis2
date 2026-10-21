@@ -90,7 +90,9 @@ ranges  = fullRanges(dims3);
 follow  = true;                      % track the main window's navigation
 useMainZoom = false;                 % take the extent from the shared zoom
 fullRes = false;
-linked   = model.NumDatasets > 1;    % mirror the view in the other datasets
+aspect  = [1 1 1];                   % per-slot stretch on top of the pixel size
+baseVox = [];                        % voxel size of the volume shown, unstretched
+linked  = model.NumDatasets > 1;    % mirror the view in the other datasets
 applying = false;                    % guard: adopting another window's view
 pending  = [];                       % view that arrived while one was applied
 adopted  = [];                       % last view adopted, to spot our own echo
@@ -155,24 +157,32 @@ lblStatus.Layout.Row = 2;
 %% ---- Volume ------------------------------------------------------------
 pVol = uipanel(side, 'Title', 'Volume');
 matVisShadePanelTitle(pVol);
-gv = uigridlayout(pVol, [4 2]);
+gv = uigridlayout(pVol, [4 4]);
 gv.RowHeight   = {22, 22, 22, 22};
-gv.ColumnWidth = {24, '1x'};
+gv.ColumnWidth = {24, '1x', 10, 58};
 gv.Padding     = [6 4 6 4];
 gv.RowSpacing  = 3;
+gv.ColumnSpacing = 3;
 
-ddDim = gobjects(1, 3);
+ddDim    = gobjects(1, 3);
+spAspect = gobjects(1, 3);
 tags  = {'X', 'Y', 'Z'};
 for s_ = 1:3
     uilabel(gv, 'Text', tags{s_}, 'HorizontalAlignment', 'right');
     ddDim(s_) = uidropdown(gv, 'Items', dimItems(), 'ItemsData', 1:nDims, ...
         'Value', dims3(s_), 'ValueChangedFcn', ...
         @(src, ~) onDimChanged(s_, src.Value));
+    uilabel(gv, 'Text', char(215), 'HorizontalAlignment', 'center');
+    spAspect(s_) = uispinner(gv, 'Limits', [0.01 100], 'Value', aspect(s_), ...
+        'Step', 0.5, 'ValueDisplayFormat', '%.3g', ...
+        'Tooltip', sprintf(['Stretch the %s axis by this factor.\n' ...
+            '1 = true proportions from the pixel sizes.'], tags{s_}), ...
+        'ValueChangedFcn', @(src, ~) onAspectChanged(s_, src.Value));
 end
 
 gvf = uigridlayout(gv, [1 2]);
 gvf.Layout.Row    = 4;
-gvf.Layout.Column = [1 2];
+gvf.Layout.Column = [1 4];
 gvf.ColumnWidth   = {'1x', 66};
 gvf.Padding       = [0 0 0 0];
 gvf.ColumnSpacing = 4;
@@ -416,12 +426,12 @@ w3.ApplyView = @applyView;
     function v = currentView()
         % What this window is showing, in the terms the video generator's
         % 3-D panel takes: the camera, which three dimensions the volume
-        % spans, and the rendering style.  az / el / zoom come back NaN when
+        % spans, the rendering style and the per-axis stretch.  az / el / zoom come back NaN when
         % the backend cannot report them (a headless viewer3d never
         % initialises its camera), so a caller can still take the rest.
         [az, el] = vv.cameraAngles();
         v = struct('az', az, 'el', el, 'zoom', vv.cameraZoom(), ...
-                   'dims', dims3, 'style', ddStyle.Value);
+                   'dims', dims3, 'style', ddStyle.Value, 'aspect', aspect);
     end
 
     function showWin()
@@ -461,7 +471,8 @@ w3.ApplyView = @applyView;
         vv.IsoValue = spIso.Value;
         vv.GradientOpacityValue = spIso.Value;
         vv.Labels   = {dimLabel(dims3(1)), dimLabel(dims3(2)), dimLabel(dims3(3))};
-        vv.setVolume(V, voxSize);
+        baseVox = voxSize;
+        vv.setVolume(V, voxSize .* aspect);
         lastMs  = toc(t0) * 1000;
         lastVox = double(size(V, 1:3));
         lastStr = strides;
@@ -569,6 +580,7 @@ w3.ApplyView = @applyView;
             spHi(s).Value   = max(spLo(s).Value, min(ranges(s, 2), N));
             spLo(s).Enable  = onOff3_(~useMainZoom);
             spHi(s).Enable  = onOff3_(~useMainZoom);
+            spAspect(s).Value = aspect(s);
         end
         en = onOff3_(ownContrast);
         spCMin.Enable = en;  spCMax.Enable = en;  spGam.Enable = en;
@@ -622,6 +634,17 @@ w3.ApplyView = @applyView;
         ranges = fullRanges(dims3);
         syncControls();
         forceRefresh();
+        broadcast(true);
+    end
+
+    function onAspectChanged(slot, val)
+        % Only the voxel size changes, so the volume already extracted is
+        % re-scaled rather than rebuilt.
+        if isempty(slot), return; end
+        aspect(slot) = val;
+        if ~isempty(baseVox)
+            vv.setVoxelSize(baseVox .* aspect);
+        end
         broadcast(true);
     end
 
@@ -748,7 +771,7 @@ w3.ApplyView = @applyView;
         % keeps its camera on 'auto' reports no pose to copy, and they are
         % read whatever the mode says.
         [az, el] = vv.cameraAngles();
-        s = struct('dims', dims3, 'ranges', ranges, ...
+        s = struct('dims', dims3, 'ranges', ranges, 'aspect', aspect, ...
                    'useMainZoom', useMainZoom, 'fullRes', fullRes, ...
                    'style', ddStyle.Value, 'cmap', ddCmap.Value, ...
                    'alpha', ddAlpha.Value, ...
@@ -809,6 +832,11 @@ w3.ApplyView = @applyView;
             dims3 = d;
         end
         if isequal(size(s.ranges), [3 2]), ranges = s.ranges; end
+        aspectChanged = false;
+        if isfield(s, 'aspect') && numel(s.aspect) == 3 && ~isequal(s.aspect, aspect)
+            aspect = s.aspect(:).';
+            aspectChanged = true;
+        end
         useMainZoom = logical(s.useMainZoom);
         fullRes     = logical(s.fullRes);
         chkMainZoom.Value = useMainZoom;
@@ -829,7 +857,12 @@ w3.ApplyView = @applyView;
         vv.setBoxVisible(s.box);
         vv.setOrientationAxes(s.orient);
         if strcmp(fig.Visible, 'on')
-            if ~render(), applyLook(); end
+            if ~render()
+                applyLook();
+                if aspectChanged && ~isempty(baseVox)
+                    vv.setVoxelSize(baseVox .* aspect);
+                end
+            end
         else
             dataSig = [];            % the next Show() rebuilds it
         end
@@ -1007,6 +1040,7 @@ function tf = sameScene3_(a, b)
     tf = false;
     if isempty(a) || isempty(b) || ~isstruct(a) || ~isstruct(b), return; end
     if ~isequal(a.dims, b.dims) || ~isequal(a.ranges, b.ranges) || ...
+            ~isequal(a.aspect, b.aspect) || ...
             ~isequal(logical(a.useMainZoom), logical(b.useMainZoom)) || ...
             ~isequal(logical(a.fullRes), logical(b.fullRes)) || ...
             ~strcmp(a.style, b.style) || ~isequal(a.cmap, b.cmap) || ...

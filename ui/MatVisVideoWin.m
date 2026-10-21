@@ -9,7 +9,8 @@ function vw = MatVisVideoWin(model, cbs)
 %     cbs.onHide         - @() called when the window is closed
 %     cbs.setZoom        - @(zoomRange) apply a new zoom box to the live
 %                          windows ("Even pixels" button)
-%     cbs.get3DView      - @() -> struct with az / el / zoom / dims / style
+%     cbs.get3DView      - @() -> struct with az / el / zoom / dims / style /
+%                          aspect
 %                          of an open 3-D window, or [] — the
 %                          "3D win -> start/end" buttons
 %     cbs.histRange      - @() -> [lo hi] for the histogram panel's x axis,
@@ -59,11 +60,12 @@ painting  = false;
 playTic   = tic;
 syncing   = false;
 dims3     = MatVisFrameComposer.defaultDims3(model);
+aspect3   = [1 1 1];       % per-axis stretch of the 3-D panel
 seqs      = newSequence();
 selIdx    = 1;
 
 fig = uifigure('Name', 'Video Generator', 'NumberTitle', 'off', ...
-               'Position', [120 120 684 788], 'Resize', 'on', ...
+               'Position', [120 120 684 802], 'Resize', 'on', ...
                'AutoResizeChildren', 'off', 'Visible', 'off');
 fig.CloseRequestFcn = @(~,~) onClose();
 
@@ -92,7 +94,7 @@ left.Scrollable    = 'on';
 % panel's own (movie-wide) setup right under the camera that drives it.
 right = uigridlayout(cols, [4 1]);
 right.Layout.Column = 2;
-right.RowHeight     = {128, 158, 158, 158};
+right.RowHeight     = {128, 158, 158, 184};
 right.ColumnWidth   = {'1x'};
 right.Padding       = [0 0 0 0];
 right.RowSpacing    = 6;
@@ -434,8 +436,8 @@ btnSpin = uibutton(gcb, 'Text', 'Spin 360°', ...
 %% ---- 3-D panel (movie) ------------------------------------------------
 p3D = uipanel(right, 'Title', '3D panel (whole movie)');
 matVisShadePanelTitle(p3D);
-g3 = uigridlayout(p3D, [5 4]);
-g3.RowHeight     = {22, 22, 22, 22, 22};
+g3 = uigridlayout(p3D, [6 4]);
+g3.RowHeight     = {22, 22, 22, 22, 22, 22};
 g3.ColumnWidth   = {62, '1x', '1x', '1x'};
 g3.Padding       = [8 6 8 6];
 g3.RowSpacing    = 4;
@@ -450,33 +452,45 @@ for kSlot_ = 1:3
     place(dd3Dim(kSlot_), 1, kSlot_ + 1);
 end
 
-addLabel(g3, 'Style:', 2, 1);
+addLabel(g3, 'Stretch:', 2, 1);
+sp3Aspect = gobjects(1, 3);
+for kSlot_ = 1:3
+    sp3Aspect(kSlot_) = uispinner(g3, 'Limits', [0.01 100], ...
+        'Value', aspect3(kSlot_), 'Step', 0.5, 'ValueDisplayFormat', '%.3g', ...
+        'Tooltip', ['Stretch of the volume X / Y / Z axis; 1 = true ' ...
+                    'proportions.' newline 'Copied from the 3-D window ' ...
+                    'with the "3D win" buttons.'], ...
+        'ValueChangedFcn', @(src, ~) on3DAspectChanged(kSlot_, src.Value));
+    place(sp3Aspect(kSlot_), 2, kSlot_ + 1);
+end
+
+addLabel(g3, 'Style:', 3, 1);
 dd3Style = uidropdown(g3, 'Items', {'Max intensity', 'Min intensity'}, ...
     'ItemsData', {'max', 'min'}, 'Value', 'max', ...
     'ValueChangedFcn', @(~,~) settingsChanged());
-place(dd3Style, 2, [2 4]);
+place(dd3Style, 3, [2 4]);
 
-addLabel(g3, 'Extent:', 3, 1);
+addLabel(g3, 'Extent:', 4, 1);
 dd3Extent = uidropdown(g3, 'Items', {'Full dimensions', 'Main-window zoom'}, ...
     'ItemsData', {'full', 'zoom'}, 'Value', 'full', ...
     'ValueChangedFcn', @(~,~) settingsChanged());
-place(dd3Extent, 3, [2 4]);
+place(dd3Extent, 4, [2 4]);
 
 cb3Box = uicheckbox(g3, 'Text', 'Bounding box', 'Value', true, ...
     'ValueChangedFcn', @(~,~) settingsChanged());
-place(cb3Box, 4, [1 2]);
+place(cb3Box, 5, [1 2]);
 cb3Lab = uicheckbox(g3, 'Text', 'Axis labels', 'Value', true, ...
     'ValueChangedFcn', @(~,~) settingsChanged());
-place(cb3Lab, 4, [3 4]);
+place(cb3Lab, 5, [3 4]);
 
-addLabel(g3, 'Voxels:', 5, 1);
+addLabel(g3, 'Voxels:', 6, 1);
 sp3Vox = uispinner(g3, 'Limits', [0.1 512], 'Value', MAXVOX / 1e6, 'Step', 1, ...
     'Tooltip', ['Millions of voxels handed to the projection. The sub-volume' newline ...
                 'is strided down to fit, trading detail for render time.'], ...
     'ValueChangedFcn', @(~,~) settingsChanged());
-place(sp3Vox, 5, 2);
+place(sp3Vox, 6, 2);
 lbl3Info = uilabel(g3, 'Text', '', 'FontSize', 10);
-place(lbl3Info, 5, [3 4]);
+place(lbl3Info, 6, [3 4]);
 
 %% ---- Actions -----------------------------------------------------------
 bottom = uigridlayout(root, [4 1]);
@@ -562,7 +576,7 @@ vw.controls = struct('layout', ddLayout, 'title', edtTitle, ...
     'az0', spAz0, 'az1', spAz1, 'el0', spEl0, 'el1', spEl1, ...
     'zoom0', spZ0, 'zoom1', spZ1, 'holdCamera', btnHoldCam, 'spin', btnSpin, ...
     'grabStart', btnGrab0, 'grabEnd', btnGrab1, ...
-    'dim3', dd3Dim, 'style3', dd3Style, 'extent3', dd3Extent, ...
+    'dim3', dd3Dim, 'aspect3', sp3Aspect, 'style3', dd3Style, 'extent3', dd3Extent, ...
     'box3', cb3Box, 'labels3', cb3Lab, 'maxVox3', sp3Vox, 'info3', lbl3Info, ...
     'folder', edtDir, 'name', edtName, 'format', ddFormat, 'fps', spFps, ...
     'quality', spQual, 'status', lblStatus, ...
@@ -836,7 +850,7 @@ vw.controls = struct('layout', ddLayout, 'title', edtTitle, ...
         has3D = layoutHas3D();
         setEnable({spAz0, spAz1, spEl0, spEl1, spZ0, spZ1, ...
                    btnHoldCam, btnSpin, btnGrab0, btnGrab1, ...
-                   dd3Dim, dd3Style, dd3Extent, cb3Box, cb3Lab, sp3Vox}, has3D);
+                   dd3Dim, sp3Aspect, dd3Style, dd3Extent, cb3Box, cb3Lab, sp3Vox}, has3D);
 
         syncing = false;
         syncFrameSlider();
@@ -1016,6 +1030,18 @@ vw.controls = struct('layout', ddLayout, 'title', edtTitle, ...
             syncing = false;
             done{end+1} = sprintf('dims %s/%s/%s', ...
                 dimName(d(1)), dimName(d(2)), dimName(d(3)));
+        end
+
+        if isfield(v, 'aspect') && numel(v.aspect) == 3 && ...
+                all(isfinite(v.aspect) & v.aspect > 0) && ...
+                ~isequal(v.aspect(:).', aspect3)
+            aspect3 = max(0.01, min(100, double(v.aspect(:).')));
+            syncing = true;
+            for kG_ = 1:3
+                sp3Aspect(kG_).Value = aspect3(kG_);
+            end
+            syncing = false;
+            done{end+1} = sprintf('stretch %.3g/%.3g/%.3g', aspect3);
         end
 
         [st, note] = grabbedStyle(v);
@@ -1198,6 +1224,11 @@ vw.controls = struct('layout', ddLayout, 'title', edtTitle, ...
         end
         f = MatVisFrameComposer.firstFreeDim(model);
         if ~isempty(f), d = f; end
+    end
+
+    function on3DAspectChanged(slot, val)
+        aspect3(slot) = val;
+        settingsChanged();
     end
 
     function on3DDimChanged(slot, newDim)
@@ -1393,6 +1424,7 @@ vw.controls = struct('layout', ddLayout, 'title', edtTitle, ...
                     base(kP_).fillZoom           = cbFillZoom.Value;
                 case 'volume'
                     base(kP_).dims3      = dims3;
+                    base(kP_).aspect     = aspect3;
                     base(kP_).extent     = dd3Extent.Value;
                     base(kP_).style      = dd3Style.Value;
                     base(kP_).maxVox     = sp3Vox.Value * 1e6;
