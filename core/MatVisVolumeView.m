@@ -517,6 +517,9 @@ classdef MatVisVolumeView < handle
         end
 
         function applyStyleTo(obj, vol)
+            % The volume is already contrast-scaled to uint8; pin the limits
+            % so viewer3d does not re-stretch it to its own min/max.
+            try; vol.DataLimits = [0 255]; catch; end
             try; vol.RenderingStyle = obj.Style; catch; end
             try; vol.IsosurfaceValue = obj.IsoValue; catch; end
             try; vol.GradientOpacityValue = obj.GradientOpacityValue; catch; end
