@@ -100,11 +100,11 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
         % Window positions
         windowPositions = struct('Main', mainFig.Position);
         for k = 1:K
-            windowPositions.(sprintf('Image%d', k)) = imageFigs{k}.Position;
-            windowPositions.(sprintf('Zoom%d',  k)) = zoomFigs{k}.Position;
-            windowPositions.(sprintf('Plot%d',  k)) = plotFigs{k}.Position;
+            windowPositions.(sprintf('Image%d', k)) = figPos_(imageFigs{k});
+            windowPositions.(sprintf('Zoom%d',  k)) = figPos_(zoomFigs{k});
+            windowPositions.(sprintf('Plot%d',  k)) = figPos_(plotFigs{k});
             if k <= numel(xsecFigs) && ~isempty(xsecFigs{k}) && isvalid(xsecFigs{k})
-                windowPositions.(sprintf('XSec%d', k)) = xsecFigs{k}.Position;
+                windowPositions.(sprintf('XSec%d', k)) = figPos_(xsecFigs{k});
             end
         end
         if K == 1
@@ -150,16 +150,49 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
         % completely wrong coordinates when restored under another. Saving
         % this lets onLoadConfig carry each window over to the same monitor
         % in the current layout (matVisRemapWindowPos).
-        monitorPositions = get(0, 'MonitorPositions');
+        monitorPositions = matVisMonitors();
 
         saveVars = { ...
-            'windowVisibility', 'windowPositions', 'monitorPositions', ...
             'colormapIdx', 'contrastMode', 'gamma', 'contrastMin', 'contrastMax', ...
             'rgbContrastRange', ...
             'numDatasets', 'activeDataset', 'contrastLocked', ...
             'datasetContrastMins', 'datasetContrastMaxs', 'datasetGammas', ...
             'alphaContrastMins', 'alphaContrastMaxs', 'alphaGamma', 'alphaBgWhite', ...
-            'aspectRatioFixed', 'aspectRatio', 'winScalePct'};
+            'aspectRatioFixed', 'aspectRatio', 'winScalePct', 'layoutVersion'};
+
+        % One window layout for a single dataset, one for several (see
+        % matVisConfigLayout): this session's layout goes to its own slot,
+        % and the other slot is carried over from the file as it was.
+        layoutVersion = 2;
+        old = LoadConfig_(configPath);
+        layoutVars = {'windowPositions', 'windowVisibility', 'monitorPositions'};
+        if K == 1
+            [p, v, m, n] = matVisConfigLayout(old, 2);
+            if ~isempty(p)
+                windowPositionsMulti  = p;
+                windowVisibilityMulti = v;
+                monitorPositionsMulti = m;
+                numDatasetsMulti      = n;
+                layoutVars = [layoutVars, {'windowPositionsMulti', ...
+                    'windowVisibilityMulti', 'monitorPositionsMulti', 'numDatasetsMulti'}];
+            end
+        else
+            windowPositionsMulti  = windowPositions;
+            windowVisibilityMulti = windowVisibility;
+            monitorPositionsMulti = monitorPositions;
+            numDatasetsMulti      = K;
+            layoutVars = {'windowPositionsMulti', 'windowVisibilityMulti', ...
+                'monitorPositionsMulti', 'numDatasetsMulti'};
+            [p, v, m] = matVisConfigLayout(old, 1);
+            if ~isempty(p)
+                windowPositions  = p;
+                windowVisibility = v;
+                monitorPositions = m;
+                layoutVars = [layoutVars, {'windowPositions', 'windowVisibility', ...
+                    'monitorPositions'}];
+            end
+        end
+        saveVars = [layoutVars, saveVars];
 
         % Manual mode: persist the mode but not the window it was left at.
         % Manual bounds and gamma are properties of the dataset at hand, not
@@ -180,6 +213,13 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
         warning('matVisConfig:SaveFailed', ...
             'Failed to save config to %s: %s', configPath, ME.message);
     end
+end
+
+function pos = figPos_(f)
+    % A hidden window keeps the place it was given in appdata until it is
+    % shown (MatVisMainWindow's setWinPos), so that is its real position.
+    pos = getappdata(f, 'mvPendingPos');
+    if isempty(pos), pos = f.Position; end
 end
 
 function configPath = GetConfigPath_()

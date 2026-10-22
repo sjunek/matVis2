@@ -685,10 +685,15 @@ btnH = 24;
 % Five equal columns, two rows.  Save/Load configuration moved to the
 % Settings menu, which freed the two cells Video and 3-D now sit in -- and
 % with them the narrow sixth column those two used to share.
-bottomGrid = uigridlayout(grid, [2, 5]);
+% Row 1 holds the data windows (one per dataset), row 2 the control windows.
+% With several datasets a narrow sixth column carries the window-size lock
+% at the end of the data-window row it governs.
+bottomCols = {'1x', '1x', '1x', '1x', '1x'};
+if nDatasets > 1, bottomCols{end+1} = 28; end
+bottomGrid = uigridlayout(grid, [2, numel(bottomCols)]);
 bottomGrid.Layout.Row    = 4;
 bottomGrid.Layout.Column = 1;
-bottomGrid.ColumnWidth   = {'1x', '1x', '1x', '1x', '1x'};
+bottomGrid.ColumnWidth   = bottomCols;
 bottomGrid.RowHeight     = {btnH, btnH};
 bottomGrid.RowSpacing    = rowH_bottom - 2*btnH - 4;
 bottomGrid.Padding       = [0 2 0 2];
@@ -713,12 +718,12 @@ btnTogglePlot.Layout.Row = 1;  btnTogglePlot.Layout.Column = 3;
 btnToggleRoi = uibutton(bottomGrid, 'state', 'Text', 'ROI', 'Value', false, ...
     'FontSize', btnFS, 'Tooltip', 'Show/hide the ROI Manager', ...
     'ValueChangedFcn', @(src, ~) toggleRoiWindow(src.Value));
-btnToggleRoi.Layout.Row = 1;  btnToggleRoi.Layout.Column = 4;
+btnToggleRoi.Layout.Row = 2;  btnToggleRoi.Layout.Column = 3;
 
 btnToggleProfile = uibutton(bottomGrid, 'state', 'Text', 'Profiles', 'Value', false, ...
     'FontSize', btnFS, 'Tooltip', 'Show/hide the Profile Manager', ...
     'ValueChangedFcn', @(src, ~) toggleProfileWindow(src.Value));
-btnToggleProfile.Layout.Row = 1;  btnToggleProfile.Layout.Column = 5;
+btnToggleProfile.Layout.Row = 2;  btnToggleProfile.Layout.Column = 4;
 
 btnOverlay = uibutton(bottomGrid, 'state', 'Text', 'Overlay', 'Value', true, ...
     'FontSize', btnFS, 'Tooltip', 'Show/hide crop rectangle and position lines', ...
@@ -736,7 +741,7 @@ btnToggleXSec = uibutton(bottomGrid, 'state', 'Text', 'XSec', 'Value', false, ..
     'Tooltip', sprintf(['Show/hide the cross-section window: up to four planes\n' ...
         'of this dataset (three 2-D cross sections + a 3-D max projection).']), ...
     'ValueChangedFcn', @(src, ~) toggleXSecWindows(src.Value));
-btnToggleXSec.Layout.Row = 2;  btnToggleXSec.Layout.Column = 3;
+btnToggleXSec.Layout.Row = 1;  btnToggleXSec.Layout.Column = 4;
 
 btnToggleVideo = uibutton(bottomGrid, 'state', 'Text', 'Video', 'Value', false, ...
     'FontSize', btnFS, ...
@@ -744,7 +749,7 @@ btnToggleVideo = uibutton(bottomGrid, 'state', 'Text', 'Video', 'Value', false, 
         'windows into one movie frame and record a sweep\n' ...
         'through a dimension.']), ...
     'ValueChangedFcn', @(src, ~) toggleVideoWindow(src.Value));
-btnToggleVideo.Layout.Row = 2;  btnToggleVideo.Layout.Column = 4;
+btnToggleVideo.Layout.Row = 2;  btnToggleVideo.Layout.Column = 5;
 
 btnToggle3D = uibutton(bottomGrid, 'state', 'Text', '3D', 'Value', false, ...
     'FontSize', btnFS, ...
@@ -752,7 +757,20 @@ btnToggle3D = uibutton(bottomGrid, 'state', 'Text', '3D', 'Value', false, ...
         'rendering of three selectable dimensions, with its own\n' ...
         'extent, rendering style and camera controls.']), ...
     'ValueChangedFcn', @(src, ~) toggle3DWindows(src.Value));
-btnToggle3D.Layout.Row = 2;  btnToggle3D.Layout.Column = 5;
+btnToggle3D.Layout.Row = 1;  btnToggle3D.Layout.Column = 5;
+
+% Closed: resizing one dataset's Image/Zoom/Plot/XSec/3D window resizes the
+% same window of every other dataset.  Open: each window is sized on its own.
+winSizeLocked  = true;
+btnWinSizeLock = [];
+if nDatasets > 1
+    btnWinSizeLock = uibutton(bottomGrid, 'state', 'Text', '', ...
+        'Icon', matVisLockIcon(winSizeLocked), 'Value', winSizeLocked, ...
+        'Tooltip', sprintf(['Locked: resizing a data window resizes the same\n' ...
+            'window of every dataset. Click to size each window on its own.']), ...
+        'ValueChangedFcn', @(src, ~) onWinSizeLockChanged(src));
+    btnWinSizeLock.Layout.Row = 1;  btnWinSizeLock.Layout.Column = 6;
+end
 
 setappdata(fig, 'OverlayVisible', true);
 
@@ -931,6 +949,16 @@ mvTiming_.labels{end+1} = 'pre-doRender'; mvTiming_.times(end+1) = toc(mvT0_);
 doRender();
 mvTiming_.labels{end+1} = 'doRender #1 (first render)'; mvTiming_.times(end+1) = toc(mvT0_);
 onWindowShown();
+for ds = 1:nDatasets
+    watchWinSize(imageWins{ds}.fig, 'image');
+    watchWinSize(zoomWins{ds}.fig,  'zoom');
+    watchWinSize(plotWins{ds}.fig,  'plot');
+    % Closing one hides it (instead of deleting it) and keeps its toggle
+    % button in step with what is shown.
+    imageWins{ds}.fig.CloseRequestFcn = @(src, ~) onDataWinClose(src, 'image');
+    zoomWins{ds}.fig.CloseRequestFcn  = @(src, ~) onDataWinClose(src, 'zoom');
+    plotWins{ds}.fig.CloseRequestFcn  = @(src, ~) onDataWinClose(src, 'plot');
+end
 mvTiming_.labels{end+1} = 'onWindowShown (positioning)'; mvTiming_.times(end+1) = toc(mvT0_);
 
 % ── Print startup timing report ──────────────────────────────────────────
@@ -983,6 +1011,8 @@ fprintf('\n');
         end
         try; if ~isempty(videoWin) && isvalid(videoWin.fig), delete(videoWin.fig); end; catch; end
         try; if ~isempty(roiMgr) && isvalid(roiMgr.fig), delete(roiMgr.fig); end; catch; end
+        try; if ~isempty(profMgr) && isvalid(profMgr.fig), delete(profMgr.fig); end; catch; end
+        try; if ~isempty(metadataWin) && isvalid(metadataWin.fig), delete(metadataWin.fig); end; catch; end
         try; if ~isempty(hist2DFig) && isvalid(hist2DFig), delete(hist2DFig); end; catch; end
         % A file-backed source holds its reader, and so a file handle, open.
         % Waiting for garbage collection to notice means the file can stay
@@ -3316,9 +3346,9 @@ fprintf('\n');
         p1 = get(0, 'PointerLocation');
 
         snapMain  = fig.Position;
-        snapImage = cellfun(@(w) w.fig.Position, imageWins, 'UniformOutput', false);
-        snapZoom  = cellfun(@(w) w.fig.Position, zoomWins,  'UniformOutput', false);
-        snapPlot  = cellfun(@(w) w.fig.Position, plotWins,  'UniformOutput', false);
+        snapImage = cellfun(@(w) winPos(w.fig), imageWins, 'UniformOutput', false);
+        snapZoom  = cellfun(@(w) winPos(w.fig), zoomWins,  'UniformOutput', false);
+        snapPlot  = cellfun(@(w) winPos(w.fig), plotWins,  'UniformOutput', false);
         if ~isempty(roiMgr) && isvalid(roiMgr.fig)
             snapRoi = roiMgr.fig.Position;
         else
@@ -3362,19 +3392,47 @@ fprintf('\n');
         snapImage = getappdata(fig, 'DragMoveSnapImage');
         snapZoom  = getappdata(fig, 'DragMoveSnapZoom');
         snapPlot  = getappdata(fig, 'DragMoveSnapPlot');
+        setappdata(fig, 'DragMoveDelta', delta);
+        % Hidden windows follow once, when the drag ends: moving one costs a
+        % re-hide (see setWinPos), too much for every motion event.
         for ds = 1:nDatasets
-            imageWins{ds}.fig.Position(1:2) = snapImage{ds}(1:2) + delta;
-            zoomWins{ds}.fig.Position(1:2)  = snapZoom{ds}(1:2)  + delta;
-            plotWins{ds}.fig.Position(1:2)  = snapPlot{ds}(1:2)  + delta;
+            moveIfShown(imageWins{ds}.fig, snapImage{ds}(1:2) + delta);
+            moveIfShown(zoomWins{ds}.fig,  snapZoom{ds}(1:2)  + delta);
+            moveIfShown(plotWins{ds}.fig,  snapPlot{ds}(1:2)  + delta);
         end
 
         snapRoi = getappdata(fig, 'DragMoveSnapRoi');
         if ~isempty(snapRoi) && ~isempty(roiMgr) && isvalid(roiMgr.fig)
-            roiMgr.fig.Position(1:2) = snapRoi(1:2) + delta;
+            moveIfShown(roiMgr.fig, snapRoi(1:2) + delta);
         end
     end
 
+    function moveIfShown(f, xy)
+        if strcmp(f.Visible, 'on'), f.Position(1:2) = xy; end
+    end
+
     function stopDragMove()
+        delta = getappdata(fig, 'DragMoveDelta');
+        if isequal(getappdata(fig, 'DragMoveActive'), true) && ~isempty(delta)
+            snapImage = getappdata(fig, 'DragMoveSnapImage');
+            snapZoom  = getappdata(fig, 'DragMoveSnapZoom');
+            snapPlot  = getappdata(fig, 'DragMoveSnapPlot');
+            snapRoi   = getappdata(fig, 'DragMoveSnapRoi');
+            wins  = [cellfun(@(w) w.fig, imageWins, 'UniformOutput', false), ...
+                     cellfun(@(w) w.fig, zoomWins,  'UniformOutput', false), ...
+                     cellfun(@(w) w.fig, plotWins,  'UniformOutput', false)];
+            snaps = [snapImage, snapZoom, snapPlot];
+            if ~isempty(snapRoi) && ~isempty(roiMgr) && isvalid(roiMgr.fig)
+                wins{end+1} = roiMgr.fig;  snaps{end+1} = snapRoi;
+            end
+            for kW_ = 1:numel(wins)
+                if strcmp(wins{kW_}.Visible, 'off')
+                    p = winPos(wins{kW_});
+                    setWinPos(wins{kW_}, [snaps{kW_}(1:2) + delta, p(3:4)]);
+                end
+            end
+        end
+        setappdata(fig, 'DragMoveDelta', []);
         setappdata(fig, 'DragMoveActive', false);
         fig.Pointer = 'arrow';
         fig.WindowButtonUpFcn = '';
@@ -3530,7 +3588,7 @@ fprintf('\n');
     function toggleAllWindows(wins, isVisible)
         for k = 1:numel(wins)
             if isVisible
-                wins{k}.fig.Visible = 'on';
+                showWin(wins{k}.fig);
             else
                 wins{k}.fig.Visible = 'off';
             end
@@ -3554,7 +3612,7 @@ fprintf('\n');
     function toggleRoiWindow(isVisible)
         if isVisible
             rm = getRoiMgr();
-            rm.fig.Visible = 'on';
+            showWin(rm.fig);
             figure(rm.fig);
         elseif ~isempty(roiMgr) && isvalid(roiMgr.fig)
             roiMgr.fig.Visible = 'off';
@@ -3597,7 +3655,7 @@ fprintf('\n');
     function toggleProfileWindow(isVisible)
         if isVisible
             pm = getProfileMgr();
-            pm.fig.Visible = 'on';
+            showWin(pm.fig);
             figure(pm.fig);
         elseif ~isempty(profMgr) && isvalid(profMgr.fig)
             profMgr.fig.Visible = 'off';
@@ -3622,7 +3680,7 @@ fprintf('\n');
         if isVisible
             mw2 = getMetadataWin();
             mw2.Refresh();
-            mw2.fig.Visible = 'on';
+            showWin(mw2.fig);
             figure(mw2.fig);
         elseif ~isempty(metadataWin) && isvalid(metadataWin.fig)
             metadataWin.fig.Visible = 'off';
@@ -3706,6 +3764,10 @@ fprintf('\n');
                 xsecWins{ds}.fig.Position(1:2) = ...
                     xsecDefaultPos + (ds-1) * [24, -24];
             end
+            if isempty(xsecSavedPos{ds})
+                placeInDatasetRow(xsecWins{ds}.fig, 'xsec', ds);
+            end
+            watchWinSize(xsecWins{ds}.fig, 'xsec');
             xsecWins{ds}.SetOverlayVisible(getappdata(fig, 'OverlayVisible'));
         end
         xs = xsecWins{ds};
@@ -3715,7 +3777,7 @@ fprintf('\n');
         for ds = 1:nDatasets
             if isVisible
                 xs = getXSecWin(ds);
-                xs.fig.Visible = 'on';
+                showWin(xs.fig);
             elseif ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
                 xsecWins{ds}.fig.Visible = 'off';
             end
@@ -3745,6 +3807,8 @@ fprintf('\n');
                     [mp(1) + mp(3) + 20, mp(2)] + (ds-1) * [24, -24];
             catch
             end
+            placeInDatasetRow(vol3DWins{ds}.fig, '3d', ds);
+            watchWinSize(vol3DWins{ds}.fig, '3d');
             % A window opened later joins the view the others already share.
             if ~isempty(vol3DView)
                 vol3DWins{ds}.ApplyView(vol3DView);
@@ -3785,6 +3849,155 @@ fprintf('\n');
             end
             try; wLnk_.ApplyView(s); catch; end
         end
+    end
+
+    % ------------------------------------------------------------------
+    %  Window-size lock across datasets
+    % ------------------------------------------------------------------
+    function onWinSizeLockChanged(src)
+        winSizeLocked = logical(src.Value);
+        src.Icon = matVisLockIcon(src.Value);
+        if winSizeLocked
+            snapWinSizes();
+        end
+    end
+
+    function snapWinSizes()
+        % Closing the lock: every family takes the size of dataset 1's
+        % window (the top row), the others lined up in rows below it.
+        kinds = {'image', 'zoom', 'plot', 'xsec', '3d'};
+        for kK_ = 1:numel(kinds)
+            figs = dataWinFigs(kinds{kK_});
+            if isempty(figs{1}), continue; end
+            resizeSiblings(figs, figs{1});
+        end
+    end
+
+    function onDataWinClose(src, kind)
+        src.Visible = 'off';
+        figs = dataWinFigs(kind);
+        anyOn = any(cellfun(@(f) ~isempty(f) && strcmp(f.Visible, 'on'), figs));
+        switch kind
+            case 'image', btnToggleImage.Value = anyOn;
+            case 'zoom',  btnToggleZoom.Value  = anyOn;
+            case 'plot',  btnTogglePlot.Value  = anyOn;
+        end
+    end
+
+    function figs = dataWinFigs(kind)
+        % The figures of one data-window family, one cell per dataset ([] for
+        % a lazy window not built yet).  Loop variable deliberately not "ds".
+        figs = cell(1, nDatasets);
+        for kDsW_ = 1:nDatasets
+            switch kind
+                case 'image', wW_ = imageWins{kDsW_};
+                case 'zoom',  wW_ = zoomWins{kDsW_};
+                case 'plot',  wW_ = plotWins{kDsW_};
+                case 'xsec',  wW_ = xsecWins{kDsW_};
+                case '3d',    wW_ = vol3DWins{kDsW_};
+            end
+            if ~isempty(wW_) && isvalid(wW_.fig)
+                figs{kDsW_} = wW_.fig;
+            end
+        end
+    end
+
+    function watchWinSize(f, kind)
+        if nDatasets < 2, return; end
+        f.SizeChangedFcn = @(src, ~) onDataWinSizeChanged(src, kind);
+    end
+
+    function onDataWinSizeChanged(src, kind)
+        % One data window was resized: give the same window of every other
+        % dataset that size, lined up below/above it (resizeSiblings).
+        if ~winSizeLocked, return; end
+        sz = src.Position(3:4);
+        % The echo of a size this function set is not a resize by the user;
+        % passing it on could undo a newer step of a drag still in progress.
+        if isequal(getappdata(src, 'mvSyncedSize'), sz)
+            setappdata(src, 'mvSyncedSize', []);
+            return;
+        end
+        resizeSiblings(dataWinFigs(kind), src);
+    end
+
+    function resizeSiblings(figs, src)
+        % Line every figure in figs up with src, as matVis 1 did: the same
+        % left edge and size, one row per dataset stacked from src's row
+        % (rows as in tileDatasetRows).  Whichever edge of src was dragged,
+        % the others then follow it exactly.
+        sp = winPos(src);
+        titleBarH = 32;   % see applyFreshLayout
+        gap       = 10;
+        rowStep   = sp(4) + titleBarH + gap;
+        kSrc = find(cellfun(@(f) ~isempty(f) && f == src, figs), 1);
+        for kDsS_ = 1:nDatasets
+            fS_ = figs{kDsS_};
+            if isempty(fS_) || fS_ == src, continue; end
+            pos = [sp(1), sp(2) - (kDsS_ - kSrc) * rowStep, sp(3:4)];
+            p = winPos(fS_);
+            if isequal(p, pos), continue; end
+            if ~isequal(p(3:4), pos(3:4))
+                setappdata(fS_, 'mvSyncedSize', pos(3:4));
+            end
+            setWinPos(fS_, pos);
+        end
+    end
+
+    function setWinPos(f, pos)
+        % Move/resize a window without showing it.  In R2023b, changing the
+        % Position of a hidden uifigure that has been drawn before puts it on
+        % screen while its Visible still reads 'off' -- the toggle buttons
+        % then disagree with what is shown.  So a hidden window only keeps
+        % its new place, and takes it when it is shown (showWin); winPos
+        % reads it back.
+        if strcmp(f.Visible, 'on')
+            f.Position = pos;
+            setappdata(f, 'mvPendingPos', []);
+        else
+            setappdata(f, 'mvPendingPos', pos);
+        end
+    end
+
+    function pos = winPos(f)
+        pos = getappdata(f, 'mvPendingPos');
+        if isempty(pos), pos = f.Position; end
+    end
+
+    function showWin(f)
+        pos = getappdata(f, 'mvPendingPos');
+        if ~isempty(pos)
+            f.Position = pos;
+            setappdata(f, 'mvPendingPos', []);
+        end
+        f.Visible = 'on';
+    end
+
+    function placeInDatasetRow(f, kind, ds)
+        % A lazily built XSec/3-D window of dataset ds > 1 goes below dataset
+        % 1's, one row per dataset like the Image/Zoom/Plot rows: same left
+        % edge, same size while the lock is closed, and its top edge as far
+        % below as this dataset's Image row is (more if it would overlap).
+        % A window too tall for that is cascaded from dataset 1's instead.
+        if ds == 1, return; end
+        figs = dataWinFigs(kind);
+        ref = figs{1};
+        if isempty(ref), return; end
+        rp = winPos(ref);
+        sz = f.Position(3:4);
+        if winSizeLocked, sz = rp(3:4); end
+        titleBarH = 32;   % see applyFreshLayout
+        gap       = 10;
+        ip1 = winPos(imageWins{1}.fig);
+        ipD = winPos(imageWins{ds}.fig);
+        drop = max((ip1(2) + ip1(4)) - (ipD(2) + ipD(4)), ...
+                   (ds-1) * (sz(2) + titleBarH + gap));
+        pos = [rp(1), rp(2) + rp(4) - drop - sz(2), sz];
+        mon = targetMonitorBounds();
+        if pos(2) < mon(2)
+            pos = [rp(1:2) + (ds-1) * [24, -24] + [0, rp(4) - sz(2)], sz];
+        end
+        f.Position = clampFigPosToScreen(pos);
     end
 
     function applyRoiPosition(pos, zoomVal)
@@ -4340,11 +4553,12 @@ fprintf('\n');
         % (matVisRemapWindowPos) rather than required to match exactly, and
         % then clamped on-screen (clampFigPosToScreen) in case that monitor
         % is gone.
-        if isfield(config, 'windowPositions')
-            pos = config.windowPositions;
-            savedMon = [];
-            if isfield(config, 'monitorPositions'), savedMon = config.monitorPositions; end
-            curMon = get(0, 'MonitorPositions');
+        % One dataset and several datasets keep separate layouts (a single
+        % dataset usually gets larger windows); matVisConfigLayout picks the
+        % one for this window.
+        [pos, vis, savedMon, savedN] = matVisConfigLayout(config, nDatasets);
+        if ~isempty(pos)
+            curMon = matVisMonitors();
             restorePos = @(p) clampFigPosToScreen(matVisRemapWindowPos(p, savedMon, curMon));
             if isfield(pos, 'Main')
                 mainP = matVisRemapWindowPos(pos.Main, savedMon, curMon);
@@ -4352,37 +4566,46 @@ fprintf('\n');
                 fig.Position(1:2) = mainP(1:2);
             end
 
-            for ds = 1:nDatasets
+            for ds = 1:min(nDatasets, savedN)
                 dsKey = num2str(ds);
                 if isfield(pos, ['Image' dsKey])
-                    imageWins{ds}.fig.Position = restorePos(pos.(['Image' dsKey]));
+                    setWinPos(imageWins{ds}.fig, restorePos(pos.(['Image' dsKey])));
                 elseif ds == 1 && isfield(pos, 'Image')
-                    imageWins{ds}.fig.Position = restorePos(pos.Image);
+                    setWinPos(imageWins{ds}.fig, restorePos(pos.Image));
                 end
                 if isfield(pos, ['Zoom' dsKey])
-                    zoomWins{ds}.fig.Position = restorePos(pos.(['Zoom' dsKey]));
+                    setWinPos(zoomWins{ds}.fig, restorePos(pos.(['Zoom' dsKey])));
                 elseif ds == 1 && isfield(pos, 'Zoom')
-                    zoomWins{ds}.fig.Position = restorePos(pos.Zoom);
+                    setWinPos(zoomWins{ds}.fig, restorePos(pos.Zoom));
                 end
                 if isfield(pos, ['Plot' dsKey])
-                    plotWins{ds}.fig.Position = restorePos(pos.(['Plot' dsKey]));
+                    setWinPos(plotWins{ds}.fig, restorePos(pos.(['Plot' dsKey])));
                 elseif ds == 1 && isfield(pos, 'Plot')
-                    plotWins{ds}.fig.Position = restorePos(pos.Plot);
+                    setWinPos(plotWins{ds}.fig, restorePos(pos.Plot));
                 end
                 % Cross-section windows may not exist yet — remember the
                 % saved geometry and apply it when one is created.
                 if isfield(pos, ['XSec' dsKey])
                     xsecSavedPos{ds} = matVisRemapWindowPos(pos.(['XSec' dsKey]), savedMon, curMon);
                     if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
-                        xsecWins{ds}.fig.Position = clampFigPosToScreen(xsecSavedPos{ds});
+                        setWinPos(xsecWins{ds}.fig, clampFigPosToScreen(xsecSavedPos{ds}));
                     end
                 end
             end
+            if nDatasets > 1
+                stackDatasetRows(savedN);
+            end
+        elseif nDatasets > 1
+            % No layout for several datasets saved yet: tile them in rows
+            % next to the main window.
+            mp  = fig.Position;
+            mon = monitorOf(mp);
+            % inner top of row 1: safeMargin + titleBarH below the top
+            tileDatasetRows(mp(1) + mp(3) + 10, mon(2) + mon(4) - 8 - 32, mon);
         end
 
         % Window visibility
-        if isfield(config, 'windowVisibility')
-            vis = config.windowVisibility;
+        if ~isempty(vis)
             if isfield(vis, 'Overlay')
                 btnOverlay.Value = vis.Overlay;
                 setOverlay(vis.Overlay);
@@ -4395,16 +4618,16 @@ fprintf('\n');
                 zomVis = getVisBool(vis, ['Zoom'  dsKey], ds, 'Zoom',  true);
                 pltVis = getVisBool(vis, ['Plot'  dsKey], ds, 'Plot',  true);
                 xseVis = getVisBool(vis, ['XSec'  dsKey], ds, 'XSec',  false);
-                if imgVis, imageWins{ds}.fig.Visible = 'on'; else, imageWins{ds}.fig.Visible = 'off'; end
-                if zomVis, zoomWins{ds}.fig.Visible  = 'on'; else, zoomWins{ds}.fig.Visible  = 'off'; end
-                if pltVis, plotWins{ds}.fig.Visible  = 'on'; else, plotWins{ds}.fig.Visible  = 'off'; end
+                if imgVis, showWin(imageWins{ds}.fig);  else, imageWins{ds}.fig.Visible = 'off'; end
+                if zomVis, showWin(zoomWins{ds}.fig);   else, zoomWins{ds}.fig.Visible  = 'off'; end
+                if pltVis, showWin(plotWins{ds}.fig);   else, plotWins{ds}.fig.Visible  = 'off'; end
                 if xseVis
                     % Only now is it worth paying for the window. (Assign the
                     % result first: `getXSecWin(ds).fig.Visible = ...` would
                     % be parsed as an assignment to a *variable* of that name,
                     % which silently shadows the nested function.)
                     xsWin = getXSecWin(ds);
-                    xsWin.fig.Visible = 'on';
+                    showWin(xsWin.fig);
                 elseif ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
                     xsecWins{ds}.fig.Visible = 'off';
                 end
@@ -4427,21 +4650,22 @@ fprintf('\n');
         if ~isempty(fig.UserData) && fig.UserData == 1, return; end
         fig.UserData = 1;
 
+        % The default layout first: the config may hold no layout for this
+        % number of datasets (see matVisConfigLayout), only the other one.
+        applyFreshLayout();
         configPath = matVisConfig('GetConfigPath');
         if isfile(configPath)
             onLoadConfig();
-        else
-            applyFreshLayout();
         end
 
         fig.Visible = 'on';
         for ds = 1:nDatasets
-            if btnToggleImage.Value, imageWins{ds}.fig.Visible = 'on'; end
-            if btnToggleZoom.Value,  zoomWins{ds}.fig.Visible  = 'on'; end
-            if btnTogglePlot.Value,  plotWins{ds}.fig.Visible  = 'on'; end
+            if btnToggleImage.Value, showWin(imageWins{ds}.fig);  end
+            if btnToggleZoom.Value,  showWin(zoomWins{ds}.fig);   end
+            if btnTogglePlot.Value,  showWin(plotWins{ds}.fig);   end
             if btnToggleXSec.Value
                 xsWin = getXSecWin(ds);
-                xsWin.fig.Visible = 'on';
+                showWin(xsWin.fig);
             end
         end
     end
@@ -4476,9 +4700,12 @@ fprintf('\n');
         % (Save/Load Config, window toggles) can never end up below the
         % target monitor's bottom edge even when the window no longer
         % fits top-to-bottom.
+        % Its menu bar sits above Position too, under the title bar (about
+        % 21 px measured on R2023b at 125 % scaling).
+        menuBarH   = 22;
         mainPos    = fig.Position;
         mainPos(1) = monL + 50;
-        mainPos(2) = max(monB, winInnerTop - mainPos(4));   % inner bottom
+        mainPos(2) = max(monB, winInnerTop - mainPos(4) - menuBarH);   % inner bottom
         fig.Position = mainPos;
         % Use mainPos as-is — no drawnow re-read, which can let the OS
         % reposition the figure to an unexpected location before we read it.
@@ -4493,28 +4720,16 @@ fprintf('\n');
             pltW = sqSz + gap + sqSz;
             topY = winInnerTop - sqSz;   % inner bottom of image/zoom
 
-            imageWins{1}.fig.Position = [leftX,          topY, sqSz, sqSz];
-            zoomWins{1}.fig.Position  = [leftX+sqSz+gap, topY, sqSz, sqSz];
+            setWinPos(imageWins{1}.fig, [leftX,          topY, sqSz, sqSz]);
+            setWinPos(zoomWins{1}.fig,  [leftX+sqSz+gap, topY, sqSz, sqSz]);
 
             % Plot outer top must clear image inner bottom (topY):
             %   plot outer top = plot inner top + titleBarH
             %                 = (topY - gap - titleBarH - pltH + pltH) + titleBarH
             %                 = topY - gap   ← gap pixels below image inner bottom ✓
-            plotWins{1}.fig.Position  = [leftX, topY - gap - titleBarH - pltH, pltW, pltH];
+            setWinPos(plotWins{1}.fig,  [leftX, topY - gap - titleBarH - pltH, pltW, pltH]);
         else
-            % ── Multiple datasets ────────────────────────────────────────
-            % Each row: image (square) | zoom (square) | plot (2:1), same height.
-            rowH = 360;
-            pltW = rowH * 2;
-
-            for ds = 1:nDatasets
-                % Row outer top = winInnerTop + titleBarH for ds=1,
-                % then shifted down by (rowH + titleBarH + gap) per dataset.
-                rowInnerBot = winInnerTop - rowH - (ds-1) * (rowH + titleBarH + gap);
-                imageWins{ds}.fig.Position = [leftX,                    rowInnerBot, rowH, rowH];
-                zoomWins{ds}.fig.Position  = [leftX+rowH+gap,           rowInnerBot, rowH, rowH];
-                plotWins{ds}.fig.Position  = [leftX+rowH+gap+rowH+gap,  rowInnerBot, pltW, rowH];
-            end
+            tileDatasetRows(leftX, winInnerTop, targetMon);
         end
 
         % ROI Manager (created lazily): remember its default position.
@@ -4524,19 +4739,19 @@ fprintf('\n');
         % arrangement) would otherwise place these off that monitor entirely.
         roiMgrDefaultPos = [leftX, monB + 60];
         if ~isempty(roiMgr) && isvalid(roiMgr.fig)
-            roiMgr.fig.Position(1:2) = roiMgrDefaultPos;
+            p = winPos(roiMgr.fig);  setWinPos(roiMgr.fig, [roiMgrDefaultPos, p(3:4)]);
         end
 
         % Profile Manager (created lazily): offset from the ROI manager
         profMgrDefaultPos = [leftX + 60, monB + 40];
         if ~isempty(profMgr) && isvalid(profMgr.fig)
-            profMgr.fig.Position(1:2) = profMgrDefaultPos;
+            p = winPos(profMgr.fig);  setWinPos(profMgr.fig, [profMgrDefaultPos, p(3:4)]);
         end
 
         % Metadata window (created lazily): offset from the Profile Manager
         metadataWinDefaultPos = [leftX + 120, monB + 20];
         if ~isempty(metadataWin) && isvalid(metadataWin.fig)
-            metadataWin.fig.Position(1:2) = metadataWinDefaultPos;
+            p = winPos(metadataWin.fig);  setWinPos(metadataWin.fig, [metadataWinDefaultPos, p(3:4)]);
         end
 
         % Cross-section windows (created lazily): stacked at the left of the
@@ -4544,7 +4759,79 @@ fprintf('\n');
         xsecDefaultPos = [monL + 30, monB + 30];
         for ds = 1:nDatasets
             if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
-                xsecWins{ds}.fig.Position(1:2) = xsecDefaultPos + (ds-1) * [24, -24];
+                setWinPos(xsecWins{ds}.fig, ...
+                    [xsecDefaultPos + (ds-1) * [24, -24], xsecWins{ds}.fig.Position(3:4)]);
+            end
+        end
+    end
+
+    function tileDatasetRows(leftX, winInnerTop, mon)
+        % ── Multiple datasets ────────────────────────────────────────
+        % Each row: image (square) | zoom (square) | plot (2:1), same height,
+        % one row per dataset, the first row's inner top at winInnerTop.  The
+        % rows shrink from 360 px until all of them fit on the monitor mon.
+        gap        = 10;
+        titleBarH  = 32;   % see applyFreshLayout
+        safeMargin = 8;
+        fitH = (winInnerTop - mon(2) - safeMargin - (nDatasets-1) * (titleBarH + gap)) / nDatasets;
+        fitW = (mon(1) + mon(3) - safeMargin - leftX - 2*gap) / 4;
+        rowH = max(150, floor(min([360, fitH, fitW])));
+        pltW = rowH * 2;
+
+        for ds = 1:nDatasets
+            % Row outer top = winInnerTop + titleBarH for ds=1,
+            % then shifted down by (rowH + titleBarH + gap) per dataset.
+            rowInnerBot = winInnerTop - rowH - (ds-1) * (rowH + titleBarH + gap);
+            setWinPos(imageWins{ds}.fig, [leftX,                    rowInnerBot, rowH, rowH]);
+            setWinPos(zoomWins{ds}.fig,  [leftX+rowH+gap,           rowInnerBot, rowH, rowH]);
+            setWinPos(plotWins{ds}.fig,  [leftX+rowH+gap+rowH+gap,  rowInnerBot, pltW, rowH]);
+        end
+    end
+
+    function stackDatasetRows(savedN)
+        % Rows of a restored layout for several datasets.  A dataset the
+        % layout has no row for (it was saved with fewer) gets a copy of
+        % dataset 1's row just below the row above; a saved row that now
+        % overlaps the row above (its monitor got smaller since) moves down.
+        titleBarH = 32;   % see applyFreshLayout
+        gap       = 10;
+        for dsR = 2:nDatasets
+            figsR = {imageWins{dsR}.fig, zoomWins{dsR}.fig, plotWins{dsR}.fig};
+            above = {imageWins{dsR-1}.fig, zoomWins{dsR-1}.fig, plotWins{dsR-1}.fig};
+            if dsR > savedN
+                src = {imageWins{1}.fig, zoomWins{1}.fig, plotWins{1}.fig};
+            else
+                src = figsR;
+            end
+            srcPos  = cellfun(@winPos, src, 'UniformOutput', false);
+            abovePos = cellfun(@winPos, above, 'UniformOutput', false);
+            rowTop   = max(cellfun(@(p) p(2) + p(4), srcPos));
+            maxTop   = min(cellfun(@(p) p(2), abovePos)) - gap - titleBarH;
+            if dsR > savedN
+                shift = rowTop - maxTop;
+            else
+                shift = max(0, rowTop - maxTop);
+            end
+            for kC_ = 1:3
+                p = srcPos{kC_};
+                p(2) = p(2) - shift;
+                setWinPos(figsR{kC_}, clampFigPosToScreen(p));
+            end
+        end
+    end
+
+    function mon = monitorOf(pos)
+        % The monitor [left bottom width height] holding the centre of the
+        % figure Position pos, the primary one if none does.
+        % The primary monitor (the one at [1 1]) counts without its taskbar.
+        c  = pos(1:2) + pos(3:4)/2;
+        [mp, primWork] = matVisMonitors();
+        mon = primWork;
+        for i = 1:size(mp, 1)
+            if c(1) >= mp(i,1) && c(1) < mp(i,1) + mp(i,3) && ...
+               c(2) >= mp(i,2) && c(2) < mp(i,2) + mp(i,4)
+                if any(abs(mp(i,1:2) - 1) > 1.5), mon = mp(i,:); end
+                return;
             end
         end
     end
@@ -4559,7 +4846,7 @@ fprintf('\n');
         % multi-monitor setups. A window already usable on some monitor
         % (including a non-primary one) is left exactly where it was.
         minVisible = 100;
-        mp = get(0, 'MonitorPositions');   % Nx4: [left bottom width height], y-up
+        mp = matVisMonitors();   % Nx4: [left bottom width height], y-up
         for i = 1:size(mp, 1)
             monL = mp(i,1); monB = mp(i,2);
             monR = monL + mp(i,3);  monT = monB + mp(i,4);
@@ -4585,8 +4872,10 @@ fprintf('\n');
         % [left bottom width height] (MATLAB y-up convention, see
         % MonitorPositions) of the primary monitor. Deliberately not the
         % monitor under the mouse pointer: where the windows open must not
-        % depend on where the mouse happens to be at startup.
-        mon = get(0, 'ScreenSize');
+        % depend on where the mouse happens to be at startup.  Its working
+        % area, read live (matVisMonitors): get(0,'ScreenSize') is the
+        % layout MATLAB started with, and includes the taskbar.
+        [~, mon] = matVisMonitors();
     end
 
     % ---- Aspect ratio & window scaling -------------------------------------
@@ -4684,11 +4973,17 @@ function label = getDimLabel(model, dimIdx)
     end
 end
 
-function v = getVisBool(vis, key, ds, legacyKey, defaultVal)
+function v = getVisBool(vis, key, ~, legacyKey, defaultVal)
     % Look up visibility boolean from config struct with legacy key fallback.
+    % A dataset the config has no entry for (it was saved with fewer) does
+    % what dataset 1 did, so the windows of one kind stay in step with their
+    % toggle button.
+    key1 = [legacyKey '1'];
     if isfield(vis, key)
         v = logical(vis.(key));
-    elseif ds == 1 && isfield(vis, legacyKey)
+    elseif isfield(vis, key1)
+        v = logical(vis.(key1));
+    elseif isfield(vis, legacyKey)
         v = logical(vis.(legacyKey));
     else
         v = defaultVal;
