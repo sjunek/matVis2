@@ -8,7 +8,8 @@ function zw = MatVisZoomWin(model, zoomFromMouseFcn, positionFromMouseFcn, dsIdx
 %       posXLocal  : CurrPos(XDim) - ZoomRange(XDim,1) + 1  (column)
 %       posYLocal  : CurrPos(YDim) - ZoomRange(YDim,1) + 1  (row)
 %
-%   zw.SetOverlayVisible(tf)
+%   zw.SetOverlayVisible(tf, items)  items (optional): struct of logicals
+%                                    Crosshair / ScaleBar picking which
 %
 % Mouse interactions:
 %   Left-drag on posLineV : move vertical position line (changes X position)
@@ -78,6 +79,9 @@ currPosXL  = NaN;  % current X position in local coords
 currPosYL  = NaN;  % current Y position in local coords
 lastHW     = [NaN, NaN];  % last image size (skip redundant limit writes)
 lastTickSig = [];  % signature for axis-scale ticks (skip redundant writes)
+overlayOn  = true;  % master Overlay switch
+ovItems    = struct('Crosshair', true, 'ZoomRect', true, 'ScaleBar', false);
+scaleBar   = [];    % scale-bar handles (MatVisRender.paintScaleBar)
 
 % ROI interaction state (all positions kept in LOCAL coords; callbacks
 % receive DATA coords)
@@ -168,12 +172,23 @@ zw.SetAspectRatio    = @applyAspectRatio;
 
         syncRoiOverlay();
         syncProfileOverlay();
+        syncScaleBar();
     end
 
-    function setOverlayVisible(tf)
-        vis = onOff_(tf);
+    function setOverlayVisible(tf, items)
+        overlayOn = logical(tf);
+        if nargin >= 2, ovItems = items; end
+        vis = onOff_(overlayOn && ovItems.Crosshair);
         set(posLineV, 'Visible', vis);
         set(posLineH, 'Visible', vis);
+        syncScaleBar();
+    end
+
+    function syncScaleBar()
+        if all(isfinite(lastHW))
+            scaleBar = MatVisRender.paintScaleBar(ax, model, lastHW(2), lastHW(1), ...
+                overlayOn && ovItems.ScaleBar, scaleBar);
+        end
     end
 
     function applyAspectRatio(fixed, ratio)

@@ -726,7 +726,8 @@ btnToggleProfile = uibutton(bottomGrid, 'state', 'Text', 'Profiles', 'Value', fa
 btnToggleProfile.Layout.Row = 2;  btnToggleProfile.Layout.Column = 4;
 
 btnOverlay = uibutton(bottomGrid, 'state', 'Text', 'Overlay', 'Value', true, ...
-    'FontSize', btnFS, 'Tooltip', 'Show/hide crop rectangle and position lines', ...
+    'FontSize', btnFS, 'Tooltip', sprintf(['Show/hide overlays (position lines,\n' ...
+        'crop rectangle, scale bar).\nRight-click: choose which overlays are shown.']), ...
     'ValueChangedFcn', @(src, ~) setOverlay(src.Value));
 btnOverlay.Layout.Row = 2;  btnOverlay.Layout.Column = 1;
 
@@ -773,6 +774,9 @@ if nDatasets > 1
 end
 
 setappdata(fig, 'OverlayVisible', true);
+% Which overlays the Overlay button switches (right-click to choose).
+setappdata(fig, 'OverlayItems', ...
+    struct('Crosshair', true, 'ZoomRect', true, 'ScaleBar', false));
 
 %% Status strip (memory-efficient mode only)
 % Reading a plane from disk takes tens of milliseconds and a projection reads
@@ -3487,6 +3491,8 @@ fprintf('\n');
             onAspectSetRatio();
         elseif labelHit(dimSelector.btnWinScale, figPt)
             onWinScaleSet();
+        elseif labelHit(btnOverlay, figPt)
+            onOverlaySet();
         else
             handled = false;
         end
@@ -3576,13 +3582,30 @@ fprintf('\n');
     % ------------------------------------------------------------------
     function setOverlay(tf)
         setappdata(fig, 'OverlayVisible', tf);
+        items = getappdata(fig, 'OverlayItems');
         for ds = 1:nDatasets
-            imageWins{ds}.SetOverlayVisible(tf);
-            zoomWins{ds}.SetOverlayVisible(tf);
+            imageWins{ds}.SetOverlayVisible(tf, items);
+            zoomWins{ds}.SetOverlayVisible(tf, items);
             if ~isempty(xsecWins{ds}) && isvalid(xsecWins{ds}.fig)
-                xsecWins{ds}.SetOverlayVisible(tf);
+                xsecWins{ds}.SetOverlayVisible(tf, items);
             end
         end
+    end
+
+    function onOverlaySet()
+        % Right click on Overlay: choose which overlays the button shows.
+        items  = getappdata(fig, 'OverlayItems');
+        keys   = {'Crosshair', 'ZoomRect', 'ScaleBar'};
+        labels = {'Position cross-hair', 'Zoom rectangle (image window)', ...
+                  'Scale bar (image and zoom windows)'};
+        cur    = cellfun(@(f) items.(f), keys);
+        [~, checked] = MatVisInputDlg({}, 'Overlays', {}, labels, cur);
+        if isequal(checked, cur), return; end
+        for kOv_ = 1:numel(keys)
+            items.(keys{kOv_}) = checked(kOv_);
+        end
+        setappdata(fig, 'OverlayItems', items);
+        setOverlay(btnOverlay.Value);
     end
 
     function toggleAllWindows(wins, isVisible)
@@ -3768,7 +3791,8 @@ fprintf('\n');
                 placeInDatasetRow(xsecWins{ds}.fig, 'xsec', ds);
             end
             watchWinSize(xsecWins{ds}.fig, 'xsec');
-            xsecWins{ds}.SetOverlayVisible(getappdata(fig, 'OverlayVisible'));
+            xsecWins{ds}.SetOverlayVisible(getappdata(fig, 'OverlayVisible'), ...
+                getappdata(fig, 'OverlayItems'));
         end
         xs = xsecWins{ds};
     end
@@ -4562,6 +4586,14 @@ fprintf('\n');
             restorePos = @(p) clampFigPosToScreen(matVisRemapWindowPos(p, savedMon, curMon));
             if isfield(pos, 'Main')
                 mainP = matVisRemapWindowPos(pos.Main, savedMon, curMon);
+                % Keep the saved TOP edge: the window's height follows the
+                % data (a slider row per dimension, the status strip), so
+                % keeping the bottom would push a taller window's title bar
+                % off the top of the screen.  Like applyFreshLayout, never
+                % let the bottom row drop below its monitor.
+                mainP(2) = mainP(2) + mainP(4) - fig.Position(4);
+                monM     = monitorOf([mainP(1:2), fig.Position(3:4)]);
+                mainP(2) = max(mainP(2), monM(2));
                 mainP = clampFigPosToScreen([mainP(1:2), fig.Position(3:4)]);
                 fig.Position(1:2) = mainP(1:2);
             end
@@ -4606,6 +4638,15 @@ fprintf('\n');
 
         % Window visibility
         if ~isempty(vis)
+            if isfield(vis, 'OverlayItems') && isstruct(vis.OverlayItems)
+                items = getappdata(fig, 'OverlayItems');
+                fnOv_ = intersect(fieldnames(items), fieldnames(vis.OverlayItems));
+                for kOv_ = 1:numel(fnOv_)
+                    items.(fnOv_{kOv_}) = logical(vis.OverlayItems.(fnOv_{kOv_}));
+                end
+                setappdata(fig, 'OverlayItems', items);
+                setOverlay(btnOverlay.Value);
+            end
             if isfield(vis, 'Overlay')
                 btnOverlay.Value = vis.Overlay;
                 setOverlay(vis.Overlay);

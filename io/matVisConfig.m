@@ -81,7 +81,8 @@ function SaveConfig_(model, mainFig, imageFigs, zoomFigs, plotFigs, configPath, 
 
     try
         % Window visibility
-        windowVisibility = struct('Overlay', getappdata(mainFig, 'OverlayVisible'));
+        windowVisibility = struct('Overlay', getappdata(mainFig, 'OverlayVisible'), ...
+            'OverlayItems', getappdata(mainFig, 'OverlayItems'));
         for k = 1:K
             windowVisibility.(sprintf('Image%d', k)) = strcmp(imageFigs{k}.Visible, 'on');
             windowVisibility.(sprintf('Zoom%d',  k)) = strcmp(zoomFigs{k}.Visible,  'on');

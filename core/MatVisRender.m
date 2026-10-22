@@ -1221,6 +1221,60 @@ classdef MatVisRender
                     'Visible', MatVisRender.onOff_(model.ProfileShowNames));
             end
         end
+
+        function h = paintScaleBar(ax, model, W, H, show, h)
+            % Scale bar in the bottom-right corner of a panel whose axes span
+            % [0.5, W+0.5] x [0.5, H+0.5] data pixels (Y pointing down).  Its
+            % length is ~25 % of the width, rounded to 1/2/5 x 10^n in the X
+            % dimension's unit (pixels when it has no scale).  Handles are
+            % only written when the bar's geometry or text changes.
+            if nargin < 6 || isempty(h) || ~isgraphics(h.line)
+                h.line = line(ax, NaN, NaN, 'Color', 'w', 'LineWidth', 3, ...
+                    'HitTest', 'off', 'PickableParts', 'none', 'Visible', 'off');
+                h.text = text(ax, NaN, NaN, '', 'Color', 'w', 'FontSize', 10, ...
+                    'FontWeight', 'bold', 'HorizontalAlignment', 'center', ...
+                    'VerticalAlignment', 'bottom', 'HitTest', 'off', ...
+                    'PickableParts', 'none', 'Visible', 'off');
+                h.sig = {};
+            end
+            if ~show
+                if strcmp(h.line.Visible, 'on')
+                    set([h.line, h.text], 'Visible', 'off');
+                end
+                return
+            end
+
+            xd     = model.XDim;
+            pxSize = model.pixelSize(xd);
+            unit   = model.dimUnit(xd);
+            if isempty(pxSize) || ~isfinite(pxSize) || pxSize <= 0 || ...
+                    ~model.hasRealScale(xd)
+                pxSize = 1;  unit = 'px';
+            end
+            sig = {W, H, pxSize, unit};
+            if isequal(sig, h.sig) && strcmp(h.line.Visible, 'on'), return; end
+            h.sig = sig;
+
+            target = 0.25 * W * pxSize;
+            e      = floor(log10(max(target, eps)));
+            mant   = target / 10^e;
+            if     mant < 1.5, mant = 1;
+            elseif mant < 3.5, mant = 2;
+            elseif mant < 7.5, mant = 5;
+            else,              mant = 10;
+            end
+            barReal = mant * 10^e;
+            barPix  = min(0.9 * W, barReal / pxSize);
+
+            padX = max(2, 0.04 * W);
+            padY = max(2, 0.05 * H);
+            x2 = W + 0.5 - padX;
+            x1 = x2 - barPix;
+            yb = H + 0.5 - padY;
+            set(h.line, 'XData', [x1 x2], 'YData', [yb yb], 'Visible', 'on');
+            set(h.text, 'Position', [(x1 + x2)/2, yb - 0.02*H], ...
+                'String', sprintf('%g %s', barReal, unit), 'Visible', 'on');
+        end
     end
 
     methods (Static, Access = private)

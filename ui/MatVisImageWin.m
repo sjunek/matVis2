@@ -13,7 +13,10 @@ function iw = MatVisImageWin(model, zoomFromMouseFcn, positionFromMouseFcn, dsId
 %       posX     : CurrPos along XDim  (vertical line at this column)
 %       posY     : CurrPos along YDim  (horizontal line at this row)
 %
-%   iw.SetOverlayVisible(tf)  — show/hide crop rect + position lines
+%   iw.SetOverlayVisible(tf, items) — show/hide crop rect, position lines
+%                                     and scale bar; items (optional) is a
+%                                     struct of logicals Crosshair /
+%                                     ZoomRect / ScaleBar picking which
 %
 % Mouse interactions:
 %   Left-drag on image    : rubber-band zoom selection
@@ -87,6 +90,9 @@ currPosX     = NaN;  % last known X position (data coord)
 currPosY     = NaN;  % last known Y position (data coord)
 currZoomRect = [];   % [x1 y1 w h] of visible zoom rect, [] when hidden
 rectShown    = strcmp(initVis, 'on');  % rectHandle visibility state
+overlayOn    = true;                   % master Overlay switch
+ovItems      = struct('Crosshair', true, 'ZoomRect', true, 'ScaleBar', false);
+scaleBar     = [];                     % scale-bar handles (MatVisRender.paintScaleBar)
 lastHW       = [NaN, NaN];             % last image size (skip redundant limit writes)
 lastTickSig  = [];                     % signature for axis-scale ticks (skip redundant writes)
 
@@ -167,9 +173,9 @@ iw.SetAspectRatio    = @applyAspectRatio;
             if fullZoom
                 if rectShown, set(rectHandle, 'Visible', 'off'); rectShown = false; end
                 currZoomRect = [];
-            elseif ~isequal(currZoomRect, zoomRect) || ~rectShown
-                set(rectHandle, 'Position', zoomRect, 'Visible', 'on');
-                rectShown    = true;
+            elseif ~isequal(currZoomRect, zoomRect) || rectShown ~= rectOn()
+                set(rectHandle, 'Position', zoomRect, 'Visible', onOff_(rectOn()));
+                rectShown    = rectOn();
                 currZoomRect = zoomRect;
             end
         else
@@ -185,14 +191,29 @@ iw.SetAspectRatio    = @applyAspectRatio;
 
         syncRoiOverlay();
         syncProfileOverlay();
+        syncScaleBar();
     end
 
-    function setOverlayVisible(tf)
-        vis = onOff_(tf);
-        set(rectHandle, 'Visible', vis);
+    function setOverlayVisible(tf, items)
+        overlayOn = logical(tf);
+        if nargin >= 2, ovItems = items; end
+        rectShown = rectOn() && ~isempty(currZoomRect);
+        set(rectHandle, 'Visible', onOff_(rectShown));
+        vis = onOff_(overlayOn && ovItems.Crosshair);
         set(posLineV,   'Visible', vis);
         set(posLineH,   'Visible', vis);
-        rectShown = logical(tf);
+        syncScaleBar();
+    end
+
+    function tf = rectOn()
+        tf = overlayOn && ovItems.ZoomRect;
+    end
+
+    function syncScaleBar()
+        if all(isfinite(lastHW))
+            scaleBar = MatVisRender.paintScaleBar(ax, model, lastHW(2), lastHW(1), ...
+                overlayOn && ovItems.ScaleBar, scaleBar);
+        end
     end
 
     function applyAspectRatio(fixed, ratio)

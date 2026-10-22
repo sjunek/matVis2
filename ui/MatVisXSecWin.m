@@ -26,7 +26,8 @@ function xw = MatVisXSecWin(model, cbs, dsIdx)
 %   xw.Update(cmin, cmax, gamma)  render all panels with the given contrast
 %                                 bounds/gamma of this dataset (so every
 %                                 matVis window shares one lookup table)
-%   xw.SetOverlayVisible(tf)      show/hide position cross-hairs
+%   xw.SetOverlayVisible(tf, items)  show/hide position cross-hairs
+%                                 (items.Crosshair, optional, must be on too)
 %   xw.Refresh()                  force a re-render (bypasses the skip cache)
 %
 % Contrast, colormap, gamma, spatial filter, projection and RGB colour
@@ -1226,8 +1227,8 @@ xw.Refresh           = @forceRefresh;
                model.AspectRatioFixed, model.AspectRatio, fullRes3D};
     end
 
-    function setOverlayVisible(tf)
-        overlayOn = logical(tf);
+    function setOverlayVisible(tf, items)
+        overlayOn = logical(tf) && (nargin < 2 || items.Crosshair);
         vis = onOff_(overlayOn);
         for k = 1:NPANEL
             if ~isempty(P(k).lineV) && isvalid(P(k).lineV)
